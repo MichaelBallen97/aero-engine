@@ -184,6 +184,17 @@ a sixth arm (22 lines). The title's "cache" is read as: the bytecode is the cach
 Subtasks:
 - Watch → transpile → swap module
 - State carry-over for unchanged component shapes
+**Outcome:** a script is an ES module whose default export is a class; the engine creates and holds its instances, and
+an instance's own fields are its state. `Vm::loadScript` loads a script and is also every reload, so any trigger may
+call it: a file whose bytes equal those the running class was compiled from is `Unchanged`, and nothing runs. Changed
+bytes evaluate a new generation of the module and re-create every live instance from the new class, all or nothing. A
+field (an own, enumerable data property) whose name and kind did not change keeps its running value, even when its
+default changed in code; a new field takes its default, a removed one is dropped, functions and methods come from the
+new code, and a `#private` field restarts. A refused reload changes nothing and is reported once, and the same broken
+bytes are not tried again until they change. The VM holds the instances behind `ScriptInstance` handles
+(`createInstance`, `destroyInstance`). The watch and the transpile are 3.1.4's watcher and 4.3.1's transpiler,
+unchanged: connecting their output to a reload during play is 4.7.4's hot-reload part, attaching a script to an entity
+is 4.4.1's, and nothing under `editor/` changed.
 
 ### 4.3.4 Source-mapped errors · P1 · M · depends: 4.3.1
 **Goal:** *(audit D6)* errors in the console panel point at `Player.ts:42`, not `bundle.js:1379`.

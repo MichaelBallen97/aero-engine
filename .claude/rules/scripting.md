@@ -164,6 +164,27 @@ the difference of its frame address between consecutive levels is one level's co
 1040 B Release; `main` before it 5216 / 1024). macOS keeps eight levels of slack at 64 KiB, so no local seed can
 redden ML35: a regression here shows on Windows CI first. R33.
 
+**ONCE A CALL'S BUDGET HAS FIRED, THE ENGINE MAKES NO REFUSAL OF ITS OWN (4.3.3, code-review rounds 1 and 2).** A step
+that would refuse on what the interrupted script left — a pending top-level await read as `StillEvaluating`, a Proxy a
+constructor built before the fire and returned after it read as `NotAClass` — returns early instead, and the call's
+tail reports `Interrupted` with its one record; refusing gave two ERRORs and the wrong status (HR33). `takeScriptClass`
+and `constructInstance` check `interruptFired || interruptRecorded` before their refusals, and any new engine refusal
+inside a budgeted call does the same. The `|| interruptRecorded` half is unobservable today (sabotage row S15) and is
+kept against drift.
+
+**A RELOAD KEYS ON THE SCRIPT'S OWN BYTES, AS THE LOADER COMPILED THEM (4.3.3).** `loadScript` is the only load and
+reload: bytes equal to those the running class was compiled from are `Unchanged` (HR9) and the last refused bytes
+`AlreadyRefused` (HR27), so a trigger may fire on every rewrite (R29) with no retry and no second report. The bytes are
+captured in `readModuleSource` at import depth 0, outside R33's frames (HR10, HR37), and `peekModuleSource` repeats
+`readModuleSource`'s four checks in its order, with no refusal and no log, so a change to one changes the other (HR40
+and HR41 pin the size cap at both of the peek's sites). A script is one esbuild bundle, so a change to anything it
+imports changes its bytes; a hand-written graph's dependency change is `Unchanged` (HR37).
+
+**THE CALL AFTER AN INTERRUPTED ONE CAN ANSWER FOR IT (R34, 4.3.3).** A call whose budget fired inside a promise
+executor skips its job drain, and the VM's next call of any kind runs the rejection's reaction job first and answers
+`Exception` (`uncaught InternalError: interrupted`). A case that interrupts a call inside an executor asserts the next
+call's status and records, as HR33 does.
+
 ## What Phase 4's next tasks inherit
 
 **Phase 4 is open; Epic 4.1 is closed (4.1.1, 4.1.2) and 4.2.1, quickjs binding emission, is merged (`docs/tasks/phase-4.md`).**
@@ -175,3 +196,10 @@ for what Phase 3 still owes.
 **What 4.3.2 leaves for later tasks.** 4.4.1 and 4.7.x run the JavaScript, not the bytecode. 5.1.2 calls the cook
 once per script and skips unchanged ones through the 3.1.2 cache. 5.1.1's pak mount is the first reader of container bytes
 this build did not cook, so the loader's refusals are its only defence there.
+
+**What 4.3.3 leaves for later tasks.** 4.4.1 inherits the script model — a module's default export is a class, the
+engine holds its instances behind `ScriptInstance` handles, and an instance's own fields are its state — and keeps
+`ScriptComponent`, `AssetKind::Script`, attaching a script to an entity and the `onInit`/`onUpdate`/`onDestroy`
+dispatch. 4.7.4's hot-reload part connects 4.3.1's publishes to `loadScript` during play; any trigger is safe, and
+`ScriptLoadResult`'s heap figures let it warn before a full heap. R34's VM-core fix and a native watcher are unowned
+handoffs in `docs/08`.

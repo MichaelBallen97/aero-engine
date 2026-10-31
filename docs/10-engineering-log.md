@@ -66,6 +66,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | 4.2.2 `.d.ts` emission | #126 | `1c10fad` | **4 / 4**, nothing failed (VS Code driven on macOS: the editor's three files, the thirteen-class completion, member completion and hovers, the three diagnostics). Two code-review rounds (6 findings, all closed); a 120-row sabotage matrix whose six holes were closed and re-run red; CI green on the first run |
 | 4.3.1 esbuild integration on import | #127 | `d06a635` | **7 / 7**, nothing failed (the editor GUI driven on macOS: transpile on open and on save, an error line and Refresh, an up-to-date reopen, a quarantined esbuild stopped at 30 s, the copy beside the editor, a cold and an offline configure); row 3 re-run on the final head. Four code-review rounds (8 findings, all closed); a 125-row sabotage matrix whose eight holes were closed and re-run red; the first CI run was red on Windows alone (esbuild's `X` error mark), the second green |
 | 4.3.2 Bytecode compile & cache | #129 | `c26b890` | **3 / 3**, nothing failed (the editor GUI driven on macOS to write a real project's two bundles, then the cook's exit, silence, header bytes and size; a 519 KB bundle cooked in 0.10 s; the bytecode cases under `leaks`, 0 leaks); rows 1–3 re-run on the final head with byte-identical artifacts. Six code-review rounds (14 findings: 10 closed, 4 wording minors recorded); a 77-row doctest and 12-row ctest sabotage matrix whose four holes were closed and re-run red; CI red twice on lane-only failures (an MSVC C2280 and a Linux clang-tidy finding, then ML35 on Windows Debug alone, R33), the third run green |
+| 4.3.3 Script hot reload | #130 | `08025f9` | **3 / 3**, nothing failed (terminal rows, no editor UI: the HR cases under `leaks`, 0 leaks; a reload of 10 000 instances in 3 ms in Release and 32 ms in Debug; the pinned esbuild's class shape, line for line). Three code-review rounds (two blocking findings, each a refusal made after the time budget had ended, and four should-fix, all closed); a 69-row sabotage matrix, 68 red and one non-finding, whose holes HR38–HR41 closed and re-ran red; R34 (the job an interrupted call leaves) recorded; CI green on the first push (`41186262804`) and on `main`'s push run (`41190384148`), 6 / 6 each |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -20629,3 +20630,168 @@ Measured at `d3bd684` on fresh build directories, after both CI fixes:
 `bytecode.hpp`, the internal `bytecode_cook.hpp` and `bytecode_format.hpp`, and `bytecode_cook.cpp` and
 `bytecode_format.cpp`; `vm_impl.hpp` gains `AERO_SCRIPT_NOINLINE`. Docs: `docs/03`, `08` (R31, R32, R33; R22 and
 R24), `09` (§16), `docs/future-roadmap.md` and the phase file.
+
+### 4.3.3 — Script hot reload — a VM loads a script class and holds its instances, and a changed file re-creates every instance from the new class, keeping each field whose name and kind did not change
+
+A script (an ES module whose default export is a class) now loads into a VM through `Vm::loadScript`, which is also
+every reload, and the VM holds the class's instances behind `ScriptInstance` handles. Merged as PR #130
+(`08025f9`, a true merge commit): twelve commits on `db4b4b3` — the plan's four steps, round 1's five commits,
+round 2's one and the two sabotage-hole tests. CI: run `41186262804` at `993e8f4`, 6 / 6 green on the first push, the
+cross-lane cook-determinism job included; `main`'s push run `41190384148` on the merged head, 6 / 6 green. This is
+the engine half of Story 2's third line (edit and save a script while the game plays, and each kept value whose shape
+did not change keeps its value); the editor does not reload yet, and Story 2's demo waits on 4.7.3, 4.7.4's
+hot-reload part and 4.3.4.
+
+**What shipped.**
+- **The minimal script model a reload needs** (the spec's decision): a script module's default export is a class, the
+  engine creates and holds its instances, and an instance's own fields are its state. 4.4.1 keeps `ScriptComponent`,
+  `AssetKind::Script`, attaching a script to an entity and the `onInit`/`onUpdate`/`onDestroy` dispatch.
+- **`Vm::loadScript(path)`** (`engine/script/src/vm_scripts.cpp`, new): the first load and every reload. A file
+  holding the bytes the running class was compiled from is `Unchanged`: nothing is read beyond the comparison, nothing
+  runs and nothing is logged (HR9), so R29's byte-identical rewrites cost nothing whatever triggers the call. Other
+  bytes are one call under one time budget: a new generation of the module is evaluated (a path `evaluateModule`
+  already ran is invalidated first), its default export is checked, and every live instance is re-created from it.
+  The call commits only after its tail (the job drain and the unhandled-rejection report); a refusal leaves every
+  instance on its old object and the script on its last good class. A refused load remembers its bytes: the same
+  bytes again, before the next success, are `AlreadyRefused`, silent and with an empty error (HR27, HR28). Success,
+  `Unchanged` and `AlreadyRefused` log nothing, and every other outcome logs exactly one ERROR. A full heap is the
+  engine's own record — `script: <path>: out of memory (heap limit <L> bytes, <U> bytes in use): the script and its
+  instances are unchanged, and only a new VM resets the heap` — never the backend's text, and `ScriptLoadResult`
+  carries `heapBytesInUse` and `heapLimitBytes` (HR29, HR30).
+- **The class check:** a constructor, not a Proxy, whose own `prototype` is a non-writable data property. A plain,
+  bound, arrow, async or generator function, an object, a primitive and a missing default are `NotAClass`, and finding
+  out runs no script code (HR5). A built-in constructor passes (plan G2, accepted and documented).
+- **`createInstance(path)` and `destroyInstance(handle)`:** each script's class and every instance live in the VM, and
+  the caller holds `ScriptInstance` handles. A constructor that returns a Proxy is refused, so no live instance is a
+  Proxy. A handle belongs to the VM that made it, the `Entity` precedent: another VM answers as if it were stale.
+- **The carry:** the pure rule in the internal `script_carry.hpp` (new) over thirteen value kinds — undefined, null,
+  boolean, number, bigint, string, symbol, array, `engine.Vec3`, `engine.Quat`, `engine.Entity`, object and function;
+  HR1 checks all 169 pairs against a written-out table — and `carryFields` in `vm_scripts.cpp`. A field is an own,
+  enumerable, string-keyed data property; after the new instance is constructed, each field it shares with the running
+  instance takes the running value when the two kinds agree. Values and defaults are never compared, so a changed
+  default does not reset a field (HR19). A new default of `undefined` takes any non-function value and one of `null`
+  takes null or any reference kind; a function never carries; a carried object keeps the code it was made with (HR24);
+  a field removed, made non-enumerable or turned into an accessor is dropped (HR18, HR26, HR38). Fields are read as
+  descriptors and written with a define, so no getter or setter runs, and an unwritable new field keeps its default.
+  The result counts `instancesMoved`, `fieldsKept`, `fieldsReset`, `fieldsAdded` and `fieldsDropped`.
+- **The loader's side** (`vm_modules.cpp`, `module_graph.{hpp,cpp}`): `readModuleSource` records the bytes it compiled
+  for the entry (import depth 0), outside R33's frames; `peekModuleSource` reads a file as a load would — the same four
+  checks in the same order, with no refusal, no log and no backend call — for the comparison; `ModuleTable::state(key)`
+  lets a load refuse anything not `Evaluated`. Test-only: `internal::VmAccess::defineInstanceGlobal`
+  (`component_binding.hpp`).
+
+**Code-review rounds.** Round 1 (on `db4b4b3..42227e7`): one blocking and four should-fix — a load whose time budget
+ran out while its module's top-level await was pending returned `StillEvaluating` with two ERRORs instead of
+`Interrupted` with one; another VM's handle was neither refused nor documented; the link-error, load-error and
+constructor-failure arms the acceptance criteria name had no case; nothing failed with the comparison's depth-0
+capture guard removed; and plan G4's `vm.hpp` note was missing. Closed by `654e5d4` (`takeScriptClass` makes no
+engine refusal once the budget has ended; HR33), `0419bb1` (the handle sentence), `0352392` (G4's and G9's notes),
+`52d271c` (HR34–HR37) and `ee437bf` (HR33 pins the job an interrupted call leaves, R34). Round 2 (on
+`42227e7..ee437bf`): one blocking — a constructor that built its Proxy before a slow executor and returned it after
+the budget ended still gave `NotAClass` and two ERRORs — closed by `0633c0f` (the same guard in `constructInstance`,
+and two HR33 sub-cases). Round 3 (on `ee437bf..0633c0f`): approve, with no finding.
+
+**The sabotage matrix.** 69 doctest rows (S1–S69), all through `macos-debug`'s `aero_tests`: 68 designed at `0633c0f`,
+plus S69. The first run read 62 red and six holes. S15 is a non-finding by design: dropping `|| interruptRecorded`
+from `takeScriptClass`'s budget guard is unobservable, because `interruptRecorded` is set only where `interruptFired`
+already is, or where the status check has already returned. The holes, closed by `c6eb9c6` and `993e8f4`: S33 (the
+carry's skip test lost its own-accessor check, and HR25's accessor sits on the prototype) → HR38; S46–S48
+(`valueKindOf` lost its BigInt, Symbol or Boolean arm, which changes an outcome only under a `null` or object default)
+→ HR39; S68 (the comparison's peek lost the size cap at both sites, and no case loaded an oversized file) → HR40; and
+S69, the peek's after-read cap alone (a file that grew after its size was asked) → HR41. Re-run at `993e8f4`: the six
+rows red. Standing: 68 red and one non-finding, no open hole.
+
+**Traps found, each measured.**
+- **`JS_IsConstructor` alone is not a class test:** it accepts a plain `function` and a bound function as well (the
+  spike), so the check also requires an own non-writable `prototype` data property and refuses a Proxy, before
+  anything can run script code.
+- **A module whose top-level await is pending loads `Ok`, with a WARN, in state `Evaluating`,** and its default export
+  may read `undefined` or throw from its TDZ; a failed evaluation can still leave a class in the namespace. A load
+  therefore refuses any module that is not `Evaluated` (`StillEvaluating`, HR7; HR6 for a module that threw after its
+  class line), and skips the pending WARN inside `loadScript` alone.
+- **A generation's class and instances keep working beside the next generation and after a failed one,** which is
+  what makes "the last good class" free; nothing of an old generation is freed before teardown. The heap grows by
+  about 4.3–4.5× the bundle plus about 3 KB per reload, the same in both presets: a 64 MiB VM held 8 632, 1 532 and 165
+  reloads of 1, 9.4 and 93 KB bundles (Release), and a refused reload leaves the VM usable.
+- **A near-full heap's refusal often reads `{name: "", message: "null"}`** (seven of the nine refusals in the spike's
+  runs): only the status is reliable, hence the engine's own out-of-memory record.
+- **Once a call's time budget has ended, the engine must not refuse on its own.** A pending top-level await read after
+  the interrupt was `StillEvaluating` with two ERRORs (round 1), and a pre-built Proxy returned after it was
+  `NotAClass` with two (round 2). A constructor that calls `new Proxy` after the slow executor never reaches the Proxy
+  arm: the native call fails the exhausted stack check and the call is `Interrupted` with one ERROR, which is why the
+  first fix guarded only `takeScriptClass`.
+- **A call interrupted inside a promise executor skips its job drain, so the rejection's reaction job stays queued,**
+  and the VM's next call of any kind runs it and answers `Exception` (`script: <file>: uncaught InternalError:
+  interrupted`); a corrected `loadScript` that is that next call is refused and remembers its bytes until they change.
+  It predates the task (4.1.1's budget design; `evaluateModule` behaves the same), and HR33 pins it: a thenable body
+  leaves nothing behind. R34.
+- **esbuild 0.28.2 keeps class fields native, own, enumerable and in declaration order,** `#x` native and TypeScript's
+  `private` an ordinary field, and emits `var X = class {…}; export { X as default }`: the shape every HR case
+  hand-writes. The page's row 3 confirmed it line for line on a bundle whose first line is `// mover.ts` and whose last
+  is `//# sourceMappingURL=mover.js.map`.
+- **A save reaches new JavaScript 2.19–3.2 s later (median about 2.75 s),** flat over 1, 10 and 50 scripts: esbuild is
+  10–25 ms of it, and the asset watcher's 2 s settle and up to 1 s of cooldown are the rest.
+- **A reload of 10 000 instances takes 2–3 ms in Release and 32 ms in Debug** on this Mac (the page's row 2), against
+  the spike's 90 and 673 ms for the same re-instantiation done in JavaScript.
+- HR14's heap figure is read right after each load: read after the probe script, it differs by the probe's atoms
+  (180 039 against 179 943 bytes). HR34's reload message names `res://s/dep.js?gen=2`, because the failed first load
+  retired the generation it created.
+
+**Where the implementation departed from the plan.**
+- `HeldBatch`, `ScriptRefusal` and `FieldCounts` are in `vm_impl.hpp`, because the helpers that take them
+  (`takeScriptClass`, `constructInstance`, `rebuildInstances`) are `Impl` members; `Impl` also gained
+  `constructInstance` (shared by a create and a reload), `endScriptCall` and `logRefusal`. `carryFields` takes the
+  `ScriptApi` for the Vec3, Quat and Entity class ids.
+- The `EvalStatus` → `ScriptStatus` map passes `InvalidVm` and `WrongThread` through one to one instead of the plan's
+  assert.
+- The refused path copies the compiled text instead of moving it (clang-tidy's `performance-move-const-arg` on a
+  `std::move` inside a ternary).
+- HR33–HR41 came from the code-review rounds and the sabotage holes: the plan predicted `aero_tests` 1721, and it reads
+  1730. HR31 and HR32 passed before Step 4's code existed, because they guard what Steps 2 and 3 already did.
+
+**What was deliberately left out, and which task holds each.**
+- The editor side: connecting 4.3.1's publishes to a reload in the play session, with its consumer, is 4.7.4's
+  hot-reload part. Nothing under `editor/` changed, and the asset watcher is untouched.
+- `ScriptComponent`, `AssetKind::Script`, attaching scripts to entities and the lifecycle dispatch: 4.4.1. Play, Stop
+  and the scene restore: 4.7.x.
+- A faster save-to-reload path, a native watcher behind `poll()`'s seam: an unowned handoff in `docs/08`, revisited
+  when Story 2's demo runs.
+- The VM-core fix for R34: an unowned handoff in `docs/08`, revisited when 4.7.4's play loop exists.
+- Freeing old generations, a heap cap and an early warning: none. A new VM is the full reset, and the result's heap
+  figures let 4.7.4 warn earlier.
+- The Windows and Linux pages: validation debt.
+
+**The sentences that govern new work.** A script's identity is its canonical path, never its class's `name`.
+`loadScript` is the only load and reload, and any trigger may call it: identical bytes are `Unchanged` and the last
+refused bytes `AlreadyRefused`, so a trigger never keys on a rewrite (R29). A reload is all or nothing and commits only
+after its tail. Once a call's time budget has ended, the engine makes no refusal of its own; the tail reports
+`Interrupted`. A field carries by kind, never by value, and a function never carries. A `ScriptInstance` belongs to
+the VM that made it. The scripting rule file holds the rules.
+
+**Validation and sabotage status — macOS 3 / 3 (2026-10-31), Windows and Linux unrun.** `macos-release` and
+`macos-debug` at `993e8f4`, terminal rows (no editor UI): `leaks -atExit` over HR1–HR32 read 32 passed and `0 leaks
+for 0 total leaked bytes`, and over HR1–HR41 41 passed and 0 leaks; HR32's reload of 10 000 instances took 3, 2 and
+3 ms in Release (the row's limit is 250 ms) and 32 and 32 ms in Debug; the pinned esbuild bundled the plan's
+`mover.ts` to a file whose lines 2–18 equal the seventeen `classSource()` produces, its first line `// mover.ts` and
+its last `//# sourceMappingURL=mover.js.map` (so the plan's "begins" and "ends" hold for the class statement and the
+export block). No row was NOT EXECUTABLE on macOS; rows 1 and 3 are NOT EXECUTABLE on Windows and Linux (macOS tools
+and paths). Off macOS, CI is the only witness: run `41186262804`'s Windows Debug `aero_tests` took 222.84 s against
+`main`'s 227.06 s (run `41142225791`), on a runner whose unchanged `aero_editor_shell_test` took 196.24 s against
+217.79 s; scaled by that, HR1–HR41 cost about 18 s together, so HR32 stays under plan G8's 30 s and keeps its 10 000
+instances.
+
+Measured at `993e8f4` on fresh build directories:
+- `aero_tests` **1730** (+41: HR1–HR41), and **2500 / 372 / 40 / 73 / 14 / 28** unchanged; reflect-tools-OFF
+  `aero_tests` 1716, shell 2458 and ImGui 372; shader-tools-OFF `aero_tests` 1590, shell
+  2500 and ImGui 353.
+- `ctest -N` **232 / 219 / 107**, with `cooker.*` 81 in all three; nothing added.
+- The guards read math **636**, platform **96**, rhi **188**, scene **96**, golden-rule **190**, project-no-delete
+  **A=8 B=113**, audio **11-3-62**, probes **7-64** and script **176-96-14**.
+
+**Case ids claimed:** HR1–HR41 (next free: HR42).
+
+**Build & dependency impact:** no vcpkg port and no new target. `engine/script` gains `src/vm_scripts.cpp` and the
+internal `script_carry.hpp`; `vm.hpp`, `vm_impl.hpp`, `vm.cpp`, `vm_errors.cpp`, `vm_modules.cpp`,
+`module_graph.{hpp,cpp}` and `component_binding.hpp` grow; `tests/script_reload_test.cpp` joins `aero_tests`. Docs:
+`docs/08` (R34, R29's mitigation, two unowned handoffs and the validation debt), the phase file and the scripting rule
+file.
