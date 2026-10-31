@@ -4,7 +4,8 @@
 // core globals and, since task 4.2.1, one frozen global of the engine's own: `engine`, holding a class per bound
 // component plus Vec3, Quat and Entity. Nothing else is script-visible -- no file, process or timer access. Since
 // task 4.1.2 a VM given a VirtualFileSystem also loads ES modules through it (evaluateModule, and import() from
-// any code).
+// any code). Since task 4.3.3 a VM loads a script class (an ES module whose default export is a class) and holds its
+// instances behind handles, and a changed file re-creates every live instance from the new class.
 //
 // The backend is an implementation detail of engine/script/src/ and never crosses this header (project
 // rule #3). .github/scripts/check-script-boundary.sh and tests/script_boundary_probe.cpp enforce that.
@@ -12,6 +13,7 @@
 // Errors never cross this API as exceptions: every outcome is a status, and every failure is also logged
 // ONCE, at ERROR, in the fixed shape listed above evaluateScript below.
 
+#include <aero/core/handle.hpp>
 #include <aero/scene/entity.hpp>  // engine::Entity -- the reason aero::scene is PUBLIC
 
 #include <chrono>
@@ -143,6 +145,55 @@ struct EvalResult {
     ScriptError error;       // filled iff status is CompileError, Exception, OutOfMemory, Interrupted or LoadError
     std::string completion;  // String(completion value) iff the script ran to completion -- DIAGNOSTIC text,
                              // not a value bridge; "<unprintable value>" when the conversion throws
+};
+
+// ---- script classes and their instances (task 4.3.3) ---------------------------------------------------------
+// A script is an ES module whose default export is a class. The VM holds each loaded script's class and every instance
+// it makes; the caller holds ScriptInstance handles and never an object or a pointer.
+//
+// A ScriptInstance is only meaningful to the Vm that made it. Passing one to another Vm is a caller error. It is
+// mechanically safe -- the other Vm answers as if the handle were stale -- but semantically undefined, and a
+// same-index/same-generation coincidence would silently address that Vm's own instance. Do not do it.
+struct ScriptInstanceTag;  // incomplete: a tag only
+using ScriptInstance = Handle<ScriptInstanceTag>;
+
+enum class ScriptStatus : std::uint8_t {
+    Ok = 0,
+    Unchanged,        // loadScript: the file holds the bytes the script's class was compiled from; nothing ran
+    InvalidVm,        // a failed create's Vm, or a moved-from one
+    WrongThread,      // called from a thread that is not the VM's; nothing was touched
+    LoadError,        // as EvalStatus: an unresolvable path, no VFS, not found, too large, a refused container
+    CompileError,     // as EvalStatus (a link error included)
+    Exception,        // the module threw, a constructor threw, or a job of the call threw
+    OutOfMemory,      // the heap limit refused an allocation
+    Interrupted,      // the call's time budget ran out
+    StillEvaluating,  // loadScript: the module's top-level await had not settled when the call ended
+    NotAClass,        // the default export is not a class, or a constructor returned a Proxy
+    NotLoaded,        // createInstance: no class is loaded from that path
+    UnknownInstance,  // destroyInstance: the handle names no live instance (null, destroyed or stale)
+    AlreadyRefused,   // loadScript: the file holds the bytes of the script's last refused load since its last
+                      // success; nothing ran, nothing is logged, the result's error is empty
+};
+// Never named toString: doctest's DOCTEST_STRINGIFY finds an unqualified toString by ADL (CLAUDE.md).
+[[nodiscard]] std::string_view scriptStatusLabel(ScriptStatus status) noexcept;
+
+struct ScriptLoadResult {
+    ScriptStatus status = ScriptStatus::InvalidVm;
+    ScriptError error;               // filled iff LoadError, CompileError, Exception, OutOfMemory, Interrupted,
+                                     // StillEvaluating or NotAClass
+    std::size_t instancesMoved = 0;  // Ok: the live instances now on the new class
+    std::size_t fieldsKept = 0;      // Ok: summed over the moved instances, the fields that took the running value
+    std::size_t fieldsReset = 0;     // Ok: fields in both versions whose running value did not carry
+    std::size_t fieldsAdded = 0;     // Ok: fields only the new class has; they keep their defaults
+    std::size_t fieldsDropped = 0;   // Ok: fields only the running instance had, or that stopped being fields
+    std::size_t heapBytesInUse = 0;  // VmStats::heapBytesInUse when the call returned; 0 for InvalidVm, WrongThread
+    std::size_t heapLimitBytes = 0;  // the VM's limit; 0 for InvalidVm, WrongThread
+};
+
+struct ScriptInstanceResult {
+    ScriptStatus status = ScriptStatus::InvalidVm;
+    ScriptInstance instance;  // valid() iff Ok
+    ScriptError error;        // filled iff Exception, OutOfMemory, Interrupted or NotAClass
 };
 
 // The state of a module path's CURRENT generation, as the VM last observed it. The backend reports an evaluation's
@@ -317,6 +368,70 @@ public:
     // DeadEntity, then OutOfMemory (the object) or InvalidName (the define returned false: a non-configurable global
     // of that name, or a non-extensible global object).
     BindStatus defineEntityGlobal(std::string_view name, Entity entity);
+
+    // ---- script classes and instances (task 4.3.3) ------------------------------------------------------------
+    // Loads the script at `virtualPath` (an ABSOLUTE res:// path): the first load and every reload are this one call,
+    // so any trigger may call it. A file holding the bytes the script's class was compiled from is Unchanged: nothing
+    // is read beyond the comparison, nothing runs, nothing is logged. Any other bytes are ONE call under one time
+    // budget: the VM evaluates a new generation of the module, takes its default export, which must be a class, and
+    // re-creates every live instance of the script from it. The call commits only if everything succeeded, and only
+    // after the call's tail (its job drain and its unhandled-rejection report); a refusal leaves every instance on its
+    // old object and the script on its last good class, so later instances come from that class.
+    //
+    // A script's identity is its canonical path, never the class's `name` (esbuild renames a class on a collision). A
+    // reload re-creates: each new instance runs its constructor and field initializers, and its handle points at it.
+    // Three consequences are documented: a native `#private` field restarts, a constructor runs again at every reload,
+    // and an old object something else still holds keeps the old code and state. The comparison is of the script's own
+    // file: a script is one esbuild bundle (4.3.1), so a change to anything it imports changes its bytes. A
+    // hand-written module graph that calls invalidateModule on a dependency and then loadScript still gets Unchanged. A
+    // loadScript of a path evaluateModule already ran invalidates that module, so its body runs again in a new
+    // generation.
+    //
+    // A refused load remembers its bytes. The same bytes again, before the script loads again, are AlreadyRefused:
+    // nothing is read beyond the comparison, nothing runs, nothing is logged and the result's error is empty, so a
+    // trigger that fires again with a file still broken neither retries nor reports twice. Other bytes are attempted
+    // anew, and so are the bytes of a refused load after any success.
+    //
+    // Success logs nothing, and neither do Unchanged and AlreadyRefused. Every other outcome logs exactly one ERROR,
+    // plus whatever unrelated records the call's tail logs. The loader's and the trap's records are evaluateModule's
+    // (a LoadError, a CompileError, an Exception, an Interrupted). A load the heap refused (OutOfMemory) is the
+    // engine's own, and never carries the backend's error text: "script: <path>: out of memory (heap limit <L> bytes,
+    // <U> bytes in use): the script and its instances are unchanged, and only a new VM resets the heap". Every
+    // instance keeps its code and values, and only a new VM frees an old generation. The engine's other records, each
+    // after "script: <path>: ":
+    //   StillEvaluating  "not a script: its top-level await had not settled when the load ended"
+    //   NotAClass        "not a script: its default export is <what>, not a class"
+    //                    "not a script: its constructor returned a Proxy"
+    // and, without a path: "script: loadScript on an invalid Vm (a failed create or a moved-from Vm)" for InvalidVm,
+    // and "script: loadScript called from a thread that is not the VM's; refused" for WrongThread.
+    //
+    // What a reload carries. A field is an own, enumerable, string-keyed DATA property; an accessor is not a field,
+    // whoever defined it, and neither is a non-enumerable property. After the new instance is constructed, each field
+    // of the running instance that the new instance also has takes the running value when the two KINDS agree
+    // (boolean, number, bigint, string, symbol, array, engine.Vec3, engine.Quat, engine.Entity, object); values and
+    // defaults are never compared, so a changed default does not reset a field. Two relaxations: a new default of
+    // `undefined` (a field declared without a value) takes any kind, and a new default of `null` takes null and every
+    // reference kind. A function never carries, on either side: the new instance keeps its own. A carried object is
+    // carried by reference and keeps the code it was made with. A field the running instance had and the new one
+    // lacks, or that the new class turned into an accessor, is dropped and the accessor takes over; one only the new
+    // instance has keeps its default. Fields are read as descriptors and written with a define, so no getter and no
+    // setter runs, and a frozen or otherwise unwritable new field keeps its default (counted as reset) rather than
+    // refusing the reload. fieldsKept, fieldsReset, fieldsAdded and fieldsDropped sum these over the moved instances; a
+    // refused load reports none. A class is a constructor whose own `prototype` is a non-writable data property: a
+    // plain, bound, arrow, async or generator function, an object, a primitive and a missing default are not, and
+    // finding out runs no script code. The VM's thread only, and never from inside another call.
+    [[nodiscard]] ScriptLoadResult loadScript(std::string_view virtualPath);
+
+    // Constructs one instance of the script's current class under one call's time budget. NotLoaded when no class is
+    // loaded from that path ("script: <path>: createInstance refused: no script class is loaded from it"); Exception,
+    // OutOfMemory and Interrupted when the constructor fails; NotAClass when it returned a Proxy. Each refusal is one
+    // ERROR and makes nothing. Each instance holds its own fields. A constructor that returns a Proxy is refused, so no
+    // live instance is a Proxy.
+    [[nodiscard]] ScriptInstanceResult createInstance(std::string_view virtualPath);
+
+    // Frees an instance. UnknownInstance, with one ERROR ("script: destroyInstance refused: the handle names no live
+    // instance"), when the handle is null, already destroyed or stale. Runs no script code.
+    ScriptStatus destroyInstance(ScriptInstance instance);  // not [[nodiscard]]: the unbindWorld precedent
 
     // Frees the context and the runtime and reports what did not come back. Idempotent; leaves the Vm
     // invalid. May run on any thread provided no call is in flight.

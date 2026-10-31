@@ -152,6 +152,7 @@ VmTeardownReport Vm::Impl::shutdown() noexcept {
     }
     pendingRejections.clear();
     if (ctx != nullptr) {
+        releaseScripts();                  // the held classes and instance objects, before the context goes
         releaseScriptApi(ctx, scriptApi);  // the held component constructors, before the context goes
     }
     for (const JSValue promise : skippedRejections) {
@@ -310,6 +311,7 @@ Vm::Impl::CallScope::~CallScope() {
     JS_SetMaxStackSize(impl.rt, impl.config.stackLimitBytes);  // the handler took it away if the budget ran out
     impl.heap.closeGraceWindow();
     impl.deadline = std::chrono::steady_clock::time_point::min();
+    impl.loadingScript = false;
     impl.inCall = false;
 }
 

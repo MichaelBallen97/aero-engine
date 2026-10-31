@@ -3,6 +3,7 @@
 // includes <quickjs.h>, which is why it lives under src/ -- the side of the boundary that
 // .github/scripts/check-script-boundary.sh permits. Nothing outside engine/script may include it.
 
+#include <aero/core/slot_map.hpp>
 #include <aero/script/internal/heap_accounting.hpp>
 #include <aero/script/internal/module_graph.hpp>
 #include <aero/script/vm.hpp>
@@ -12,6 +13,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <optional>
 #include <quickjs.h>
 #include <span>
@@ -85,6 +88,49 @@ private:
     const char* text;
 };
 
+// The new objects of one reload, owned until the commit takes them: whatever is still owned is freed.
+class HeldBatch {
+public:
+    explicit HeldBatch(JSContext* context) noexcept : context(context) {}
+    HeldBatch(const HeldBatch&) = delete;
+    HeldBatch& operator=(const HeldBatch&) = delete;
+    HeldBatch(HeldBatch&&) = delete;
+    HeldBatch& operator=(HeldBatch&&) = delete;
+    ~HeldBatch() {
+        for (const JSValue value : values) {
+            JS_FreeValue(context, value);
+        }
+    }
+
+    void add(JSValue value) { values.push_back(value); }  // takes the reference
+    [[nodiscard]] std::size_t size() const noexcept { return values.size(); }
+    // Hands the reference at `index` to the caller; the batch owns nothing there afterwards.
+    [[nodiscard]] JSValue take(std::size_t index) noexcept {
+        const JSValue out = values[index];
+        values[index] = JS_UNDEFINED;
+        return out;
+    }
+
+private:
+    JSContext* context;
+    std::vector<JSValue> values;
+};
+
+// Why a load or a create was refused by the engine itself (not by the backend): the status, and the text after
+// "script: <path>: " in the one ERROR it logged.
+struct ScriptRefusal {
+    ScriptStatus status;
+    std::string text;
+};
+
+// What the carry did over the instances of one reload, summed (task 4.3.3, vm_scripts.cpp).
+struct FieldCounts {
+    std::size_t kept = 0;
+    std::size_t reset = 0;
+    std::size_t added = 0;
+    std::size_t dropped = 0;
+};
+
 enum class Phase : std::uint8_t { Compile, Run };
 inline constexpr std::string_view UNPRINTABLE_VALUE = "<unprintable value>";
 inline constexpr std::string_view DRAIN_STOP_MESSAGE = "the time budget ran out with promise jobs still queued";
@@ -129,6 +175,22 @@ struct LoadAttempt {
     // The cook's: every static import is refused, because a cooked script imports nothing (bytecode_cook.cpp).
     bool refusesImports = false;
     std::uint64_t growthRefusalsAtStart = 0;  // HeapAccounting::growthRefusals() when it began
+    // When set, readModuleSource copies the text of the module it reads at depth 0 (the entry) into it.
+    std::optional<std::string>* entryText = nullptr;
+};
+
+// One live instance: its current object (HELD) and the canonical key of its script.
+struct InstanceSlot {
+    JSValue object;
+    std::string key;
+};
+
+// One script path a loadScript call has reached (a record exists from that call's first backend step on).
+struct ScriptRecord {
+    JSValue scriptClass = JS_UNDEFINED;      // HELD: the last good class; JS_UNDEFINED until a load succeeds
+    std::optional<std::string> runningText;  // the bytes scriptClass's generation was compiled from
+    std::optional<std::string> refusedText;  // the bytes of the last refused load since the last success
+    std::vector<ScriptInstance> instances;   // the live instances of this script, in creation order
 };
 
 struct Vm::Impl {
@@ -203,7 +265,10 @@ struct Vm::Impl {
         Impl& host;
     };
     [[nodiscard]] EvalResult evaluateModuleCall(std::string_view virtualPath);
-    void evaluateEntry(std::string_view key, EvalResult& result);
+    void evaluateEntry(std::string_view key, EvalResult& result, std::optional<std::string>* entryText = nullptr);
+    // The file's text as a load would read it, without a loading attempt: the same four checks as readModuleSource, in
+    // its order, and no refusal, no log and no backend call; nullopt at the first that fails.
+    [[nodiscard]] std::optional<std::string> peekModuleSource(std::string_view key) const;
     [[nodiscard]] HeldValue startModule(LoadAttempt& load, std::string_view key, ImportPath path, std::uint64_t& watch);
     [[nodiscard]] JSModuleDef* compileModule(std::string_view key, std::string_view importer);
     // Every check before a module's compile, in order: a source, the depth cap, the deadline, the size, the size cap,
@@ -250,6 +315,26 @@ struct Vm::Impl {
                                    JSValueConst attributes) noexcept;
     static int checkImportAttributes(JSContext* context, void* opaque, JSValueConst attributes) noexcept;
 
+    // ---- script classes and instances (vm_scripts.cpp, task 4.3.3) ------------------------------------------------
+    [[nodiscard]] ScriptLoadResult loadScriptCall(std::string_view virtualPath);
+    [[nodiscard]] ScriptInstanceResult createInstanceCall(std::string_view virtualPath);
+    [[nodiscard]] ScriptStatus destroyInstanceCall(ScriptInstance instance);
+    void releaseScripts() noexcept;  // shutdown: every instance object and class, before the context; then clears both
+    // The default export of the entry's current generation when it is a class, else JS_UNDEFINED. A failure is adopted
+    // into `evaluation`, an engine refusal is set in `refusal` and logged.
+    [[nodiscard]] HeldValue takeScriptClass(std::string_view key, EvalResult& evaluation,
+                                            std::optional<ScriptRefusal>& refusal);
+    // One construction of `scriptClass`: an exception is adopted into `evaluation`, a Proxy is refused.
+    [[nodiscard]] HeldValue constructInstance(JSValueConst scriptClass, EvalResult& evaluation,
+                                              std::optional<ScriptRefusal>& refusal);
+    // Every live instance of `record`, in creation order: constructs from `scriptClass` into `fresh`, carries the
+    // running instance's fields into each (counting them), and stops at the first failure or refusal. Reads the slots'
+    // objects and changes neither a slot nor the record.
+    void rebuildInstances(const ScriptRecord& record, JSValueConst scriptClass, EvalResult& evaluation,
+                          std::optional<ScriptRefusal>& refusal, HeldBatch& fresh, FieldCounts& counts);
+    void endScriptCall(EvalResult& evaluation);  // the call's job drain and tail, in evaluateModuleCall's order
+    void logRefusal(const ScriptRefusal& refusal) const;
+
     // ---- state: `heap` FIRST, so it is destroyed LAST ------------------------------------------------------
     internal::HeapAccounting heap;
     ScriptApi scriptApi;  // the `engine` namespace's state (script_api.hpp); the context opaque points at it
@@ -284,6 +369,11 @@ struct Vm::Impl {
     std::vector<ModuleWatch> moduleWatches;      // the current call's, then the carried ones (vm_modules.cpp)
     std::uint64_t nextWatchId = 0;               // never reused, so a stale tag matches no later watch
     std::uint64_t moduleInstances = 0;
+    // The script classes (task 4.3.3). scripts holds each path's last good class and its live instances; the slots hold
+    // the instances' current objects. Both change on the VM's thread, outside the backend's callbacks.
+    std::map<std::string, ScriptRecord, std::less<>> scripts;  // by canonical key
+    SlotMap<InstanceSlot, ScriptInstanceTag> instanceSlots;
+    bool loadingScript = false;  // the current call is a loadScript: the pending-await WARN is the load's to refuse
 };
 
 }  // namespace engine::script

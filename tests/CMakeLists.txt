@@ -48,6 +48,7 @@ add_executable(aero_tests
     script_module_test.cpp    # task 4.1.2 — ES modules through the VFS: the grammar, the cache, the statuses (ML1-ML51)
     script_binding_test.cpp   # task 4.2.1 — the binding runtime over a fixture table (BN1–BN5, BN7–BN36)
     script_declarations_test.cpp # task 4.2.2 -- the declarations against a live VM (DT1-DT7)
+    script_reload_test.cpp # task 4.3.3 -- script classes, instances and hot reload (HR1-HR32)
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)

@@ -39,6 +39,7 @@ add_library(aero_script STATIC
     src/vm.cpp
     src/vm_errors.cpp
     src/vm_modules.cpp
+    src/vm_scripts.cpp
     src/heap_accounting.cpp
     src/module_graph.cpp
     src/bytecode_format.cpp

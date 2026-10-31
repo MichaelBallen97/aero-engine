@@ -104,6 +104,7 @@ class ModuleTable {
 public:
     [[nodiscard]] std::uint32_t generation(std::string_view key) const;  // 1 for a key never compiled
     [[nodiscard]] void* instance(std::string_view key) const;            // the current generation's, or nullptr
+    [[nodiscard]] ModuleState state(std::string_view key) const;         // the current generation's; Unloaded if unseen
     void beginCompile(std::string_view key);  // creates the record (Unloaded, generation 1); clears its imports
     void markLoaded(std::string_view key, void* instance);
     // Records an edge from a module that HAS a record; an importer without one (a script) records nothing.
