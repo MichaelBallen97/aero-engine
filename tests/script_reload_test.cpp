@@ -218,6 +218,9 @@ public:
         if (found == files.end()) {
             return std::nullopt;
         }
+        if (const auto lie = sizeOverrides.find(relPath); lie != sizeOverrides.end()) {
+            return lie->second;  // HR41: a size that is not the file's (the file grew after it was asked)
+        }
         return static_cast<std::uint64_t>(found->second.size());
     }
 
@@ -243,6 +246,8 @@ public:
         const auto found = readCounts.find(relPath);
         return found == readCounts.end() ? 0U : found->second;
     }
+
+    std::map<std::string, std::uint64_t, std::less<>> sizeOverrides;  // HR41: the size fileSize answers
 
 private:
     mutable std::map<std::string, std::string, std::less<>> files;
@@ -1850,6 +1855,50 @@ TEST_CASE("script: a script file over the size cap is refused by the loader and 
     CHECK(script_test::completion(fx.vm, "a.hello()") == "v1");
 
     log.clear();
+    fx.files->set("s/a.js", versioned("v2"));
+    const ScriptLoadResult working = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(working.status) == "Ok");
+    CHECK(working.instancesMoved == 1U);
+    expose(fx.vm, a, "a");
+    CHECK(script_test::completion(fx.vm, "a.hello()") == "v2");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a script file that grew past the cap after its size was asked is refused by the loader (HR41)") {
+    script_test::LogCapture log;
+    Fixture fx{script_test::patient(VmConfig{.heapLimitBytes = MIB})};
+    constexpr std::string_view KEY = "res://s/a.js";
+    fx.files->set("s/a.js", versioned("v1"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, KEY);
+    expose(fx.vm, a, "a");
+
+    // A valid script one byte over the cap whose size is reported as 16: the size check passes, the bytes do not.
+    std::string big = versioned("v-big") + "//";
+    big.append(MIB + 1 - big.size(), 'x');
+    REQUIRE(big.size() == MIB + 1);
+    fx.files->set("s/a.js", big);
+    fx.files->sizeOverrides["s/a.js"] = 16;
+    // The comparison's own read is refused after the fact, so no trigger finds its bytes remembered: each is the
+    // loader's, and each reads the file twice (the comparison, then the loader).
+    for (int trigger = 1; trigger <= 2; ++trigger) {
+        INFO("trigger ", trigger);
+        log.clear();
+        const std::size_t readsBefore = fx.files->reads("s/a.js");
+        const ScriptLoadResult refused = fx.vm.loadScript(KEY);
+        CHECK(scriptStatusLabel(refused.status) == "LoadError");
+        CHECK(theOneError(log) ==
+              "script: res://s/a.js: load error: TypeError: cannot load 'res://s/a.js': its 1048577 bytes are over "
+              "the 1048576-byte source limit (the VM's heap limit)");
+        CHECK(refused.instancesMoved == 0U);
+        CHECK(fx.files->reads("s/a.js") == readsBefore + 2U);
+    }
+    expose(fx.vm, a, "a");
+    CHECK(script_test::completion(fx.vm, "a.hello()") == "v1");
+
+    log.clear();
+    fx.files->sizeOverrides.clear();
     fx.files->set("s/a.js", versioned("v2"));
     const ScriptLoadResult working = fx.vm.loadScript(KEY);
     CHECK(scriptStatusLabel(working.status) == "Ok");
