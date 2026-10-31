@@ -1406,12 +1406,17 @@ TEST_CASE("script: a reload of 10000 instances pairs each with its own running o
 }
 
 TEST_CASE("script: a load or a construction its time budget ended is Interrupted with one record (HR33)") {
-    const std::string_view bodies[] = {
+    const std::array<std::string_view, 2> bodies{
         "var K = class {};\nawait new Promise(() => { for (;;) {} });\nexport { K as default };\n",
         "var K = class {};\nPromise.resolve({ then() { for (;;) {} } }); await new Promise(() => {});\n"
         "export { K as default };\n"};
+    // The first line of the one record the VM's next call logs after the interrupted reload.
+    const std::array<std::string_view, 2> nextRecords{
+        "script: next.js: uncaught InternalError: interrupted",  // the executor's leftover job
+        ""};                                                     // none: the thenable's next call is clean
     const std::string interrupted = "script: res://s/p.js: interrupted after exceeding the 100 ms time budget";
-    for (const std::string_view body : bodies) {
+    for (std::size_t i = 0; i < bodies.size(); ++i) {
+        const std::string_view body = bodies[i];
         INFO(body);
         script_test::LogCapture log;
         Fixture fx{VmConfig{.callTimeBudget = std::chrono::milliseconds{100}}};
@@ -1435,8 +1440,20 @@ TEST_CASE("script: a load or a construction its time budget ended is Interrupted
         const ScriptLoadResult reloaded = rx.vm.loadScript(KEY);
         CHECK(scriptStatusLabel(reloaded.status) == "Interrupted");
         CHECK(firstLine(theOneError(reloadLog)) == interrupted);
-        // What the interrupted await left queued runs in the next call and reports there; one throwaway call takes it.
-        static_cast<void>(rx.vm.evaluateScript("0", "drain.js"));
+        // The interrupted reload skips its drain, so what its budget left queued runs in the VM's next
+        // call. After the promise executor's interrupt, that call runs the leftover rejection job and
+        // answers Exception with its one record; after the thenable's, it is clean. Pinned as measured:
+        // a later VM-core change that settles the leftover inside the interrupted call changes this case
+        // on purpose.
+        reloadLog.clear();
+        const engine::script::EvalResult next = rx.vm.evaluateScript("0", "next.js");
+        if (nextRecords[i].empty()) {
+            CHECK(evalStatusLabel(next.status) == "Ok");
+            CHECK(reloadLog.countAtLeast(LogLevel::Warn) == 0U);
+        } else {
+            CHECK(evalStatusLabel(next.status) == "Exception");
+            CHECK(firstLine(theOneError(reloadLog)) == nextRecords[i]);
+        }
         reloadLog.clear();
         expose(rx.vm, live, "a");
         CHECK(script_test::completion(rx.vm, "a.hello() + a.tag") == "v1x");
