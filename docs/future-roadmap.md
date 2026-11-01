@@ -16,6 +16,7 @@
 | **Input action-mapping assets** | v1 exposes device state (4.4.3, touch in Phase 6); mapping layers are v2 polish | An asset type + indirection over the existing input API — no platform-layer changes |
 | **Save-game framework** | v1 games hand-roll saves with the serialization primitives | Helpers over the generated serialization (ADR-004's consumer #2) |
 | **TypeScript DAP debugger** | v1 ships source-mapped errors (4.3.4); a full debug adapter is sizeable | quickjs-ng exposes the hooks; source maps already exist from 4.3.1 |
+| **Script fields in the Inspector** | v1 scripts keep their per-entity values in code: a Phase 5 game can tune per entity with one script per variant, which fails `docs/06`'s second question (weighed at 4.4.1's record) | A per-script payload on `ScriptComponent` that the reflectable subset cannot hold today (it has no array), a scene-format addition (`docs/09`), and an Inspector card built from the script's own fields, like Unity's public fields and Godot's `@export` |
 | **Separate-process play mode** | v1 plays in-process (risk R11, mitigated by autosave 4.7.3) | The runtime player (5.2.1) is the natural host; editor ↔ player IPC is the new piece |
 | **Crash reporter (minidumps)** | Solo-maintainable v1 relies on ASan/UBSan + logs | Runtime-side minidump write + a symbol pipeline in CI |
 | **Prefab overrides & nesting** | v1 ships prefab-lite (4.4.4): instantiate a saved entity-tree | Override storage rides the existing serialization; editor diffing UI is the real cost |

@@ -68,6 +68,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | 4.3.2 Bytecode compile & cache | #129 | `c26b890` | **3 / 3**, nothing failed (the editor GUI driven on macOS to write a real project's two bundles, then the cook's exit, silence, header bytes and size; a 519 KB bundle cooked in 0.10 s; the bytecode cases under `leaks`, 0 leaks); rows 1–3 re-run on the final head with byte-identical artifacts. Six code-review rounds (14 findings: 10 closed, 4 wording minors recorded); a 77-row doctest and 12-row ctest sabotage matrix whose four holes were closed and re-run red; CI red twice on lane-only failures (an MSVC C2280 and a Linux clang-tidy finding, then ML35 on Windows Debug alone, R33), the third run green |
 | 4.3.3 Script hot reload | #130 | `08025f9` | **3 / 3**, nothing failed (terminal rows, no editor UI: the HR cases under `leaks`, 0 leaks; a reload of 10 000 instances in 3 ms in Release and 32 ms in Debug; the pinned esbuild's class shape, line for line). Three code-review rounds (two blocking findings, each a refusal made after the time budget had ended, and four should-fix, all closed); a 69-row sabotage matrix, 68 red and one non-finding, whose holes HR38–HR41 closed and re-ran red; R34 (the job an interrupted call leaves) recorded; CI green on the first push (`41186262804`) and on `main`'s push run (`41190384148`), 6 / 6 each |
 | 4.3.4 Source-mapped errors | #131 | `4d9d1ef` | **2 / 2**, nothing failed (terminal rows, no editor UI: SR1–SR30, CS11–CS16, ST43 and ST44 under `leaks`, 0 leaks; SR9's first mapping of 120 000 segments in 2.9–3.2 ms in Release and 79–80 ms in Debug, the second in 0 µs and 13–17 µs). Two code-review rounds (two should-fix findings, a cooked read keeping the map a failed JavaScript compile left under its name and the VM-tier arms no case reached, and two minors, all closed); a 99-row sabotage matrix whose ten holes SR22–SR30 and CS16 closed and re-ran red; R35 (quickjs's recorded positions) and R36 (nothing of a generation freed before teardown) recorded; CI green on the first push (`41252762043`) and on `main`'s push run (`41259313081`), 6 / 6 each |
+| 4.4.1 ScriptComponent + lifecycle | #132 | `63ca43a` | **12 / 12**, nothing failed (the editor GUI driven on macOS: the Script kind's colour and filter, `.d.ts` and `.TS` staying Text, Add Component, attaching by drop and by picker, Undo and Redo, a saved and reopened scene naming the `.meta` guid, refused drops on the Hierarchy and the Viewport; the lifecycle cases under `leaks`, 0 leaks; BN57's 1 000-instance update at a median of 0.563–0.574 ms in Release; LC31's `stop()` over 10 000 instances in 53.0–54.1 ms in Debug). Two code-review rounds (one should-fix, the suspension WARN counting over half-moved run-order entries during a detach, and one minor, both closed); a 92-row sabotage matrix whose nine holes LC34–LC39, I369 and VM82 closed and re-ran red; R37 (the Debug recursion depth from a hook) recorded and the `bindWorld` handoff's 4.4.1 half closed; CI green on the first push (`41307754224`, 6 / 6) and on `main`'s push run (`41314380171`, 6 / 6) |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -20943,3 +20944,240 @@ internal `source_map.hpp`, and links `aero::reflect` `PRIVATE`; `vm.hpp`, `vm_im
 `vm_modules.cpp` grow; `tests/script_source_map_test.cpp` joins `aero_tests`; the editor's `console_model.{hpp,cpp}` and
 `console_panel.cpp` change. Docs: `docs/08` (R35, R36, one unowned handoff and the validation debt), the phase file, and
 the scripting and editor-invariants rule files.
+
+### 4.4.1 — ScriptComponent + lifecycle — a `.ts` file is a Script asset an entity's ScriptComponent names, and a ScriptSystem runs one instance of its class per entity through `onInit`, `onUpdate(dt)` and `onDestroy`, with one record per failure, after which the instance stops until its script reloads
+
+A script now runs per entity: `engine::ScriptComponent`, the eleventh built-in, names a Script asset (a `.ts` file the
+transpiler bundles) by GUID, and `engine::script::ScriptSystem` makes one instance of the script's default-exported
+class per entity of one World, calls `onInit` once, `onUpdate(dt)` on every update and `onDestroy` once at a detach or
+at `stop()`, each instance holding its own fields and its entity as `this.entity`. Merged as PR #132 (`63ca43a`, a
+true merge commit): fourteen commits on `58e54bd` — the plan's nine steps, round 1's two fix commits and its
+regression cases, and the two commits that closed the sabotage holes. CI: run `41307754224` at `8c31e3a`, 6 / 6 green on
+the first push; `main`'s push run `41314380171` on the merged head, 6 / 6 green. This is the second half of Story 1's
+first line ("...and it becomes a script asset I can attach to an entity") and the engine side of its second line and
+of its fifth line's `onDestroy`; nothing in the editor runs a script before 4.7.4, so Story 1's demo waits on 4.7.1,
+4.7.2 and 4.7.4.
+
+**What shipped.**
+- **The Script asset kind** (`asset_view.{hpp,cpp}`, `asset_drag.cpp`, `editor_theme.hpp`, `asset_browser_panel.cpp`):
+  `AssetKind::Script`, inserted before `Unknown`, is the kind of exactly the files `isScriptAssetName` accepts (a
+  case-sensitive `.ts`, never `.d.ts`), so the browser never calls a file a script that the transpiler does not bundle:
+  `.d.ts`, `.js` and an upper-case `.TS` stay Text, and `a.D.ts` is a Script. Label `Script`, colour
+  `EDITOR_THEME.assetKind.script` (208, 176, 64), the eighth kind-filter option, draggable, and accepted by
+  `classifyAssetDrop` on an asset-field row only. `AERO_ASSET(script)` resolves through the derived token rule, so the
+  Inspector's Script row is E.3.3's asset-reference widget filtered to scripts, by drop and by picker, with no
+  Inspector code of its own.
+- **`engine::ScriptComponent`** (`engine/scene/include/aero/scene/script_component.hpp`, header only): `Guid script
+  AERO_ASSET(script){}` and a defaulted `==`, 16 bytes; a nil `script` names no script, counted and never warned.
+  Registered eleventh, after `SpotLight`, at every generation site and through the whole component-count sweep. Its
+  scene payload `{"script": "<32 hex>"}` is additive to scene v1 (`docs/09` §2.3's eleventh sentence and
+  `full.scene.json`'s fixture row). Add Component lists it under the Lucide `code` glyph (U+E093, the eleventh row of
+  `componentIconTable()`); `entityKindFor` is unchanged. Scripts see it as `engine.ScriptComponent`, its `script` a
+  32-hex string, and `--emit-dts` types it from the same tables.
+- **`engine.Script`** (`script_api.cpp`, `prelude.d.ts`): a frozen native constructor made through `newNative`, with no
+  class id. It builds the instance from `new.target`'s own prototype and defines `entity` on it from the entity the VM
+  holds pending around an engine-driven construction, so a class that extends it already sees `this.entity` in its
+  field initializers. It refuses a `new.target` that fails the class rule (`checkClass`, now shared with
+  `takeScriptClass`) and a direct `new`, each with a `TypeError` and no script code run (`engine.Script: new.target is
+  not a class`; `engine.Script is a base class: a script's class extends it`). `Script` is a reserved component script
+  name. The prelude declares it with a protected constructor (a direct `new` is TS2674), `readonly entity: Entity` and
+  the three hooks as optional methods; the drift reader learned a base class, optional methods and the protected
+  constructor.
+- **The attach** (`vm.hpp`, `vm_scripts.cpp`): `Vm::createInstance(path, Entity)` refuses `NotLoaded`, `NoWorld` and
+  `DeadEntity` (the last two appended to `ScriptStatus`) before any construction, constructs with the entity pending,
+  and then checks that the instance holds its own `entity`: the base's define, or the VM's after a constructor that
+  does not extend the base. An instance that cannot hold it (frozen, sealed, non-extensible, or with a non-configurable
+  own `entity`) is refused `NotAClass` with one ERROR. `entity` is an own, non-enumerable, read-only, configurable data
+  property, so 4.3.3's carry neither moves nor counts it. Only the first base construction of an engine-driven
+  construction takes the pending entity; a `new` the constructor makes, and a job it queues, get none. A reload
+  re-creates each attached instance through the same steps under the binding it was attached with, the define landing
+  before the carry, and an object that cannot hold `entity` refuses the whole reload. 4.3.3's `createInstance(path)` is
+  unchanged.
+- **One hook, one call** (`Vm::callHook`, `ScriptHook`, `Vm::callTimeBudget()`): the hook is read from the instance
+  inside its own call (a prototype method, an own arrow field or a getter's result) and is absent, with nothing called
+  and nothing logged, when it is not a function. It runs with `this` the instance, under the call's own budget, and
+  answers the status, the error, whether it ran and whether the call reported an unhandled rejection. A handle that
+  names no live instance is `UnknownInstance` with one ERROR.
+- **A destroy without a scan** (D6, `vm_impl.hpp`): a script's live instances are a `std::map` keyed by creation
+  sequence, so iteration is creation order (which a reload's re-creation and its carry read) and a destroy is one erase,
+  where 4.3.3 ran `std::erase` over a vector.
+- **`engine::script::ScriptSystem`** (`engine/script/include/aero/script/script_system.hpp`, public, and
+  `src/script_system.cpp`; quickjs-free, on `Vm`'s public API alone): it borrows a `Vm`, a `World` and a resolver from a
+  script `Guid` to its `res://` path, and binds the World at construction (a refused bind leaves it inert). `update(dt)`
+  snapshots every entity with a non-nil ScriptComponent before any script runs; detaches, in run order, each instance
+  whose entity is gone, lost its component or names another script (`onDestroy` when its `onInit` succeeded, then the
+  destroy; every release runs over the whole run order, which is compacted afterwards); attaches new instances in
+  ascending entity index, resolving once per `Guid` and loading once per path; then runs `onInit` for each new or
+  reload-pending instance and `onUpdate(dt)` for every running one, in run order, which is attach order. `dt` reaches
+  scripts as given when finite and not negative, else as 0. `stop()`, idempotent and run by the destructor, calls
+  `onDestroy` for every instance whose `onInit` succeeded, destroys every instance and unbinds the World. `update` and
+  `stop` return a `ScriptSystemReport` of counts, and `stateOf(entity)` answers each entity's state.
+- **The failure policy** (D5): every failure is the VM's one ERROR, after which that instance or script stops until its
+  script reloads. A resolver answering empty is counted, never logged; a refused load or attach is remembered rather
+  than retried every frame; a hook that throws, runs out of heap or reports a rejection faults its instance (no more
+  `onUpdate`; `onDestroy` still runs when `onInit` succeeded). An Interrupted hook or constructor suspends the whole
+  script in that system with one WARN (`script: <path>: suspended: a hook ran past its <B> ms time budget; its <N>
+  instances run no hook until the script reloads`), and the system then makes one empty `evaluateScript` named with
+  that script's path, so R34's left-over job answers for that script instead of faulting the next instance.
+  `reloadScript(guid)` re-resolves and reloads, and on `Ok` clears every failure remembered for that script: a faulted
+  instance resumes `onUpdate` without running `onInit` again, and a suspended one resumes by whether its `onInit` had
+  run.
+- New tests: `tests/scene_script_component_test.cpp`, `tests/script_attach_test.cpp` and `tests/script_system_test.cpp`
+  in `aero_tests`; `tests/fixtures/scripts/lifecycle/mover.{ts,js}`, a committed esbuild bundle (the 4.3.2 fixture
+  precedent) for the end-to-end cases; `tests/typescript/fixtures/clean/mover.ts` and `prelude_only/script.ts` for the
+  type-check.
+
+**Code-review rounds.** Round 1 (on `58e54bd..0dbf6e2`, the nine steps): no blocking, one should-fix and one minor. The
+should-fix: `detachGone` moved each kept run-order entry out while releasing the dropped ones in the same loop, so an
+Interrupted `onDestroy` at a detach suspended its script with a WARN whose `<N>` counted over half-moved entries
+(libc++ empties a moved-from `std::string`, as libstdc++ and MSVC do) and read `its 1 instances` where three were
+suspended. `36a8d85` fixed it in the plan's own C.3 phase-2 order (release over the intact run order, then compact),
+and `f5a0fb6` added LC32 (an interrupted `onDestroy` at a detach, red under the old loop: `its 1 instances` against 3)
+and LC33 (the same at `stop()`, red under two further seeds). The minor, `tests/CMakeLists.txt` naming DT22–DT23 for a
+file that holds DT22–DT25, closed in `29386c4`. Round 2 (on `0dbf6e2..f5a0fb6`): approved, no new finding. Recorded
+here and not fixed, as a wording-only minor found after the loop ended: `tests/CMakeLists.txt`'s listing comments
+still read VM66–VM81 for `script_attach_test.cpp`, which also holds VM82, and LC1–LC25, LC27, LC31–LC33 for
+`script_system_test.cpp`, which also holds LC34–LC38.
+
+**The sabotage matrix.** 92 doctest rows through `macos-debug` (77 in `aero_tests`, 11 in `aero_editor_shell_test`, 2 in
+`aero_scene_serialize_test`, 1 each in `aero_editor_inspector_test` and `aero_editor_imgui_test`), with no compile-red
+or witness rows, run at `f5a0fb6`: 83 RED and 9 HOLE. Eight holes were predicted at design (S35, S54, S59, S61, S63,
+S67, S77, S85); the ninth, S13 (`AERO_ASSET(script)` spelt `scripts`), got past I368 because an unknown token falls
+back to "any asset" and the picker's only other candidate, a `.d.ts`, is Text. `42f2e57` closed eight: I369 (the
+picker offers nothing of another kind, S13), LC34 (a system destroyed without `stop()` still runs each `onDestroy` and
+unbinds, S85), LC35 (a nil script is neither resolved nor counted, S54), LC36 (a failed attach is not counted again
+after its entity is renamed to a working script, S59), LC37 (a path the VM loaded before the system's first attach
+answers `Unchanged` and still attaches, S61), LC38 (a module body interrupted inside a promise executor: without the
+settle call the next load takes the left-over job and is refused, S63 and S77) and LC39 (an `onInit` that clears a
+later entity's ScriptComponent keeps that entity's `onInit` from running, S67). Its subject says "nine": S35 was first
+called unobservable after a trace of `rebuildInstances`, where `PendingEntityScope`'s destructor repeats the seeded
+`end()` within the same iteration. The seed's site is `createInstanceCall`, whose scope is function-wide, so without
+the `end()` the entity stays pending through the call's job drain. VM82 (`8c31e3a`: a plain class whose constructor
+queues a job doing `new D()`, `D` extending `engine.Script`) is red under it. The nine re-ran RED at `8c31e3a`: 92 /
+92. No product file changed after the matrix's sha.
+
+**Traps found, each measured.**
+- **A hook call costs the same at any count** (Q1): ~100 ns per call in Release for an empty or absent hook and ~460 ns
+  with a Transform write; ~2.6 µs and ~11.5 µs in Debug. One call per frame running every hook would save only ~64 ns
+  per instance in Release, and would let one runaway hook end the budget for every instance after it. BN57's update
+  over 1 000 Transform-writing instances: a median of 0.56–0.61 ms in Release.
+- **4.3.3's destroy was linear in the script's live instances**: 10 000 destroys in creation order took 1.58 s in Debug
+  and 17 ms in Release (`std::erase` over a vector). With D6, LC31's `stop()` over 10 000 instances, `onDestroy` calls
+  included, takes 53–56 ms in Debug.
+- **The `entity` define** costs 184 B and 3 allocations per instance. It answers 0, with nothing pending, on a frozen,
+  sealed, non-extensible or non-configurable shape (Q2): the case `holdEntity` refuses as `NotAClass`.
+- **A base class compiled from script source** (`class Script {}`) runs a Proxy `new.target`'s trap, and its field
+  initializers see no entity. The native base runs no trap and costs +775 B in Release and +791 B in Debug, 7
+  allocations and one atom per VM (Q3).
+- **Async and generator hooks** (Q4b): an `async` hook that throws ends its call `Ok`, with one `unhandled promise
+  rejection` record and `unhandledRejections` + 1; a generator method's body never runs.
+- **R34 reaches hooks** (Q4c): an endless hook is Interrupted at ~1 000.2 ms, and after an awaited executor loop the
+  next call, whichever instance it belongs to, answers Exception. Hence the settle call.
+- **Recursion from `onUpdate`** (Q5): 56 levels in Debug and 535 in Release at 512 KiB, while a realistic hook chain
+  uses 4 / 5 frames. Release recursion from global code now reads 536, against 4.1.1's 544; the cause was not
+  investigated.
+- **The heap stays flat** over 10 000 frames × 1 000 instances (Q7). BN57 holds the heap and live-allocation figures
+  equal after each of 200 updates, so a per-update retention is a finding, never a flake.
+- **tsc 5.9.3 on a script class** (Q6): a wrong hook signature is TS2416, an assignment to `this.entity` TS2540,
+  `this.entity` in a class with no base TS2339, and `new engine.Script()` TS2674. A misspelt hook is silent unless
+  written with `override` (TS4117), and `noImplicitOverride` would demand `override` on every hook (TS4114), so the
+  template keeps it off.
+- **A throwing class-field initializer's frame names line 0** (Q6), a shape apart from R35's; recorded beside R35.
+- **The namespace budget moved** (`vm.hpp`, ML76): with eleven built-ins and `engine.Script` bound, an empty VM costs
+  166 821 B in Debug and 154 357 B in Release (1 669 allocations) and binds 778 atoms (653 over an empty table).
+- **The plan's component-count sweep missed two tallies**: G2's `componentsAttached` and G6's `seen` over
+  `full.scene.json` in `scene_serialize_test.cpp` (15 → 16), both red on the first run. `.claude/rules/components.md`
+  now names them.
+- **A recompiled TU re-emits its old warnings**: warn-sweep's rebuild surfaced two `-Wunused-result` in
+  `render_sky_test.cpp` on `skyOnce`, already `[[nodiscard]]` at `58e54bd`; both now cast to `void`.
+
+**Where the implementation departed from the plan.**
+- `Script` joined `Vec3`, `Quat` and `Entity` as a reserved component script name (`component_bindings.cpp`, plus a
+  refusal row in `script_binding_test.cpp`), so no component can define `engine.Script` twice.
+- BN30 (no hand-written script source names a built-in component) exempts exactly `script_system.cpp` ×
+  `ScriptComponent`, with a check that the file does name it.
+- An Interrupted hook suspends its script and does not fault the instance, so `report.faulted` does not count it (C.3's
+  failure row b); a reload resumes a suspended instance by whether its `onInit` had run (LC22).
+- AR8 and MP19 are named in their files' `AR8: …` and `MP19: …` form, selected with `AR8:*` and `MP19:*`.
+- The LC cases publish under `res://s/<file>` (the fixture's helper), not LC15's `res://scripts/...`.
+- `MemoryBackend` and `classSource` moved into `script_binding_support.hpp`, which the component test shares.
+- `holdEntity` checks `newOpaqueObject` for an exception before the define, and `scriptHookName` answers an empty view
+  for an out-of-range hook.
+- VM81 pins `DEFAULT_CALL_TIME_BUDGET` for a default `VmConfig` and `MAX_CALL_TIME_BUDGET` for `patient()`.
+- LC31 expects one ERROR per probe handle, because `callHook` logs one for an unknown handle.
+- I368 and I369 pick their tools-ON or tools-OFF arm at run time (`componentFieldsAreReflected`), because test files
+  take no `#if`.
+- Several steps wrote the source and its cases together, so HR42, HR43 and the cases of Steps 6 and 9 were never seen
+  red before they passed; the sabotage matrix stands in for those red runs.
+
+**What was deliberately left out, and which task holds each.**
+- Running scripts in the editor: Play, Pause, Step and Stop (4.7.1); the snapshot and restore (4.7.2); the play
+  session's VFS mount, resolver, time budget and reload trigger (4.7.4). `reloadScript` is what 4.7.4 calls.
+- The entity API beyond `get`, `has`, `add` and `remove`: spawn, destroy, find, query, transform helpers and vector
+  math (4.4.2); input (4.4.3); entity-tree spawning (4.4.4).
+- Script fields shown and edited in the Inspector (Unity's public fields, Godot's `@export`): `docs/future-roadmap.md`,
+  a v2 candidate. It fails `docs/06`'s second question (a Phase 5 game can use one script per variant), and it needs a
+  per-script payload the reflectable subset cannot hold, a scene-format addition and new Inspector UI.
+- More than one script per entity, an `enabled` flag, execution-order settings, fixed-step, late-update or collision
+  hooks, and coroutines: non-goals.
+- Attaching a script by dropping it on a Hierarchy row or the Viewport, and catching a misspelt hook beyond `override`:
+  unowned handoffs (`docs/08`).
+- Running bytecode during play (the editor runs the JavaScript, 4.3.2); gating script features by project language
+  (4.6.1); cooking ScriptComponent references for a game (Phase 5).
+- A patched quickjs-ng (R21, R23, R24, R25, R31), R34's VM-core fix (an unowned handoff) and freeing old generations
+  (R36).
+- A larger Debug stack, `/STACK` or an optimised Debug backend (D8): R37.
+- The Phase 4 sample's scene and scripts: the task that runs Story 1's demo.
+
+**The sentences that govern new work.** An attached instance holds its entity as an own, read-only, non-enumerable,
+configurable `entity`, defined after construction and before a reload's carry under the binding it was attached with,
+and never a field. A hook is one VM call with its own budget, status and record, never one call per frame, and any
+call that ends Interrupted is followed by one empty evaluation named with its script's path. `ScriptSystem` uses
+`Vm`'s public API only and is its VM's only binder while it lives; a bind or a `loadScript` made around it clears none
+of its failures. An update reads its snapshot before any script runs, every hook runs only while its entity is alive
+and still names its script, and a detach releases over the whole run order before compacting it. These live in
+`.claude/rules/scripting.md`.
+
+**Validation and sabotage status — macOS 12 / 12 (2026-11-01), Windows and Linux unrun.** `macos-release` (T1, T2) and
+`macos-debug` (T3, and the editor run as a signed `.app` and driven with synthetic input) at `8c31e3a`. T1: `leaks
+--atExit` over the 55 selected lifecycle cases read `55 | 55 passed` and `0 leaks for 0 total leaked bytes`, and over
+LC32–LC39 and VM82 the same. T2: BN57's update over 1 000 Transform-writing instances in Release, a median of
+0.563–0.574 ms (bound 1.0 ms) and a p95 of 0.628–0.703 ms (bound 1.5 ms) over three runs. T3: LC31's `stop()` over
+10 000 instances in Debug, 53.0–54.1 ms (bound 300 ms), and HR43's two destroy loops 49 and 49–52 ms. The editor rows:
+G1 mover.ts's tile dot reads exactly (208, 176, 64) and mover.d.ts's (144, 144, 144); G2 the filter lists Script
+between Material and Unknown and shows mover.ts alone; G3 `Shout.TS` lists as Text; G4 Add Component lists
+ScriptComponent with its code icon, and the card has one Script row reading None; G5 a held mover.ts outlines the field
+in the accent (95, 184, 220) and its release names `mover.ts (Script)`, while mover.d.ts gets no outline and changes
+nothing; G6 one Undo clears the row and Redo restores it; G7 the picker offers None and mover.ts only; G8 Save Scene
+As, a quit and a reopen keep the row, and the scene file's guid equals `mover.ts.meta`'s; G9 drops on a Hierarchy row
+and on the Viewport highlight nothing and change nothing. One G5 drop of three, the first after the window had been
+maximised by something outside the pass, outlined the field and did not commit; the identical drag repeated at once
+committed. Synthetic drops are timing-sensitive, and 4.4.1 adds only `case AssetKind::Script:` labels to
+`asset_drag.cpp`'s two switches. No row was NOT EXECUTABLE on macOS. Off macOS, T1 is NOT EXECUTABLE (`leaks`) and T2,
+T3 and G1–G9 are owed by hand. CI is the only witness there: PR #132's run `41307754224` ran all 89 new cases green
+in Debug (ASan/UBSan) and Release on the Windows and Linux lanes, and clang-tidy found nothing on the Linux lane.
+
+Measured at `8c31e3a` on fresh build directories:
+- `aero_tests` **1834** (+74), `aero_editor_shell_test` **2517** (+9), `aero_editor_imgui_test` **375** (+2),
+  `aero_scene_serialize_test` **43** (+3), `aero_editor_inspector_test` **74** (+1), and **14 / 28** unchanged;
+  reflect-tools-OFF `aero_tests` 1812, shell 2475 and ImGui 375; shader-tools-OFF `aero_tests` 1694, shell 2517 and
+  ImGui 356.
+- `ctest -N` **233 / 220 / 107**, with `cooker.*` 81 in all three; the one entry added is
+  `reflect-gen.components_engine_script_component`.
+- The guards read math **645**, platform **98**, rhi **193**, scene **98**, golden-rule **195**, project-no-delete **A=8
+  B=113**, audio **11-3-62**, probes **7-64** and script **179-98-16**.
+
+**Case ids claimed:** AV68–AV71 (next free: AV72), DR28 (DR29), AR8 (AR9), MP19 (MP20), TH19 (TH20), SE1–SE5 (SE6),
+BN52–BN57 (BN58), IR23 (IR24), EK11 (EK12), HR42–HR47 (HR48), VM66–VM82 (VM83), DT22–DT25 (DT26), LC1–LC39 (LC40) and
+I368–I369 (I370).
+
+**Build & dependency impact:** no vcpkg port and no new target. `engine/scene` gains the header-only
+`script_component.hpp`, named in the root `CMakeLists.txt`'s component-header list (one ctest entry,
+`reflect-gen.components_engine_script_component`); `engine/script` gains the public `script_system.hpp` and
+`src/script_system.cpp`; `vm.hpp`, `vm_impl.hpp`, `vm_scripts.cpp`, `script_api.cpp`, `component_bindings.cpp` and
+`prelude.d.ts` grow. `aero_tests` gains `scene_script_component_test.cpp`, `script_attach_test.cpp` and
+`script_system_test.cpp`; the editor's `asset_view`, `asset_drag`, `editor_theme`, `editor_icons`,
+`entity_presentation` and `asset_browser_panel` change. Docs: `docs/09` §2.3, `docs/08` (R21, R34 and R35 extended,
+R37, the `bindWorld` handoff's 4.4.1 half closed, two unowned handoffs and the validation debt),
+`docs/future-roadmap.md` (script fields in the Inspector), the phase file, and the scripting, components and editor
+rule files.

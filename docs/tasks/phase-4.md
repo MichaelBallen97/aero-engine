@@ -223,6 +223,15 @@ error to the Console, and the VFS mount that decides whether a frame reads `res:
 Subtasks:
 - ScriptComponent (reflected) referencing a script asset
 - Lifecycle dispatch; per-entity instance state
+**Outcome:** a `.ts` file the transpiler bundles is a Script asset (its own kind, colour and filter entry; `.d.ts`,
+`.js` and an upper-case `.TS` stay Text), and `engine::ScriptComponent`, the eleventh built-in, names one by GUID: the
+Inspector sets it by drop or by picker, and scene v1 saves it as `{"script": "<32 hex>"}`. `engine::script::ScriptSystem`
+runs the lifecycle over one World: one instance of the script's default-exported class per entity, holding its entity
+as `this.entity` (a class that extends `engine.Script` already sees it in its field initializers); `onInit` once,
+`onUpdate(dt)` on every update in attach order, and `onDestroy` once at a detach or at `stop()`, each hook one VM call
+under its own budget. A failure is one ERROR and stops that instance, and an interrupt suspends its whole script with
+one WARN, until `reloadScript` succeeds. Nothing in the editor runs a script yet: Play and Stop are 4.7.1's, the
+restore 4.7.2's, and the play session that calls `update`, `stop` and `reloadScript` 4.7.4's.
 
 ### 4.4.2 Entity/world API · P0 · M · depends: 4.4.1
 **Goal:** the scripting surface for the world itself.

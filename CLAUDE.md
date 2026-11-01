@@ -20,18 +20,23 @@ cache, PR #129 `c26b890`: `aero_cooker script` cooks a bundle to a `.aeroscript`
 48 × the payload of free heap, R31, and the import path's C stack per level is a budget Windows Debug sees first, R33)
 and 4.3.3 (script hot reload, PR #130 `08025f9`: a script is an ES module whose default export is a class,
 `Vm::loadScript` is its load and every reload, all or nothing, and each field whose name and kind did not change keeps
-its value; identical bytes are `Unchanged`, so any trigger is safe, R29; R34 accepted). **4.3.4 (source-mapped errors,
-PR #131 `4d9d1ef`, 2 / 2 on 2026-11-01)**: every stack a VM describes names the `.ts` file, line and column through the
-source map its module's JavaScript names, read with that JavaScript and kept per generation, and the record's first
-line names the throw site; the Console shows a record's first line as its row and its frames in the row's tooltip.
-Nothing in the editor runs a script yet: 4.7.4's play session picks the VFS mount that decides whether a frame reads
-`res://assets/...` (an unowned handoff in `docs/08`), and quickjs's recorded positions can name a wrong line (R35). No
-quickjs-ng patch shipped (R21, R23, R24, R25, R31 stay open decisions in `docs/08-risks.md` and
-`docs/future-roadmap.md`). In `docs/tasks/phase-4.md`'s `## Stories`, Story 2 (4.7.3, 4.3.3, 4.7.4's hot-reload part,
-4.3.4) has the engine side of its third and fourth lines and waits on 4.7.3 and 4.7.4. The next task is **4.4.1
-(ScriptComponent + lifecycle)**: the order stays numeric. Story 1 has half of its first line (the JavaScript and source
-map exist; 4.4.1 makes a script attachable and adds `AssetKind::Script`). Story 3 (4.4.2, 4.4.3, 4.4.4, 4.2.2, 4.3.2)
-has its `.d.ts` and cook lines done. No story's demo has run.
+its value; identical bytes are `Unchanged`, so any trigger is safe, R29; R34 accepted) and 4.3.4 (source-mapped errors,
+PR #131 `4d9d1ef`: every stack a VM describes names the `.ts` file, line and column through its module's source map,
+and the Console shows a record's frames in its row's tooltip; quickjs's recorded positions can name a wrong line, R35).
+Epic 4.4 is open. **4.4.1 (ScriptComponent + lifecycle, PR #132 `63ca43a`, 12 / 12 on 2026-11-01)**: a `.ts` file the
+transpiler bundles is a Script asset (`AssetKind::Script`); `engine::ScriptComponent`, the eleventh built-in, names one
+by GUID, set in the Inspector by drop or by picker and saved additively in scene v1; and `engine::script::ScriptSystem`
+runs one instance of the script's class per entity of one World: `onInit` once, `onUpdate(dt)` per update and
+`onDestroy` once at a detach or at `stop()`, each hook one VM call, and each failure one ERROR that stops its instance
+(an interrupt suspends its script) until `reloadScript`. A script recursing past about 50 levels fails in Debug only
+(R37). Nothing in the editor runs a script yet: 4.7.4's play session calls `update`, `stop` and `reloadScript`,
+supplies the resolver, and picks the VFS mount that decides whether a frame reads `res://assets/...` (an unowned
+handoff in `docs/08`). No quickjs-ng patch shipped (R21, R23, R24, R25, R31 stay open decisions in `docs/08-risks.md`
+and `docs/future-roadmap.md`). In `docs/tasks/phase-4.md`'s `## Stories`, Story 1 (4.2.1, 4.3.1, 4.4.1, 4.7.1, 4.7.2,
+4.7.4's lifecycle part) has its first line and the engine side of its second line and of its fifth line's `onDestroy`,
+and waits on 4.7.1, 4.7.2 and 4.7.4; Story 2 (4.7.3, 4.3.3, 4.7.4's hot-reload part, 4.3.4) has the engine side of its
+third and fourth lines and waits on 4.7.3 and 4.7.4; Story 3 (4.4.2, 4.4.3, 4.4.4, 4.2.2, 4.3.2) has its `.d.ts` and
+cook lines done. No story's demo has run. The next task is **4.4.2 (Entity/world API)**: the order stays numeric.
 
 **Three phase gates are still open**, each owing its deliverable rather than code:
 - **Phase 0**: macOS-PASS, held open for the Windows/Linux 60 fps sign-off (`samples/phase-0-cube/VALIDATION.md`).
@@ -82,7 +87,7 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
 | **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.6 **CLOSED in code** — 24 of 24 merged, see the merged-task index in `docs/10` (E.6.4, `52a5b68`, the last). What is left is the gate below — its artifact `samples/phase-E-editor/` does not exist yet — and ONE unrun validation page (E.1.5), the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
-| **Phase 4** — Scripting | **OPEN.** Epic 4.1 **CLOSED** — 4.1.1 (#123) and 4.1.2 (#124) merged; Epic 4.2 **CLOSED** — 4.2.1 (#125) and 4.2.2 (#126) merged; Epic 4.3 **CLOSED** — 4.3.1 (#127), 4.3.2 (#129), 4.3.3 (#130) and 4.3.4 (#131) merged. Next: 4.4.1. |
+| **Phase 4** — Scripting | **OPEN.** Epic 4.1 **CLOSED** — 4.1.1 (#123) and 4.1.2 (#124) merged; Epic 4.2 **CLOSED** — 4.2.1 (#125) and 4.2.2 (#126) merged; Epic 4.3 **CLOSED** — 4.3.1 (#127), 4.3.2 (#129), 4.3.3 (#130) and 4.3.4 (#131) merged; Epic 4.4 **OPEN** — 4.4.1 (#132) merged. Next: 4.4.2. |
 | **Phase 4 gate** | Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly. Gate artifact: `samples/phase-4-scripting/` (the two-language demo). |
 
 ### Engine layers, in dependency order
@@ -94,14 +99,14 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 
 ### Test inventory — measured, never remembered
 
-**After 4.3.4 (#131)**, measured on both presets and on fresh build directories at `1b3be1c` (the merge's second
+**After 4.4.1 (#132)**, measured on both presets and on fresh build directories at `8c31e3a` (the merge's second
 parent; `main` had not moved, so the merge tree is the same).
 
 | Measurement | Value |
 |---|---|
-| `ctest -N` | **232** in both presets; **219** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **107** reflect-tools-OFF (119 `reflect-gen.*`, four doctest binaries and `typescript.clean` / `typescript.broken` removed), nothing added in either; `cooker.*` **81 / 81 / 81**; 4.3.4 added no entry |
-| doctest, seven binaries | **1760 / 2508 / 373 / 40 / 73 / 14 / 28** (`aero_tests` +30: SR1–SR30; shell +8: CS11–CS16, ST43, ST44; ImGui +1: I367); reflect-tools-OFF `aero_tests` **1746**, shader-tools-OFF **1620** |
-| guards | math **639**, platform **96**, rhi **190**, scene **96**, golden-rule **192**, project-no-delete **A=8 B=113** (2 permitted), audio **11-3-62**, probes **7-64**, script **177-96-15** |
+| `ctest -N` | **233** in both presets; **220** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **107** reflect-tools-OFF (120 `reflect-gen.*`, four doctest binaries and `typescript.clean` / `typescript.broken` removed), nothing added in either; `cooker.*` **81 / 81 / 81**; 4.4.1 added `reflect-gen.components_engine_script_component` |
+| doctest, seven binaries | **1834 / 2517 / 375 / 43 / 74 / 14 / 28** (`aero_tests` +74: SE1, SE2, BN52–BN57, DT22–DT25, HR42–HR47, VM66–VM82, LC1–LC39; shell +9: AV68–AV71, DR28, AR8, MP19, TH19, EK11; ImGui +2: I368, I369; serialize +3: SE3–SE5; inspector +1: IR23, the eleventh component moving both); reflect-tools-OFF `aero_tests` **1812** (the eight cases of `script_component_test.cpp` compile out), shader-tools-OFF **1694** |
+| guards | math **645**, platform **98**, rhi **193**, scene **98**, golden-rule **195**, project-no-delete **A=8 B=113** (2 permitted), audio **11-3-62**, probes **7-64**, script **179-98-16** |
 | `git ls-files` | `editor/src/*.cpp` **113**, `editor/include/aero/editor/*.hpp` **83** |
 
 The seven doctest binaries, in order: `aero_tests`, `aero_editor_shell_test`, `aero_editor_imgui_test`,
@@ -122,7 +127,9 @@ math, project-no-delete's A (its forbidden list gained `script_transpiler.cpp`) 
 `engine/script`'s private side), three test files and no target, moved math, platform, rhi, scene, golden-rule and script;
 4.3.3 and 4.3.4, which each added two files to `engine/script` (a source and an internal header: `vm_scripts.cpp` and
 `script_carry.hpp`, then `source_map.cpp` and `source_map.hpp`), one test file and no target, moved math, rhi,
-golden-rule and script, as 4.1.2 did.
+golden-rule and script, as 4.1.2 did; 4.4.1, which added a public header to `engine/scene`, a public header and a
+source to `engine/script`, three test files and no target, moved math, platform, rhi, scene, golden-rule and script, as
+4.3.2 did.
 
 How to measure and compare these figures: `.claude/rules/tests.md`.
 
