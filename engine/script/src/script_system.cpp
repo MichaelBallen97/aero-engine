@@ -181,21 +181,23 @@ struct ScriptSystem::Impl {
         ++report.detached;
     }
 
-    // Phase 2.
+    // Phase 2. The releases run over the run order as it stood when the phase began, so an interrupted onDestroy counts
+    // every instance of its path; the compaction follows.
     void detachGone(const std::map<std::uint64_t, Guid>& present, ScriptSystemReport& report) {
-        std::vector<Attached> kept;
-        kept.reserve(runOrder.size());
-        for (Attached& attached : runOrder) {
+        const auto isKept = [&present](const Attached& attached) {
             const auto found = present.find(entityKey(attached.entity));
-            if (found != present.end() && found->second == attached.script) {
-                kept.push_back(std::move(attached));
-            } else {
+            return found != present.end() && found->second == attached.script;
+        };
+        for (Attached& attached : runOrder) {
+            if (!isKept(attached)) {
                 release(attached, report);
             }
         }
-        const bool changed = kept.size() != runOrder.size();
-        runOrder = std::move(kept);
-        if (changed) {
+        const std::size_t before = runOrder.size();
+        runOrder.erase(std::remove_if(runOrder.begin(), runOrder.end(),
+                                      [&isKept](const Attached& attached) { return !isKept(attached); }),
+                       runOrder.end());
+        if (runOrder.size() != before) {
             reindex();
         }
         for (auto it = attachFailures.begin(); it != attachFailures.end();) {
