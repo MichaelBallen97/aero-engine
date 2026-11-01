@@ -1,5 +1,5 @@
-// tests/script_system_test.cpp -- task 4.4.1: engine::script::ScriptSystem over one World (LC1-LC14). The system is
-// written against the Vm's public API, so every case drives it through a VM over the built-in table, a World, and a
+// tests/script_system_test.cpp -- task 4.4.1: engine::script::ScriptSystem over one World (LC1-LC25, LC27). The system
+// is written against the Vm's public API, so every case drives it through a VM over the built-in table, a World, and a
 // resolver from a script Guid to a res:// path. Scripts observe through `globalThis.log`, instance fields and
 // `this.entity.alive`, so none of these cases needs a bound component and all of them run with the reflect tools OFF.
 // A TU of aero_tests, which supplies main() from test_main.cpp.
@@ -17,6 +17,7 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -49,6 +50,7 @@ using engine::script::scriptStatusLabel;
 using engine::script::ScriptSystem;
 using engine::script::ScriptSystemReport;
 using engine::script::Vm;
+using engine::script::VmConfig;
 using engine::script::internal::VmAccess;
 
 // A module source in memory; it counts its reads, so a case can tell that nothing re-read a file.
@@ -111,11 +113,11 @@ private:
 // VFS and the system borrows the Vm and the World; the system is declared last, so it is destroyed first.
 class SystemFixture {
 public:
-    SystemFixture() {
+    explicit SystemFixture(const VmConfig& config = script_test::patient()) {
         auto backend = std::make_unique<MemoryBackend>();
         files = backend.get();
         vfs.mount(std::move(backend));
-        engine::script::VmCreateResult created = Vm::create(script_test::patient(), vfs);
+        engine::script::VmCreateResult created = Vm::create(config, vfs);
         REQUIRE(created.vm.valid());
         vm = std::move(created.vm);
         const engine::script::EvalResult primed =
@@ -144,6 +146,11 @@ public:
     }
 
     ScriptSystemReport tick(double dt = 0.5) { return system->update(dt); }
+    [[nodiscard]] std::string reload(const Guid& guid) {
+        return std::string{scriptStatusLabel(system->reloadScript(guid))};
+    }
+    // Runs `source` as global code; the completion value is discarded.
+    void run(std::string_view source) { static_cast<void>(script_test::completion(vm, source)); }
 
     [[nodiscard]] std::string log() { return script_test::completion(vm, "log.join('|')"); }
     void clearLog() { script_test::completion(vm, "log.length = 0; ''"); }
@@ -212,6 +219,49 @@ void expectReport(const ScriptSystemReport& report, const Expected& expected) {
 }
 
 [[nodiscard]] std::string label(ScriptEntityState state) { return std::string{scriptEntityStateLabel(state)}; }
+
+// A budget short enough for a case that interrupts a hook and long enough for an ordinary one.
+[[nodiscard]] VmConfig briefBudget() {
+    VmConfig config = script_test::patient();
+    config.callTimeBudget = std::chrono::milliseconds{100};
+    return config;
+}
+
+// The records at WARN and above whose message contains `needle`.
+[[nodiscard]] std::size_t recordsNaming(const script_test::LogCapture& capture, std::string_view needle) {
+    std::size_t found = 0;
+    for (const script_test::CapturedRecord& record : capture.atLeast(LogLevel::Warn)) {
+        found += record.message.find(needle) != std::string::npos ? 1U : 0U;
+    }
+    return found;
+}
+
+// A script counting its constructions in globalThis.ctor<tag>, logging `<tag>update:<c>` and `<tag>destroy:<c>`, and
+// spinning in onUpdate once globalThis.spin<tag> is set. `async` makes the spin a promise executor that never ends.
+[[nodiscard]] std::string spinSource(std::string_view tag, bool async = false) {
+    const std::string_view spin = async ? "await new Promise(() => { for (;;) {} });" : "for (;;) {}";
+    return classSource(
+        std::format("  c = globalThis.ctor{0}++;\n"
+                    "  {2}onUpdate() {{ log.push('{0}update:' + this.c); if (globalThis.spin{0}) {{ {1} }} }}\n"
+                    "  onDestroy() {{ log.push('{0}destroy:' + this.c); }}",
+                    tag, spin, async ? "async " : ""));
+}
+
+// The line of the throw in faultySource(true): classSource puts the members from line 2.
+constexpr int FAULTY_THROW_LINE = 8;
+
+[[nodiscard]] std::string faultySource(bool throws) {
+    return classSource(
+        std::format("  bad = globalThis.flags.shift();\n"
+                    "  inits = 0;\n"
+                    "  updates = 0;\n"
+                    "  onInit() {{ this.inits += 1; }}\n"
+                    "  onUpdate() {{\n"
+                    "    this.updates += 1;\n"
+                    "{}"
+                    "  }}",
+                    throws ? "    if (this.bad) throw new Error('bad mover');\n" : "    // corrected\n"));
+}
 
 }  // namespace
 
@@ -647,5 +697,384 @@ TEST_CASE("system: stateOf names every state it reaches and instanceOf is the at
         labels.insert(label(state));
     }
     CHECK(labels.size() == 8U);
+    fx.finish();
+}
+
+TEST_CASE("system: one throwing instance logs once, the other runs on, and a reload runs the failed one again (LC15)") {
+    script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.run("globalThis.flags = [true, false];");
+    fx.publish(guidOf(1), "faulty.js", faultySource(true));
+    const Entity bad = fx.attachScript(guidOf(1));
+    const Entity good = fx.attachScript(guidOf(1));
+    capture.clear();
+    for (int i = 0; i < 60; ++i) {
+        static_cast<void>(fx.tick());
+    }
+    const std::vector<script_test::CapturedRecord> loud = capture.atLeast(LogLevel::Warn);
+    REQUIRE(loud.size() == 1U);
+    CHECK(loud[0].level == LogLevel::Error);
+    CHECK(loud[0].message.starts_with("script: res://s/faulty.js: uncaught Error: bad mover"));
+    CHECK(loud[0].message.find(std::format("at onUpdate (res://s/faulty.js:{}:", FAULTY_THROW_LINE)) !=
+          std::string::npos);
+    CHECK(fx.instanceValue(good, "String(i.updates)") == "60");
+    CHECK(fx.instanceValue(bad, "String(i.updates)") == "1");
+    CHECK(label(fx.system->stateOf(bad)) == "Faulted");
+
+    fx.publish(guidOf(1), "faulty.js", faultySource(false));
+    CHECK(fx.reload(guidOf(1)) == "Ok");
+    capture.clear();
+    static_cast<void>(fx.tick());
+    CHECK(fx.instanceValue(bad, "i.inits + ',' + i.updates") == "1,2");
+    CHECK(fx.instanceValue(good, "i.inits + ',' + i.updates") == "1,61");
+    CHECK(label(fx.system->stateOf(bad)) == "Running");
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+    fx.finish();
+}
+
+TEST_CASE(
+    "system: a hook past its budget suspends its script, one notice, and no sibling burns another budget (LC16)") {
+    script_test::LogCapture capture;
+    SystemFixture fx{briefBudget()};
+    fx.run("globalThis.ctorA = 0; globalThis.ctorB = 0; globalThis.spinA = true;");
+    fx.publish(guidOf(1), "a.js", spinSource("A"));
+    fx.publish(guidOf(2), "b.js", spinSource("B"));
+    const Entity a0 = fx.attachScript(guidOf(1));
+    const Entity a1 = fx.attachScript(guidOf(1));
+    const Entity b0 = fx.attachScript(guidOf(2));
+    capture.clear();
+
+    const ScriptSystemReport first = fx.tick();
+    const std::vector<script_test::CapturedRecord> loud = capture.atLeast(LogLevel::Warn);
+    REQUIRE(loud.size() == 2U);
+    CHECK(loud[0].level == LogLevel::Error);
+    CHECK(loud[0].message.find("interrupted after exceeding") != std::string::npos);
+    CHECK(loud[1].level == LogLevel::Warn);
+    CHECK(loud[1].message ==
+          "script: res://s/a.js: suspended: a hook ran past its 100 ms time budget; its 2 instances run no hook "
+          "until the script reloads");
+    CHECK(first.suspendedScripts == 1U);
+    CHECK(first.running == 1U);
+    CHECK(label(fx.system->stateOf(a0)) == "Suspended");
+    CHECK(label(fx.system->stateOf(a1)) == "Suspended");
+    CHECK(label(fx.system->stateOf(b0)) == "Running");
+
+    static_cast<void>(fx.tick());
+    static_cast<void>(fx.tick());
+    CHECK(fx.log() == "Aupdate:0|Bupdate:0|Bupdate:0|Bupdate:0");
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 2U);
+
+    const Entity a2 = fx.attachScript(guidOf(1));
+    static_cast<void>(fx.tick());
+    CHECK(label(fx.system->stateOf(a2)) == "Suspended");
+    CHECK_FALSE(fx.system->instanceOf(a2).valid());
+    CHECK(fx.instanceValue(b0, "String(globalThis.ctorA)") == "2");
+
+    fx.clearLog();
+    const ScriptSystemReport stopped = fx.system->stop();
+    CHECK(stopped.detached == 3U);
+    CHECK(fx.log() == "Bdestroy:0");
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 2U);
+    fx.finish();
+}
+
+TEST_CASE("system: the settle call keeps an interrupted promise job from faulting the next instance (LC17)") {
+    script_test::LogCapture capture;
+    SystemFixture fx{briefBudget()};
+    fx.run("globalThis.ctorA = 0; globalThis.ctorB = 0; globalThis.spinA = true;");
+    fx.publish(guidOf(1), "a.js", spinSource("A", true));
+    fx.publish(guidOf(2), "b.js", spinSource("B"));
+    const Entity a0 = fx.attachScript(guidOf(1));
+    const Entity b0 = fx.attachScript(guidOf(2));
+    capture.clear();
+
+    const ScriptSystemReport first = fx.tick();
+    CHECK(first.faulted == 0U);
+    CHECK(first.suspendedScripts == 1U);
+    CHECK(fx.log() == "Aupdate:0|Bupdate:0");
+    CHECK(label(fx.system->stateOf(a0)) == "Suspended");
+    CHECK(label(fx.system->stateOf(b0)) == "Running");
+    CHECK(recordsNaming(capture, "res://s/b.js") == 0U);
+    CHECK(recordsNaming(capture, "res://s/a.js") >= 2U);
+
+    static_cast<void>(fx.tick());
+    CHECK(fx.log() == "Aupdate:0|Bupdate:0|Bupdate:0");
+    CHECK(recordsNaming(capture, "res://s/b.js") == 0U);
+    fx.finish();
+}
+
+TEST_CASE("system: a constructor past its budget suspends the script and no other entity burns another budget (LC18)") {
+    script_test::LogCapture capture;
+    SystemFixture fx{briefBudget()};
+    fx.run("globalThis.ctorA = 0; globalThis.ctorB = 0;");
+    fx.publish(guidOf(1), "a.js", classSource("  c = (() => { globalThis.ctorA += 1; for (;;) {} })();"));
+    fx.publish(guidOf(2), "b.js", spinSource("B"));
+    const Entity a0 = fx.attachScript(guidOf(1));
+    const Entity a1 = fx.attachScript(guidOf(1));
+    const Entity a2 = fx.attachScript(guidOf(1));
+    const Entity b0 = fx.attachScript(guidOf(2));
+    capture.clear();
+
+    const ScriptSystemReport first = fx.tick();
+    const std::vector<script_test::CapturedRecord> loud = capture.atLeast(LogLevel::Warn);
+    REQUIRE(loud.size() == 2U);
+    CHECK(loud[0].level == LogLevel::Error);
+    CHECK(loud[1].level == LogLevel::Warn);
+    CHECK(loud[1].message.find("its 0 instances run no hook until the script reloads") != std::string::npos);
+    CHECK(first.attached == 1U);
+    CHECK(first.failedAttaches == 0U);
+    CHECK(first.suspendedScripts == 1U);
+    CHECK(fx.instanceValue(b0, "String(globalThis.ctorA)") == "1");
+    CHECK(label(fx.system->stateOf(a0)) == "Suspended");
+    CHECK(label(fx.system->stateOf(a1)) == "Suspended");
+    CHECK(label(fx.system->stateOf(a2)) == "Suspended");
+    CHECK(fx.log() == "Bupdate:0");
+    static_cast<void>(fx.tick());
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 2U);
+    fx.finish();
+}
+
+TEST_CASE("system: a rejecting async onUpdate is one record and a fault, a resolving one runs every update (LC19)") {
+    script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.run("globalThis.rejCalls = 0; globalThis.okCalls = 0;");
+    fx.publish(guidOf(1), "rej.js",
+               classSource("  async onUpdate() {\n    globalThis.rejCalls += 1;\n    throw new Error('x');\n  }"));
+    fx.publish(guidOf(2), "ok.js",
+               classSource("  async onUpdate() {\n    await 1;\n    globalThis.okCalls += 1;\n  }"));
+    const Entity rejecting = fx.attachScript(guidOf(1));
+    const Entity resolving = fx.attachScript(guidOf(2));
+    capture.clear();
+    const ScriptSystemReport first = fx.tick();
+    CHECK(first.faulted == 1U);
+    for (int i = 0; i < 4; ++i) {
+        const ScriptSystemReport report = fx.tick();
+        CHECK(report.faulted == 0U);
+    }
+    const std::vector<script_test::CapturedRecord> loud = capture.atLeast(LogLevel::Warn);
+    REQUIRE(loud.size() == 1U);
+    CHECK(loud[0].level == LogLevel::Error);
+    CHECK(loud[0].message.find("unhandled promise rejection") != std::string::npos);
+    CHECK(fx.instanceValue(rejecting, "String(globalThis.rejCalls)") == "1");
+    CHECK(fx.instanceValue(resolving, "String(globalThis.okCalls)") == "5");
+    CHECK(label(fx.system->stateOf(rejecting)) == "Faulted");
+    CHECK(label(fx.system->stateOf(resolving)) == "Running");
+    fx.finish();
+}
+
+TEST_CASE("system: reloadScript of a script the system has not loaded is NotLoaded and runs nothing (LC20)") {
+    script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "m.js", classSource(hooks()));
+    static_cast<void>(fx.attachScript(guidOf(1)));
+    static_cast<void>(fx.tick());
+    const std::size_t reads = fx.files->readCount();
+    capture.clear();
+    CHECK(fx.reload(guidOf(77)) == "NotLoaded");
+    CHECK(fx.files->readCount() == reads);
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+
+    {  // an inert system: a moved-from World registers nothing
+        Vm vm = script_test::makeBuiltinVm();
+        engine::World source;
+        const engine::World taken{std::move(source)};
+        capture.clear();
+        // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move) -- deliberate
+        ScriptSystem inert(vm, source, [](const Guid& /*script*/) { return std::string{"res://s/m.js"}; });
+        CHECK_FALSE(inert.bound());
+        const std::size_t refusals = capture.countAtLeast(LogLevel::Warn);
+        CHECK(scriptStatusLabel(inert.reloadScript(guidOf(1))) == "NotLoaded");
+        CHECK(capture.countAtLeast(LogLevel::Warn) == refusals);
+    }
+
+    static_cast<void>(fx.system->stop());
+    CHECK(fx.reload(guidOf(1)) == "NotLoaded");
+    CHECK(fx.files->readCount() == reads);
+    fx.finish();
+}
+
+TEST_CASE("system: a script that did not compile attaches after it is corrected and reloaded (LC21)") {
+    script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "m.js", "var = ;\n");
+    const Entity e0 = fx.attachScript(guidOf(1));
+    const Entity e1 = fx.attachScript(guidOf(1));
+    const ScriptSystemReport first = fx.tick();
+    CHECK(first.failedLoads == 1U);
+    CHECK(label(fx.system->stateOf(e0)) == "LoadFailed");
+    CHECK(label(fx.system->stateOf(e1)) == "LoadFailed");
+
+    fx.publish(guidOf(1), "m.js", classSource(hooks()));
+    CHECK(fx.reload(guidOf(1)) == "Ok");
+    capture.clear();
+    const ScriptSystemReport second = fx.tick();
+    CHECK(second.failedLoads == 0U);
+    expectReport(second, Expected{.attached = 2, .detached = 0, .initialised = 2, .updated = 2, .running = 2});
+    CHECK(fx.log() == "init:0|init:1|update:0:0.5|update:1:0.5");
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+    fx.finish();
+}
+
+TEST_CASE(
+    "system: one reload clears an onInit failure, an onUpdate failure, an attach failure and a suspension (LC22)") {
+    script_test::LogCapture capture;
+    SystemFixture fx{briefBudget()};
+    const std::string body =
+        "  who = globalThis.serial++;\n  guard = (() => { if (globalThis.ctorFail) throw new Error('c'); })();\n"
+        "  inits = 0;\n  updates = 0;\n"
+        "  onInit() { this.inits += 1; if (globalThis.initFail && this.who === 0) throw new Error('i'); }\n"
+        "  onUpdate() { this.updates += 1; if (globalThis.updFail && this.who === 1) throw new Error('u'); }";
+    fx.run("globalThis.initFail = true; globalThis.updFail = true; globalThis.ctorFail = false;");
+    fx.publish(guidOf(1), "x.js", classSource(body));
+    const Entity x = fx.attachScript(guidOf(1));
+    const Entity y = fx.attachScript(guidOf(1));
+    static_cast<void>(fx.tick());
+    fx.run("globalThis.ctorFail = true;");
+    const Entity z = fx.attachScript(guidOf(1));
+    static_cast<void>(fx.tick());
+    CHECK(label(fx.system->stateOf(x)) == "Faulted");
+    CHECK(label(fx.system->stateOf(y)) == "Faulted");
+    CHECK(label(fx.system->stateOf(z)) == "AttachFailed");
+
+    fx.run("globalThis.initFail = false; globalThis.updFail = false; globalThis.ctorFail = false;");
+    fx.publish(guidOf(1), "x.js", classSource(body) + "// v2\n");
+    CHECK(fx.reload(guidOf(1)) == "Ok");
+    CHECK(label(fx.system->stateOf(x)) == "PendingInit");
+    CHECK(label(fx.system->stateOf(y)) == "Running");
+    capture.clear();
+    const ScriptSystemReport next = fx.tick();
+    CHECK(next.attached == 1U);
+    CHECK(next.failedAttaches == 0U);
+    CHECK(fx.instanceValue(x, "i.inits + ',' + i.updates") == "2,1");
+    CHECK(fx.instanceValue(y, "i.inits + ',' + i.updates") == "1,2");
+    CHECK(fx.instanceValue(z, "i.inits + ',' + i.updates") == "1,1");
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+
+    // A suspension clears too: a Running instance and one whose onInit was interrupted resume by their initDone.
+    fx.run("globalThis.ctorA = 0; globalThis.spinOnInit = false;");
+    const std::string spinning =
+        "  c = globalThis.ctorA++;\n  inits = 0;\n"
+        "  onInit() { this.inits += 1; if (globalThis.spinOnInit && this.c === 1) { for (;;) {} } }\n"
+        "  onUpdate() { log.push('A:' + this.c); }";
+    fx.publish(guidOf(2), "a.js", classSource(spinning));
+    const Entity a0 = fx.attachScript(guidOf(2));
+    static_cast<void>(fx.tick());
+    fx.run("globalThis.spinOnInit = true;");
+    const Entity a1 = fx.attachScript(guidOf(2));
+    static_cast<void>(fx.tick());
+    CHECK(label(fx.system->stateOf(a0)) == "Suspended");
+    CHECK(label(fx.system->stateOf(a1)) == "Suspended");
+
+    fx.run("globalThis.spinOnInit = false;");
+    fx.publish(guidOf(2), "a.js", classSource(spinning) + "// v2\n");
+    CHECK(fx.reload(guidOf(2)) == "Ok");
+    CHECK(label(fx.system->stateOf(a0)) == "Running");
+    CHECK(label(fx.system->stateOf(a1)) == "PendingInit");
+    fx.clearLog();
+    static_cast<void>(fx.tick());
+    CHECK(fx.instanceValue(a0, "String(i.inits)") == "1");
+    CHECK(fx.instanceValue(a1, "String(i.inits)") == "2");
+    CHECK(label(fx.system->stateOf(a1)) == "Running");
+    fx.finish();
+}
+
+TEST_CASE("system: Unchanged, CompileError and AlreadyRefused are returned and clear nothing (LC23)") {
+    script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "m.js",
+               classSource(hooks("", "", "if (this.n === 0 && this.count === 1) { throw new Error('bad'); }")));
+    fx.publish(guidOf(2), "bad.js", "var = ;\n");
+    const Entity faulted = fx.attachScript(guidOf(1));
+    const Entity healthy = fx.attachScript(guidOf(1));
+    const Entity broken = fx.attachScript(guidOf(2));
+    static_cast<void>(fx.tick());
+    REQUIRE(label(fx.system->stateOf(faulted)) == "Faulted");
+    REQUIRE(label(fx.system->stateOf(broken)) == "LoadFailed");
+    fx.clearLog();
+    capture.clear();
+
+    CHECK(fx.reload(guidOf(1)) == "Unchanged");
+    CHECK(label(fx.system->stateOf(faulted)) == "Faulted");
+    CHECK(fx.reload(guidOf(2)) == "AlreadyRefused");
+    fx.publish(guidOf(2), "bad.js", "var = = ;\n");
+    CHECK(fx.reload(guidOf(2)) == "CompileError");
+    CHECK(fx.reload(guidOf(2)) == "AlreadyRefused");
+    CHECK(label(fx.system->stateOf(broken)) == "LoadFailed");
+    CHECK(label(fx.system->stateOf(faulted)) == "Faulted");
+
+    const ScriptSystemReport next = fx.tick();
+    CHECK(next.failedLoads == 1U);
+    CHECK(next.faulted == 0U);
+    CHECK(next.updated == 1U);
+    CHECK(fx.log() == "update:1:0.5");
+    CHECK(label(fx.system->stateOf(healthy)) == "Running");
+    fx.finish();
+}
+
+TEST_CASE("system: a loadScript made around the system moves its instances and clears none of its failures (LC24)") {
+    script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "m.js",
+               classSource(hooks("v1:", "", "if (this.n === 0 && this.count === 1) { throw new Error('bad'); }")));
+    const Entity faulted = fx.attachScript(guidOf(1));
+    const Entity running = fx.attachScript(guidOf(1));
+    static_cast<void>(fx.tick());
+    REQUIRE(label(fx.system->stateOf(faulted)) == "Faulted");
+    fx.publish(guidOf(1), "m.js", classSource(hooks("v2:")));
+    CHECK(fx.vm.loadScript("res://s/m.js").status == engine::script::ScriptStatus::Ok);
+    fx.clearLog();
+    static_cast<void>(fx.tick());
+    CHECK(fx.log() == "v2:update:1:0.5");
+    CHECK(label(fx.system->stateOf(faulted)) == "Faulted");
+    CHECK(label(fx.system->stateOf(running)) == "Running");
+    fx.finish();
+}
+
+TEST_CASE("system: an unresolved Guid is resolved again after a reloadScript, with no VM call (LC25)") {
+    script_test::LogCapture capture;
+    SystemFixture fx;
+    const Entity e = fx.attachScript(guidOf(5));
+    static_cast<void>(fx.tick());
+    static_cast<void>(fx.tick());
+    CHECK(fx.queriesFor(guidOf(5)) == 1U);
+    CHECK(label(fx.system->stateOf(e)) == "Unresolved");
+
+    const std::size_t reads = fx.files->readCount();
+    capture.clear();
+    CHECK(fx.reload(guidOf(5)) == "NotLoaded");
+    CHECK(fx.files->readCount() == reads);
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+    CHECK(fx.queriesFor(guidOf(5)) == 1U);
+
+    fx.publish(guidOf(5), "m.js", classSource(hooks()));
+    const ScriptSystemReport next = fx.tick();
+    CHECK(fx.queriesFor(guidOf(5)) == 2U);
+    CHECK(next.attached == 1U);
+    CHECK(label(fx.system->stateOf(e)) == "Running");
+    fx.finish();
+}
+
+TEST_CASE("system: reloadScript refuses a Guid the resolver now sends to another path (LC27)") {
+    script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "one.js", classSource(hooks("one:")));
+    fx.publish(guidOf(2), "two.js", classSource(hooks("two:")));
+    const Entity e = fx.attachScript(guidOf(1));
+    static_cast<void>(fx.tick());
+    fx.paths[guidOf(1)] = "res://s/two.js";
+    const std::size_t reads = fx.files->readCount();
+    capture.clear();
+    CHECK(fx.reload(guidOf(1)) == "LoadError");
+    const std::vector<script_test::CapturedRecord> loud = capture.atLeast(LogLevel::Warn);
+    REQUIRE(loud.size() == 1U);
+    CHECK(loud[0].level == LogLevel::Error);
+    CHECK(loud[0].message ==
+          "script: res://s/one.js: reloadScript refused: the resolver now names 'res://s/two.js' for this script; "
+          "a new ScriptSystem resolves it again");
+    CHECK(fx.files->readCount() == reads);
+    fx.clearLog();
+    static_cast<void>(fx.tick());
+    CHECK(fx.log() == "one:update:0:0.5");
+    CHECK(label(fx.system->stateOf(e)) == "Running");
     fx.finish();
 }

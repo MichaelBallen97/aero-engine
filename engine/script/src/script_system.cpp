@@ -8,6 +8,8 @@
 //   4. init: onInit of every instance that has not run it, in attach order;
 //   5. update: onUpdate(dt) of every initialised instance, in attach order.
 // The entity key is ONE function (entityKey), used by every lookup; there is no per-entity linear search.
+// A failed call is remembered, not retried (script_system.hpp holds the policy); an Interrupted one suspends its script
+// and is followed by settle(), one empty evaluation named with the script's path.
 
 #include <aero/core/guid.hpp>
 #include <aero/core/log.hpp>
@@ -115,6 +117,41 @@ struct ScriptSystem::Impl {
         return component != nullptr && component->script == attached.script;
     }
 
+    // One empty evaluation named with `path`, its status ignored: after an interrupted call, a reaction job the budget
+    // cut short is still queued, and the backend's refusal of it would otherwise surface in the next call, whichever
+    // instance that is (R34). Running it here makes the record name the script it came from.
+    void settle(const std::string& path) { static_cast<void>(vm.evaluateScript("", path)); }
+
+    // The script's instances: it stops running any hook until it reloads. One notice; the settle call follows.
+    void suspend(const std::string& path) {
+        PathMemo& memo = paths[path];
+        if (memo.suspended) {
+            settle(path);
+            return;
+        }
+        memo.suspended = true;
+        std::size_t held = 0;
+        for (const Attached& attached : runOrder) {
+            held += attached.path == path ? 1U : 0U;
+        }
+        AERO_LOG_WARN(
+            "script: {}: suspended: a hook ran past its {} ms time budget; its {} instances run no hook until the "
+            "script reloads",
+            path, vm.callTimeBudget().count(), held);
+        settle(path);
+    }
+
+    // One hook call. True when it ended Ok and did not reject. An Interrupted call suspends the script (it is not a
+    // failure of the instance: the instance resumes when the script reloads).
+    [[nodiscard]] bool callHook(const Attached& attached, ScriptHook hook, double dt) {
+        const ScriptHookResult result = vm.callHook(attached.instance, hook, dt);
+        if (result.status == ScriptStatus::Interrupted) {
+            suspend(attached.path);
+            return false;
+        }
+        return result.status == ScriptStatus::Ok && !result.rejected;
+    }
+
     void reindex() {
         attachedAt.clear();
         for (std::size_t i = 0; i < runOrder.size(); ++i) {
@@ -138,7 +175,7 @@ struct ScriptSystem::Impl {
     // did.
     void release(Attached& attached, ScriptSystemReport& report) {
         if (attached.initDone && !pathSuspended(attached.path)) {
-            static_cast<void>(vm.callHook(attached.instance, ScriptHook::Destroy, 0.0));
+            static_cast<void>(callHook(attached, ScriptHook::Destroy, 0.0));
         }
         static_cast<void>(vm.destroyInstance(attached.instance));
         ++report.detached;
@@ -190,6 +227,9 @@ struct ScriptSystem::Impl {
             return true;
         }
         memo.loadFailed = true;
+        if (loaded.status == ScriptStatus::Interrupted) {
+            settle(path);
+        }
         return false;
     }
 
@@ -203,6 +243,10 @@ struct ScriptSystem::Impl {
             return;
         }
         const ScriptInstanceResult made = vm.createInstance(*resolved, row.entity);
+        if (made.status == ScriptStatus::Interrupted) {
+            suspend(*resolved);
+            return;
+        }
         if (made.status != ScriptStatus::Ok) {
             attachFailures[entityKey(row.entity)] = row.script;
             return;
@@ -233,10 +277,10 @@ struct ScriptSystem::Impl {
             if (attached.initDone || attached.faulted || pathSuspended(attached.path) || !entityNames(attached)) {
                 continue;
             }
-            if (vm.callHook(attached.instance, ScriptHook::Init, 0.0).status == ScriptStatus::Ok) {
+            if (callHook(attached, ScriptHook::Init, 0.0)) {
                 attached.initDone = true;
                 ++report.initialised;
-            } else {
+            } else if (!pathSuspended(attached.path)) {
                 attached.faulted = true;
                 ++report.faulted;
             }
@@ -250,7 +294,7 @@ struct ScriptSystem::Impl {
                 continue;
             }
             ++report.updated;
-            if (vm.callHook(attached.instance, ScriptHook::Update, dt).status != ScriptStatus::Ok) {
+            if (!callHook(attached, ScriptHook::Update, dt) && !pathSuspended(attached.path)) {
                 attached.faulted = true;
                 ++report.faulted;
             }
@@ -329,6 +373,56 @@ ScriptSystemReport ScriptSystem::stop() {
     impl->vm.unbindWorld();
     impl->stopped = true;
     return report;
+}
+
+ScriptStatus ScriptSystem::reloadScript(const Guid& script) {
+    if (!bound()) {
+        return ScriptStatus::NotLoaded;
+    }
+    Impl& state = *impl;
+    const auto known = state.scripts.find(script);
+    if (known == state.scripts.end()) {
+        return ScriptStatus::NotLoaded;
+    }
+    if (known->second.unresolved) {
+        state.scripts.erase(known);  // the next update() asks the resolver again
+        return ScriptStatus::NotLoaded;
+    }
+    const std::string path = known->second.path;
+    const std::string now = state.resolver ? state.resolver(script) : std::string{};
+    if (now != path) {
+        AERO_LOG_ERROR(
+            "script: {}: reloadScript refused: the resolver now names '{}' for this script; a new ScriptSystem "
+            "resolves it again",
+            path, now);
+        return ScriptStatus::LoadError;
+    }
+    const auto memo = state.paths.find(path);
+    if (memo == state.paths.end() || (!memo->second.loaded && !memo->second.loadFailed)) {
+        return ScriptStatus::NotLoaded;
+    }
+    const ScriptLoadResult loaded = state.vm.loadScript(path);
+    if (loaded.status == ScriptStatus::Interrupted) {
+        state.settle(path);
+    }
+    if (loaded.status != ScriptStatus::Ok) {
+        return loaded.status;
+    }
+    memo->second = Impl::PathMemo{.loaded = true, .loadFailed = false, .suspended = false};
+    for (Impl::Attached& attached : state.runOrder) {
+        if (attached.path == path) {
+            attached.faulted = false;
+        }
+    }
+    for (auto it = state.attachFailures.begin(); it != state.attachFailures.end();) {
+        const auto named = state.scripts.find(it->second);
+        if (named != state.scripts.end() && !named->second.unresolved && named->second.path == path) {
+            it = state.attachFailures.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    return ScriptStatus::Ok;
 }
 
 ScriptEntityState ScriptSystem::stateOf(Entity entity) const {

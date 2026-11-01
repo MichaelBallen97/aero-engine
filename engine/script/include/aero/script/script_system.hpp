@@ -20,6 +20,18 @@
 //   5. update: onUpdate(dt) of every initialised instance, in attach order.
 // Each hook runs only while its entity is alive and still names its script. A failed hook faults its instance after
 // the Vm's one record. dt reaches scripts as given when it is finite and non-negative, else as 0.
+//
+// What a failure costs, and what undoes it:
+//   - an unresolved Guid, a refused load, a refused attach, a failed hook (a throw, a heap refusal, an async hook that
+//     rejects): one record, then the entity or instance stops until its script reloads; nothing is retried per frame.
+//     A failed onInit means neither onUpdate nor onDestroy runs; a failed onDestroy still destroys the instance.
+//   - a hook or a constructor that runs past its time budget costs a whole budget per call, so it suspends the whole
+//     script in this system: the Vm's one ERROR, then one WARN naming the script, the budget and the instances it
+//     holds. No hook of that script runs again, onDestroy included, and nothing new attaches it, until it reloads.
+//   - after any call that ended Interrupted the system makes one empty evaluation named with the script's path and
+//     ignores its status, so a reaction job the interrupt left behind answers for the script it came from instead of
+//     faulting whichever instance runs next.
+//   - reloadScript is the undo: its Ok clears every failure remembered for that script, suspension included.
 
 #include <aero/core/guid.hpp>
 #include <aero/scene/entity.hpp>
@@ -91,6 +103,16 @@ public:
     // onDestroy once per initialised instance, in attach order, then every instance destroyed, the memos cleared and
     // the World unbound from the Vm. The system is stopped for good: a later update() or stop() does nothing.
     ScriptSystemReport stop();
+
+    // Reloads the script the Guid names, the call a reload trigger makes. NotLoaded, with no Vm call, for a Guid no
+    // attach has met, for an inert or stopped system, and for a path whose load was never attempted; an unresolved
+    // Guid is forgotten, so the next update() asks the resolver again. Otherwise the Guid is resolved again: a
+    // different path is one ERROR and LoadError, nothing changes (the instances belong to the path they were made
+    // from; a new system resolves the new one). Then Vm::loadScript runs: on Ok every failure remembered for the
+    // script is cleared (a failed onInit runs again at the next update, a failed onUpdate resumes without onInit,
+    // unattached entities attach, a suspension ends); any other status, Unchanged included, is returned and changes
+    // nothing.
+    ScriptStatus reloadScript(const Guid& script);
 
     [[nodiscard]] ScriptEntityState stateOf(Entity entity) const;
     // The instance attached to `entity`, or a null handle. Valid exactly while the instance is attached.
