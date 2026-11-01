@@ -22,6 +22,7 @@
 #include "script_api.hpp"
 #include "vm_impl.hpp"
 
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -564,6 +565,50 @@ ScriptStatus Vm::Impl::destroyInstanceCall(ScriptInstance instance) {
     return ScriptStatus::Ok;
 }
 
+ScriptHookResult Vm::Impl::callHookCall(ScriptInstance instance, ScriptHook hook, double dt) {
+    assert(!inCall);
+    const InstanceSlot* const slot = instanceSlots.get(instance);
+    if (slot == nullptr) {
+        AERO_LOG_ERROR("script: callHook refused: the handle names no live instance");
+        ScriptHookResult unknown;
+        unknown.status = ScriptStatus::UnknownInstance;
+        return unknown;
+    }
+    const std::string key = slot->key;
+    const CallScope scope{*this, key};
+    const std::uint64_t rejectionsBefore = unhandledRejections;
+    EvalResult evaluation{EvalStatus::Ok, {}, {}};
+    bool ran = false;
+    {
+        // Held across the call: nothing a hook does can free the object while it runs.
+        const HeldValue object{ctx, JS_DupValue(ctx, slot->object)};
+        const HeldAtom name{ctx, JS_NewAtom(ctx, scriptHookName(hook).data())};
+        if (name.get() == JS_ATOM_NULL) {
+            adopt(evaluation, trap(Phase::Run));  // out of memory; nothing is pending, trap takes the sentinel
+        } else {
+            const HeldValue hookValue{ctx, JS_GetProperty(ctx, object.get(), name.get())};  // a getter runs here
+            if (hookValue.isException()) {
+                adopt(evaluation, trap(Phase::Run));
+            } else if (JS_IsFunction(ctx, hookValue.get())) {
+                ran = true;
+                JSValue argument = JS_NewFloat64(ctx, dt);
+                const int argc = hook == ScriptHook::Update ? 1 : 0;
+                const HeldValue returned{ctx, JS_Call(ctx, hookValue.get(), object.get(), argc, &argument)};
+                if (returned.isException()) {
+                    adopt(evaluation, trap(Phase::Run));
+                }
+            }
+        }
+    }
+    endScriptCall(evaluation);
+    ScriptHookResult result;
+    result.status = scriptStatusOf(evaluation.status);
+    result.error = evaluation.error;
+    result.ran = ran;
+    result.rejected = unhandledRejections > rejectionsBefore;
+    return result;
+}
+
 void Vm::Impl::releaseScripts() noexcept {
     for (auto& entry : scripts) {
         ScriptRecord& record = entry.second;
@@ -622,6 +667,21 @@ ScriptInstanceResult Vm::createInstance(std::string_view virtualPath, Entity ent
     return impl->createInstanceCall(virtualPath, entity);
 }
 
+ScriptHookResult Vm::callHook(ScriptInstance instance, ScriptHook hook, double dt) {
+    ScriptHookResult refused;
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("script: callHook on an invalid Vm (a failed create or a moved-from Vm)");
+        refused.status = ScriptStatus::InvalidVm;
+        return refused;
+    }
+    if (!impl->onVmThread()) {
+        AERO_LOG_ERROR("script: callHook called from a thread that is not the VM's; refused");
+        refused.status = ScriptStatus::WrongThread;
+        return refused;
+    }
+    return impl->callHookCall(instance, hook, dt);
+}
+
 ScriptStatus Vm::destroyInstance(ScriptInstance instance) {
     if (impl == nullptr) {
         AERO_LOG_ERROR("script: destroyInstance on an invalid Vm (a failed create or a moved-from Vm)");
@@ -670,6 +730,13 @@ std::string_view scriptStatusLabel(ScriptStatus status) noexcept {
             return "DeadEntity";
     }
     return "Unknown";
+}
+
+std::string_view scriptHookName(ScriptHook hook) noexcept {
+    // Terminated literals: the backend's atom is made from the view's data().
+    static constexpr std::array<const char*, SCRIPT_HOOK_COUNT> NAMES{"onInit", "onUpdate", "onDestroy"};
+    const auto index = static_cast<std::size_t>(hook);
+    return std::string_view{index < NAMES.size() ? NAMES[index] : ""};
 }
 
 // ---- the test seam ---------------------------------------------------------------------------------------------

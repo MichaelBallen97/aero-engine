@@ -203,6 +203,21 @@ struct ScriptInstanceResult {
                               // NoWorld and DeadEntity)
 };
 
+// The lifecycle hooks an attached instance may define, in the order a script sees them (task 4.4.1).
+enum class ScriptHook : std::uint8_t { Init = 0, Update, Destroy };
+inline constexpr std::size_t SCRIPT_HOOK_COUNT = 3;
+// "onInit", "onUpdate", "onDestroy": the property each hook reads. Never named toString (doctest's ADL trap). The view
+// is over a terminated literal.
+[[nodiscard]] std::string_view scriptHookName(ScriptHook hook) noexcept;
+
+struct ScriptHookResult {
+    ScriptStatus status = ScriptStatus::InvalidVm;  // Ok, Exception, OutOfMemory, Interrupted, UnknownInstance,
+                                                    // InvalidVm or WrongThread
+    ScriptError error;                              // filled iff Exception, OutOfMemory or Interrupted
+    bool ran = false;                               // the hook was a function and was called
+    bool rejected = false;  // the call's tail reported an unhandled promise rejection: an async hook's failure
+};
+
 // The state of a module path's CURRENT generation, as the VM last observed it. The backend reports an evaluation's
 // outcome only for the module evaluated as an entry, so a dependency of an entry that failed or is still pending stays
 // Loaded until an entry that imports it completes. The VM looks at the end of every call, so an entry whose top-level
@@ -461,6 +476,22 @@ public:
     // cannot hold its entity (frozen, sealed, not extensible, or with a non-configurable own 'entity')") and nothing
     // is made. Once the call's budget has fired, no engine refusal joins the interrupt's record.
     [[nodiscard]] ScriptInstanceResult createInstance(std::string_view virtualPath, Entity entity);
+
+    // Calls one lifecycle hook of `instance` under one call's time budget: the hook is read from the instance inside
+    // the call (a prototype method, an own arrow field, or whatever a getter returns; a getter runs), and called with
+    // `this` = the instance. onUpdate gets `dt` as its one argument, onInit and onDestroy get none. The return value is
+    // ignored. A value that is not a function is an absent hook: Ok, `ran` false, nothing logged. Any other property
+    // read or call that fails is evaluateScript's: Exception, OutOfMemory or Interrupted with one ERROR in its shape,
+    // its stack source-mapped; a getter that throws leaves `ran` false. An async hook that rejects ends Ok with
+    // `rejected` true and one "unhandled promise rejection" record; `rejected` is this call's own report, never the
+    // lifetime count. A generator's body never runs. Each call has its own budget, status and record, so one runaway
+    // hook ends one call. UnknownInstance, with one ERROR ("script: callHook refused: the handle names no live
+    // instance"), for a handle that is null, destroyed or stale; nothing runs. The VM's thread only, and never from
+    // inside another call.
+    [[nodiscard]] ScriptHookResult callHook(ScriptInstance instance, ScriptHook hook, double dt);
+
+    // The configured per-call time budget; 0 ms for an invalid Vm. Safe from any thread.
+    [[nodiscard]] std::chrono::milliseconds callTimeBudget() const noexcept;
 
     // Frees an instance. UnknownInstance, with one ERROR ("script: destroyInstance refused: the handle names no live
     // instance"), when the handle is null, already destroyed or stale. Runs no script code.

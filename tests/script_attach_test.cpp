@@ -32,6 +32,8 @@ namespace {
 using engine::Entity;
 using engine::LogLevel;
 using engine::script::BindStatus;
+using engine::script::ScriptHook;
+using engine::script::ScriptHookResult;
 using engine::script::ScriptInstance;
 using engine::script::ScriptInstanceResult;
 using engine::script::ScriptLoadResult;
@@ -132,6 +134,15 @@ void load(Fixture& fx, std::string_view file, const std::string& source) {
     REQUIRE(scriptStatusLabel(made.status) == "Ok");
     REQUIRE(made.instance.valid());
     return made.instance;
+}
+
+// An instance of the script at res://s/<file> with no entity, exposed as the global `name`; hooks may be called on one.
+[[nodiscard]] ScriptInstance made(Fixture& fx, std::string_view file, std::string_view name = "i") {
+    const ScriptInstanceResult result = fx.vm.createInstance(std::format("res://s/{}", file));
+    INFO("create ", file, ": ", result.error.message);
+    REQUIRE(scriptStatusLabel(result.status) == "Ok");
+    expose(fx.vm, result.instance, name);
+    return result.instance;
 }
 
 // Binds `world` to the fixture's VM.
@@ -433,4 +444,280 @@ TEST_CASE("vm: only the first base construction inside an attach takes the entit
           "true,true,true");
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     script_test::expectCleanShutdown(fx.vm);
+}
+
+// ---- VM74-VM81: callHook -------------------------------------------------------------------------------------
+
+TEST_CASE("vm: a hook runs as a method, an own arrow field or a getter's function, with this and dt (VM74)") {
+    script_test::LogCapture log;
+    Fixture fx;
+    load(fx, "proto.js",
+         classSource(
+             "  onInit() {\n    log.push('init:' + arguments.length);\n    return 5;\n  }\n"
+             "  onUpdate(dt) {\n    log.push('upd:' + (this === globalThis.i) + ':' + dt + ':' + arguments.length);\n"
+             "    return 7;\n  }\n"
+             "  onDestroy() {\n    log.push('destroy:' + arguments.length);\n    return 9;\n  }"));
+    load(fx, "arrow.js",
+         classSource("  onUpdate = (dt) => {\n    log.push('arrow:' + (this === globalThis.i) + ':' + dt);\n  };"));
+    load(fx, "getter.js",
+         classSource("  get onUpdate() {\n    const self = this;\n    return function (dt) {\n"
+                     "      log.push('get:' + (this === globalThis.i) + ':' + (self === globalThis.i) + ':' + dt);\n"
+                     "    };\n  }"));
+    REQUIRE(script_test::completion(fx.vm, "globalThis.log = []; log.length") == "0");
+
+    const ScriptInstance proto = made(fx, "proto.js");
+    for (const ScriptHook hook : {ScriptHook::Init, ScriptHook::Update, ScriptHook::Destroy}) {
+        const ScriptHookResult result = fx.vm.callHook(proto, hook, 0.5);
+        CHECK(scriptStatusLabel(result.status) == "Ok");
+        CHECK(result.ran);
+        CHECK_FALSE(result.rejected);
+    }
+    CHECK(script_test::completion(fx.vm, "log.join('|')") == "init:0|upd:true:0.5:1|destroy:0");
+
+    for (const char* const file : {"arrow.js", "getter.js"}) {
+        CAPTURE(file);
+        const ScriptInstance other = made(fx, file);
+        const ScriptHookResult result = fx.vm.callHook(other, ScriptHook::Update, 0.5);
+        CHECK(scriptStatusLabel(result.status) == "Ok");
+        CHECK(result.ran);
+    }
+    CHECK(script_test::completion(fx.vm, "log.slice(3).join('|')") == "arrow:true:0.5|get:true:true:0.5");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("vm: a hook that is not a function is absent, and nothing is logged for it (VM75)") {
+    script_test::LogCapture log;
+    Fixture fx;
+    const std::array<std::pair<std::string_view, std::string_view>, 5> shapes{{
+        {"undef", "  onUpdate = undefined;"},
+        {"null", "  onUpdate = null;"},
+        {"number", "  onUpdate = 5;"},
+        {"object", "  onUpdate = {};"},
+        {"none", "  other = 1;"},
+    }};
+    for (const auto& [file, body] : shapes) {
+        CAPTURE(file);
+        load(fx, std::format("{}.js", file), classSource(body));
+        const ScriptInstance instance = made(fx, std::format("{}.js", file));
+        const std::uint64_t before = fx.vm.stats().unhandledRejections;
+        log.clear();
+        for (const ScriptHook hook : {ScriptHook::Init, ScriptHook::Update, ScriptHook::Destroy}) {
+            const ScriptHookResult result = fx.vm.callHook(instance, hook, 0.5);
+            CHECK(scriptStatusLabel(result.status) == "Ok");
+            CHECK_FALSE(result.ran);
+            CHECK_FALSE(result.rejected);
+            CHECK(result.error.message.empty());
+        }
+        CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+        CHECK(fx.vm.stats().unhandledRejections == before);
+    }
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("vm: a hook that throws is one Exception and one record (VM76)") {
+    script_test::LogCapture log;
+    Fixture fx;
+    load(fx, "method.js", classSource("  onUpdate() {\n    throw new Error('boom');\n  }"));
+    load(fx, "getter.js", classSource("  get onUpdate() {\n    throw new Error('from the getter');\n  }"));
+    load(fx, "klass.js", classSource("  onUpdate = class {};"));
+
+    const ScriptInstance method = made(fx, "method.js");
+    log.clear();
+    const ScriptHookResult thrown = fx.vm.callHook(method, ScriptHook::Update, 0.5);
+    CHECK(scriptStatusLabel(thrown.status) == "Exception");
+    CHECK(thrown.ran);
+    CHECK(thrown.error.message == "boom");
+    const std::string methodRecord = theOneError(log);
+    CHECK(methodRecord.find("uncaught Error: boom") != std::string::npos);
+    CHECK(methodRecord.find("at onUpdate") != std::string::npos);
+
+    const ScriptInstance getter = made(fx, "getter.js");
+    log.clear();
+    const ScriptHookResult read = fx.vm.callHook(getter, ScriptHook::Update, 0.5);
+    CHECK(scriptStatusLabel(read.status) == "Exception");
+    CHECK_FALSE(read.ran);
+    CHECK(read.error.message == "from the getter");
+    CHECK(theOneError(log).find("get onUpdate") != std::string::npos);
+
+    const ScriptInstance klass = made(fx, "klass.js");
+    log.clear();
+    const ScriptHookResult called = fx.vm.callHook(klass, ScriptHook::Update, 0.5);
+    CHECK(scriptStatusLabel(called.status) == "Exception");
+    CHECK(called.error.message == "class constructors must be invoked with 'new'");
+    static_cast<void>(theOneError(log));
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("vm: an endless hook is Interrupted for its own call alone (VM77)") {
+    script_test::LogCapture log;
+    VmConfig config = script_test::patient();
+    config.callTimeBudget = std::chrono::milliseconds{100};
+    SUBCASE("a loop") {
+        Fixture fx{config};
+        load(fx, "spin.js", classSource("  onUpdate() {\n    for (;;) {\n    }\n  }"));
+        load(fx, "calm.js", classSource("  onUpdate() {\n    globalThis.calm = true;\n  }"));
+        const ScriptInstance spin = made(fx, "spin.js", "a");
+        const ScriptInstance calm = made(fx, "calm.js", "b");
+        log.clear();
+        const ScriptHookResult spun = fx.vm.callHook(spin, ScriptHook::Update, 0.5);
+        CHECK(scriptStatusLabel(spun.status) == "Interrupted");
+        CHECK(spun.ran);
+        CHECK(theOneError(log).find("interrupted after exceeding") != std::string::npos);
+        log.clear();
+        const ScriptHookResult next = fx.vm.callHook(calm, ScriptHook::Update, 0.5);
+        CHECK(scriptStatusLabel(next.status) == "Ok");
+        CHECK(script_test::completion(fx.vm, "String(globalThis.calm)") == "true");
+        CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+        script_test::expectCleanShutdown(fx.vm);
+    }
+    SUBCASE("a promise executor that never ends (R34)") {
+        Fixture fx{config};
+        load(fx, "async.js",
+             classSource(
+                 "  async onUpdate() {\n    await new Promise(() => {\n      for (;;) {\n      }\n    });\n  }"));
+        load(fx, "calm.js", classSource("  onUpdate() {\n    globalThis.calm = true;\n  }"));
+        const ScriptInstance stuck = made(fx, "async.js", "a");
+        const ScriptInstance calm = made(fx, "calm.js", "b");
+        log.clear();
+        const ScriptHookResult spun = fx.vm.callHook(stuck, ScriptHook::Update, 0.5);
+        CHECK(scriptStatusLabel(spun.status) == "Interrupted");
+        static_cast<void>(theOneError(log));
+        // R34 as it stands: the engine's refusal after the fire reads as an Exception on the next call.
+        log.clear();
+        const ScriptHookResult next = fx.vm.callHook(calm, ScriptHook::Update, 0.5);
+        INFO("next: ", next.error.name, ": ", next.error.message);
+        CHECK(scriptStatusLabel(next.status) == "Exception");
+        CHECK(next.error.name == "InternalError");
+        CHECK(next.error.message == "interrupted");
+        static_cast<void>(theOneError(log));
+        script_test::expectCleanShutdown(fx.vm);
+    }
+}
+
+TEST_CASE("vm: an async hook's rejection is the call's own report, and a generator's body never runs (VM78)") {
+    script_test::LogCapture log;
+    Fixture fx;
+    load(fx, "reject.js", classSource("  async onUpdate() {\n    throw new Error('x');\n  }"));
+    load(fx, "settle.js", classSource("  async onUpdate() {\n    await 1;\n    globalThis.settled = true;\n  }"));
+    load(fx, "gen.js", classSource("  *onUpdate() {\n    globalThis.body = true;\n  }"));
+    REQUIRE(script_test::completion(fx.vm, "globalThis.settled = false; globalThis.body = false; 0") == "0");
+
+    const ScriptInstance reject = made(fx, "reject.js");
+    for (int round = 0; round < 2; ++round) {
+        CAPTURE(round);
+        const std::uint64_t before = fx.vm.stats().unhandledRejections;
+        log.clear();
+        const ScriptHookResult result = fx.vm.callHook(reject, ScriptHook::Update, 0.5);
+        CHECK(scriptStatusLabel(result.status) == "Ok");
+        CHECK(result.ran);
+        CHECK(result.rejected);
+        CHECK(theOneError(log).find("unhandled promise rejection: Error: x") != std::string::npos);
+        CHECK(fx.vm.stats().unhandledRejections == before + 1U);
+    }
+
+    const ScriptInstance settle = made(fx, "settle.js", "s");
+    log.clear();
+    const ScriptHookResult awaited = fx.vm.callHook(settle, ScriptHook::Update, 0.5);
+    CHECK(scriptStatusLabel(awaited.status) == "Ok");
+    CHECK(awaited.ran);
+    CHECK_FALSE(awaited.rejected);  // the lifetime count is already 2: only this call's report counts
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    CHECK(script_test::completion(fx.vm, "String(globalThis.settled)") == "true");
+
+    const ScriptInstance gen = made(fx, "gen.js", "g");
+    const ScriptHookResult generated = fx.vm.callHook(gen, ScriptHook::Update, 0.5);
+    CHECK(scriptStatusLabel(generated.status) == "Ok");
+    CHECK(generated.ran);
+    CHECK(script_test::completion(fx.vm, "String(globalThis.body)") == "false");
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("vm: a handle that names no live instance is refused once and nothing runs (VM79)") {
+    script_test::LogCapture log;
+    Fixture fx;
+    load(fx, "m.js", classSource("  onUpdate() {\n    globalThis.hits += 1;\n  }"));
+    REQUIRE(script_test::completion(fx.vm, "globalThis.hits = 0; String(hits)") == "0");
+    const std::string expected = "script: callHook refused: the handle names no live instance";
+
+    log.clear();
+    const ScriptHookResult none = fx.vm.callHook(ScriptInstance{}, ScriptHook::Update, 0.5);
+    CHECK(scriptStatusLabel(none.status) == "UnknownInstance");
+    CHECK_FALSE(none.ran);
+    CHECK(theOneError(log) == expected);
+
+    const ScriptInstance stale = made(fx, "m.js", "a");
+    REQUIRE(fx.vm.destroyInstance(stale) == engine::script::ScriptStatus::Ok);
+    const ScriptInstance reused = made(fx, "m.js", "b");  // the freed slot may be recycled; the generation differs
+    CHECK_FALSE(stale == reused);
+    log.clear();
+    const ScriptHookResult gone = fx.vm.callHook(stale, ScriptHook::Update, 0.5);
+    CHECK(scriptStatusLabel(gone.status) == "UnknownInstance");
+    CHECK(theOneError(log) == expected);
+    CHECK(script_test::completion(fx.vm, "String(hits)") == "0");
+
+    Vm invalid;
+    log.clear();
+    CHECK(scriptStatusLabel(invalid.callHook(reused, ScriptHook::Update, 0.5).status) == "InvalidVm");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 1U);
+
+    log.clear();
+    ScriptHookResult fromOther;
+    std::thread other{[&] { fromOther = fx.vm.callHook(reused, ScriptHook::Update, 0.5); }};
+    other.join();
+    CHECK(scriptStatusLabel(fromOther.status) == "WrongThread");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 1U);
+    CHECK(script_test::completion(fx.vm, "String(hits)") == "0");
+
+    const ScriptHookResult control = fx.vm.callHook(reused, ScriptHook::Update, 0.5);  // the live handle still works
+    CHECK(scriptStatusLabel(control.status) == "Ok");
+    CHECK(script_test::completion(fx.vm, "String(hits)") == "1");
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("vm: a hook the heap refuses is OutOfMemory, once, and the next call is Ok (VM80)") {
+    script_test::LogCapture log;
+    Fixture fx{script_test::patient(VmConfig{.heapLimitBytes = std::size_t{2} * 1024U * 1024U})};
+    load(fx, "hog.js", classSource("  onUpdate() {\n    return 'x'.repeat(1e9);\n  }"));
+    load(fx, "calm.js", classSource("  onUpdate() {\n  }"));
+    const ScriptInstance hog = made(fx, "hog.js", "a");
+    const ScriptInstance calm = made(fx, "calm.js", "b");
+    log.clear();
+    const ScriptHookResult full = fx.vm.callHook(hog, ScriptHook::Update, 0.5);
+    CHECK(scriptStatusLabel(full.status) == "OutOfMemory");
+    CHECK(full.ran);
+    CHECK(theOneError(log).find("out of memory (heap limit 2097152 bytes, ") != std::string::npos);
+    log.clear();
+    const ScriptHookResult next = fx.vm.callHook(calm, ScriptHook::Update, 0.5);
+    CHECK(scriptStatusLabel(next.status) == "Ok");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("vm: callTimeBudget reads the configured budget and the hook names are the three a script defines (VM81)") {
+    const script_test::LogCapture log;
+    {
+        auto created = Vm::create(VmConfig{.callTimeBudget = std::chrono::milliseconds{250}});
+        REQUIRE(created.vm.valid());
+        CHECK(created.vm.callTimeBudget() == std::chrono::milliseconds{250});
+        script_test::expectCleanShutdown(created.vm);
+    }
+    {
+        auto created = Vm::create();
+        REQUIRE(created.vm.valid());
+        CHECK(created.vm.callTimeBudget() == engine::script::DEFAULT_CALL_TIME_BUDGET);
+        Vm moved = std::move(created.vm);
+        CHECK(created.vm.callTimeBudget() == std::chrono::milliseconds{0});  // moved-from
+        CHECK(moved.callTimeBudget() == engine::script::DEFAULT_CALL_TIME_BUDGET);
+        script_test::expectCleanShutdown(moved);
+    }
+    {
+        Vm patientVm = script_test::makeBuiltinVm();
+        CHECK(patientVm.callTimeBudget() == engine::script::MAX_CALL_TIME_BUDGET);
+        script_test::expectCleanShutdown(patientVm);
+    }
+    CHECK(engine::script::SCRIPT_HOOK_COUNT == 3U);
+    CHECK(engine::script::scriptHookName(ScriptHook::Init) == "onInit");
+    CHECK(engine::script::scriptHookName(ScriptHook::Update) == "onUpdate");
+    CHECK(engine::script::scriptHookName(ScriptHook::Destroy) == "onDestroy");
 }

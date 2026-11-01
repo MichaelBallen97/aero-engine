@@ -375,6 +375,8 @@ struct Vm::Impl {
     [[nodiscard]] ScriptInstanceResult createInstanceCall(std::string_view virtualPath,
                                                           const std::optional<Entity>& entity);
     [[nodiscard]] ScriptStatus destroyInstanceCall(ScriptInstance instance);
+    // One hook of one instance: the read, the call, the call's tail (vm_scripts.cpp).
+    [[nodiscard]] ScriptHookResult callHookCall(ScriptInstance instance, ScriptHook hook, double dt);
     void releaseScripts() noexcept;  // shutdown: every instance object and class, before the context; then clears both
     // The default export of the entry's current generation when it is a class, else JS_UNDEFINED. A failure is adopted
     // into `evaluation`, an engine refusal is set in `refusal` and logged.

@@ -606,6 +606,10 @@ VmStats Vm::stats() const noexcept {
     return out;
 }
 
+std::chrono::milliseconds Vm::callTimeBudget() const noexcept {
+    return impl == nullptr ? std::chrono::milliseconds{0} : impl->config.callTimeBudget;
+}
+
 VmTeardownReport Vm::shutdown() noexcept {
     if (impl == nullptr) {
         return {};

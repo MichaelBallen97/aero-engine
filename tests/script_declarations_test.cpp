@@ -1,4 +1,4 @@
-// Aero Engine -- the TypeScript declarations against a live VM (task 4.2.2; DT1-DT7, and since 4.4.1 DT22-DT24).
+// Aero Engine -- the TypeScript declarations against a live VM (task 4.2.2; DT1-DT7, and since 4.4.1 DT22-DT25).
 //
 // The build joins engine/script/types/prelude.d.ts with one reflect-gen --emit-dts block per built-in component header
 // into aero-engine.d.ts. These cases read that file from disk with a deliberately strict reader (the line grammar in
@@ -859,4 +859,33 @@ TEST_CASE("declarations: an attached instance holds exactly the declared non-opt
     CHECK(required == std::vector<std::string>{"entity"});
     CHECK(completion(vm, "String(i.entity instanceof engine.Entity)") == "true");
     expectCleanShutdown(vm);
+}
+
+TEST_CASE("declarations: a base class's optional methods are exactly the hooks the VM reads (DT25)") {
+    const Declarations declared = parseDeclarations(builtFile());
+    REQUIRE(declared.error.empty());
+    const DeclaredClass* const script = findDeclared(declared, "Script");
+    REQUIRE(script != nullptr);
+
+    std::vector<std::pair<std::string, int>> optionals;
+    for (const DeclaredMember& member : script->members) {
+        if (member.optional) {
+            optionals.emplace_back(member.name, member.arity);
+        }
+    }
+    std::vector<std::pair<std::string, int>> hooks;
+    for (std::size_t i = 0; i < engine::script::SCRIPT_HOOK_COUNT; ++i) {
+        const auto hook = static_cast<engine::script::ScriptHook>(i);
+        const int arity = hook == engine::script::ScriptHook::Update ? 1 : 0;
+        hooks.emplace_back(std::string{engine::script::scriptHookName(hook)}, arity);
+    }
+    CHECK(optionals == hooks);
+
+    for (const DeclaredClass& cls : declared.classes) {
+        for (const DeclaredMember& member : cls.members) {
+            CAPTURE(cls.name);
+            CAPTURE(member.name);
+            CHECK((member.optional ? cls.base : true));  // no class but a base declares an optional member
+        }
+    }
 }
