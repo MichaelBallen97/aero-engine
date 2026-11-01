@@ -2006,7 +2006,7 @@ TEST_CASE("scene_serialize: section 2.3's tolerance rules on the ScriptComponent
     SUBCASE("an EXTRA key is one WARN and is never carried") {
         int warnings = -1;
         ScriptComponent got{};
-        load("{\"script\": \"44100000000000000000000000000001\", \"enabled\": true}", warnings, got);
+        load(R"({"script": "44100000000000000000000000000001", "enabled": true})", warnings, got);
         CHECK(warnings == 1);
         CHECK(got.script == Guid{0x4410000000000000ULL, 0x1ULL});
         World world;
@@ -2017,8 +2017,8 @@ TEST_CASE("scene_serialize: section 2.3's tolerance rules on the ScriptComponent
 
     SUBCASE("a number, a short string and a 31-digit string are one WARN each and leave the field nil") {
         for (const std::string_view payload :
-             {std::string_view{"{\"script\": 5}"}, std::string_view{"{\"script\": \"xyz\"}"},
-              std::string_view{"{\"script\": \"4410000000000000000000000000001\"}"}}) {
+             {std::string_view{R"({"script": 5})"}, std::string_view{R"({"script": "xyz"})"},
+              std::string_view{R"({"script": "4410000000000000000000000000001"})"}}) {
             CAPTURE(payload);
             int warnings = -1;
             ScriptComponent got{};
@@ -2031,7 +2031,7 @@ TEST_CASE("scene_serialize: section 2.3's tolerance rules on the ScriptComponent
     SUBCASE("upper-case hex loads and re-emits lower-case") {
         int warnings = -1;
         ScriptComponent got{};
-        load("{\"script\": \"4410000000000000000000000000ABCD\"}", warnings, got);
+        load(R"({"script": "4410000000000000000000000000ABCD"})", warnings, got);
         CHECK(warnings == 0);
         CHECK(got.script == Guid{0x4410000000000000ULL, 0xABCDULL});
         World world;

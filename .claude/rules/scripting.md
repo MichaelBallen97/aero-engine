@@ -215,6 +215,29 @@ needed it and before that error's record: `script: <map path>: source map not us
 JavaScript`. The frame grammar anchors on the last ` (res://` and matches only names the VM gave a generation that has
 a map, because a split from the right breaks on a file named like `a (b).js`; one rewrite reads at most 64 lines.
 
+**AN ATTACHED INSTANCE HOLDS ITS ENTITY AS AN OWN, READ-ONLY, NON-ENUMERABLE, CONFIGURABLE `entity` (4.4.1).** The base
+class `engine.Script` defines it from the entity the VM holds pending around each engine-driven construction; a class
+that does not extend the base gets it after its constructor returns and before `onInit`. It is defined after
+construction and before a reload's carry, under the binding the instance was attached with, so 4.3.3's carry neither
+moves nor counts it and an instance that cannot hold it (frozen, sealed, a non-configurable own `entity`) is refused
+`NotAClass`, a reload refused whole. A `bindWorld` made after the attach turns it stale like any entity object.
+
+**ONE HOOK IS ONE CALL, AND AN INTERRUPTED CALL IS FOLLOWED BY ONE EMPTY EVALUATION (4.4.1).** `Vm::callHook` reads the
+hook from the instance inside its own call and runs it under its own time budget with its own status, so a runaway
+hook ends one call, not the frame. After any call that ended `Interrupted` the system makes one empty evaluation named
+with the script's path and ignores its status, so R34's reaction job answers for the script it came from instead of
+faulting whichever instance runs next (LC17 pins the shape). A budget that fires suspends the whole script in that
+system: one WARN, no hook of it runs again, `onDestroy` included, until `reloadScript` returns `Ok`.
+
+**`ScriptSystem` USES THE PUBLIC `Vm` API ONLY, AND A BIND OR A `loadScript` MADE AROUND IT CLEARS NOTHING (4.4.1).** The
+system is its VM's only binder while it lives (one system per Vm). A `bindWorld` made by anyone else turns every
+attached `entity` stale and each hook that touches one faults its instance after one ERROR (LC26); a `Vm::loadScript`
+made around it moves the instances and clears none of the failures the system remembers. Each update takes its
+snapshot of the World's ScriptComponents before any script runs, so a hook's World changes land at the next update
+(LC28-LC30); every hook still runs only while its entity is alive and still names its script. BN57 holds the heap and
+live-allocation figures flat after every update (Q7), so a per-update retention is a finding, never a flake; no case
+asserts a duration (4.1.1's trap).
+
 ## What Phase 4's next tasks inherit
 
 **Phase 4 is open; Epic 4.1 is closed (4.1.1, 4.1.2) and 4.2.1, quickjs binding emission, is merged (`docs/tasks/phase-4.md`).**
@@ -239,3 +262,9 @@ project root at `res://` gives `res://assets/...`, a `Library/Scripts` mount the
 between a publish's map write and its JavaScript write reads the next build's map with the previous JavaScript, so
 4.7.4 reloads on the provenance record, which 4.3.1 writes last. Its page hovers the Console's tooltip. R35 (quickjs's
 recorded positions) and R36 (nothing of a generation is freed before teardown) are in `docs/08`.
+
+**What 4.4.1 leaves for later tasks.** 4.7.4 calls `update`, `stop` and `reloadScript` and supplies the resolver (a
+script Guid to its `res://` path) and the VFS mount; nothing in the editor runs a script until then. 4.4.2 adds the
+entity API a hook calls beyond `get`, `has`, `add` and `remove`. A script that recurses past about 50 levels fails in
+Debug only (D8: Windows Debug's C stack is the lowest). The merge's record enters D8, the line-0 frame of a throwing
+field initializer beside R35, and D9, which closes the `bindWorld` handoff, in `docs/08-risks.md`.

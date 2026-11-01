@@ -1,8 +1,8 @@
-// tests/script_system_test.cpp -- task 4.4.1: engine::script::ScriptSystem over one World (LC1-LC25, LC27). The system
-// is written against the Vm's public API, so every case drives it through a VM over the built-in table, a World, and a
-// resolver from a script Guid to a res:// path. Scripts observe through `globalThis.log`, instance fields and
-// `this.entity.alive`, so none of these cases needs a bound component and all of them run with the reflect tools OFF.
-// A TU of aero_tests, which supplies main() from test_main.cpp.
+// tests/script_system_test.cpp -- task 4.4.1: engine::script::ScriptSystem over one World (LC1-LC25, LC27, LC31). The
+// system is written against the Vm's public API, so every case drives it through a VM over the built-in table, a
+// World, and a resolver from a script Guid to a res:// path. Scripts observe through `globalThis.log`, instance fields
+// and `this.entity.alive`, so none of these cases needs a bound component and all of them run with the reflect tools
+// OFF. A TU of aero_tests, which supplies main() from test_main.cpp.
 #include <aero/core/guid.hpp>
 #include <aero/core/log.hpp>
 #include <aero/core/vfs.hpp>
@@ -53,47 +53,8 @@ using engine::script::Vm;
 using engine::script::VmConfig;
 using engine::script::internal::VmAccess;
 
-// A module source in memory; it counts its reads, so a case can tell that nothing re-read a file.
-class MemoryBackend final : public engine::FileSystemBackend {
-public:
-    void set(std::string relPath, std::string text) { files[std::move(relPath)] = std::move(text); }
-
-    [[nodiscard]] std::size_t readCount() const noexcept { return reads; }
-
-    [[nodiscard]] bool exists(std::string_view relPath) const override { return files.contains(relPath); }
-
-    [[nodiscard]] std::optional<std::uint64_t> fileSize(std::string_view relPath) const override {
-        const auto found = files.find(relPath);
-        if (found == files.end()) {
-            return std::nullopt;
-        }
-        return static_cast<std::uint64_t>(found->second.size());
-    }
-
-    [[nodiscard]] std::optional<engine::ByteBuffer> readFile(std::string_view relPath) const override {
-        const auto found = files.find(relPath);
-        if (found == files.end()) {
-            return std::nullopt;
-        }
-        ++reads;
-        engine::ByteBuffer bytes;
-        bytes.reserve(found->second.size());
-        for (const char c : found->second) {
-            bytes.push_back(static_cast<std::byte>(c));
-        }
-        return bytes;
-    }
-
-private:
-    std::map<std::string, std::string, std::less<>> files;
-    mutable std::size_t reads = 0;
-};
-
-// A script in esbuild 0.28.2's measured shape.
-[[nodiscard]] std::string classSource(std::string_view members) {
-    return std::format("var Mover = class extends engine.Script {{\n{}\n}};\nexport {{\n  Mover as default\n}};\n",
-                       members);
-}
+using script_test::classSource;
+using script_test::MemoryBackend;
 
 // A class whose three hooks each log one line, `<tag><hook>:<n>` (onUpdate adds `:<dt>`), n being the instance's own
 // serial. Each extra statement runs AFTER the hook's own log line, so a throw still shows the call happened.
@@ -1012,7 +973,7 @@ TEST_CASE("system: Unchanged, CompileError and AlreadyRefused are returned and c
 }
 
 TEST_CASE("system: a loadScript made around the system moves its instances and clears none of its failures (LC24)") {
-    script_test::LogCapture capture;
+    const script_test::LogCapture capture;
     SystemFixture fx;
     fx.publish(guidOf(1), "m.js",
                classSource(hooks("v1:", "", "if (this.n === 0 && this.count === 1) { throw new Error('bad'); }")));
@@ -1076,5 +1037,46 @@ TEST_CASE("system: reloadScript refuses a Guid the resolver now sends to another
     static_cast<void>(fx.tick());
     CHECK(fx.log() == "one:update:0:0.5");
     CHECK(label(fx.system->stateOf(e)) == "Running");
+    fx.finish();
+}
+
+TEST_CASE("system: ten thousand instances of a hook-less script are all detached by stop() (LC31)") {
+    const script_test::LogCapture capture;
+    constexpr std::size_t ENTITY_COUNT = 10000;
+    constexpr std::size_t SPREAD_STEP = 997;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "bare.js", classSource(""));
+    std::vector<Entity> entities;
+    entities.reserve(ENTITY_COUNT);
+    for (std::size_t i = 0; i < ENTITY_COUNT; ++i) {
+        entities.push_back(fx.attachScript(guidOf(1)));
+    }
+
+    const ScriptSystemReport updated = fx.tick();
+    CHECK(updated.attached == ENTITY_COUNT);
+    CHECK(updated.updated == ENTITY_COUNT);
+    CHECK(updated.running == ENTITY_COUNT);
+
+    std::vector<ScriptInstance> spread;
+    for (std::size_t i = 0; i < ENTITY_COUNT; i += SPREAD_STEP) {
+        const ScriptInstance handle = fx.system->instanceOf(entities[i]);
+        REQUIRE(handle.valid());
+        spread.push_back(handle);
+    }
+    REQUIRE(spread.size() > 1U);
+
+    const auto start = std::chrono::steady_clock::now();
+    const ScriptSystemReport stopped = fx.system->stop();
+    const auto stop = std::chrono::steady_clock::now();
+    MESSAGE("LC31: stop() over ", ENTITY_COUNT,
+            " instances = ", std::chrono::duration<double, std::milli>(stop - start).count(), " ms");
+
+    CHECK(stopped.detached == ENTITY_COUNT);
+    CHECK_FALSE(fx.system->bound());
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);  // nothing failed before the probes below
+    for (const ScriptInstance handle : spread) {
+        CHECK(answersUnknown(fx.vm, handle));
+    }
+    CHECK(capture.countAtLeast(LogLevel::Warn) == spread.size());  // one refusal ERROR per probe, nothing else
     fx.finish();
 }

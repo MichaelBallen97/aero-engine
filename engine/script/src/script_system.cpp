@@ -113,7 +113,7 @@ struct ScriptSystem::Impl {
 
     // The entity is alive and still names the instance's script.
     [[nodiscard]] bool entityNames(const Attached& attached) const {
-        const ScriptComponent* const component = std::as_const(world).get<ScriptComponent>(attached.entity);
+        const auto* const component = std::as_const(world).get<ScriptComponent>(attached.entity);
         return component != nullptr && component->script == attached.script;
     }
 
@@ -438,7 +438,7 @@ ScriptEntityState ScriptSystem::stateOf(Entity entity) const {
         }
         return held.initDone ? ScriptEntityState::Running : ScriptEntityState::PendingInit;
     }
-    const ScriptComponent* const component = std::as_const(impl->world).get<ScriptComponent>(entity);
+    const auto* const component = std::as_const(impl->world).get<ScriptComponent>(entity);
     if (component == nullptr || !component->script.valid()) {
         return ScriptEntityState::None;
     }

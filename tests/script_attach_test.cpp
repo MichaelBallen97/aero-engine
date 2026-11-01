@@ -250,7 +250,7 @@ TEST_CASE("vm: createInstance with an entity refuses in order, each once and bef
 }
 
 TEST_CASE("vm: an attached instance holds its entity as read-only data its field initializers already see (VM68)") {
-    script_test::LogCapture log;
+    const script_test::LogCapture log;
     engine::World world;
     Fixture fx;
     const Entity e = world.create();
@@ -278,7 +278,7 @@ TEST_CASE("vm: an attached instance holds its entity as read-only data its field
 }
 
 TEST_CASE("vm: a class that does not extend engine.Script gets its entity after its constructor returns (VM69)") {
-    script_test::LogCapture log;
+    const script_test::LogCapture log;
     engine::World world;
     Fixture fx;
     const Entity e = world.create();
@@ -359,7 +359,7 @@ TEST_CASE("vm: an instance that cannot hold its entity is refused NotAClass, onc
 }
 
 TEST_CASE("vm: two attaches of one script hold separate fields and separate entities (VM71)") {
-    script_test::LogCapture log;
+    const script_test::LogCapture log;
     engine::World world;
     Fixture fx;
     const Entity first = world.create();
@@ -417,7 +417,7 @@ TEST_CASE("vm: a constructor that throws or never ends makes nothing and leaves 
 }
 
 TEST_CASE("vm: only the first base construction inside an attach takes the entity (VM73)") {
-    script_test::LogCapture log;
+    const script_test::LogCapture log;
     engine::World world;
     Fixture fx;
     const Entity e = world.create();
@@ -449,7 +449,7 @@ TEST_CASE("vm: only the first base construction inside an attach takes the entit
 // ---- VM74-VM81: callHook -------------------------------------------------------------------------------------
 
 TEST_CASE("vm: a hook runs as a method, an own arrow field or a getter's function, with this and dt (VM74)") {
-    script_test::LogCapture log;
+    const script_test::LogCapture log;
     Fixture fx;
     load(fx, "proto.js",
          classSource(

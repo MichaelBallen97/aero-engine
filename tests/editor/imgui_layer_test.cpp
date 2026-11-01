@@ -30340,3 +30340,85 @@ TEST_CASE("editor: a multi-line record draws one row and keeps its frames for th
     CHECK(app->tick() == false);
     app.reset();
 }
+
+// ---- task 4.4.1 (I368): the ScriptComponent's picker lists the project's scripts
+TEST_CASE(
+    "editor: the ScriptComponent picker lists the project's script, not its declarations, and one undo clears it "
+    "(task 4.4.1, I368)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "script picker i368", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    writeScriptProjectFile(created.root, "assets/scripts/mover.ts",
+                           "export default class Mover extends engine.Script {\n    speed = 2;\n}\n");
+    writeScriptProjectFile(created.root, "assets/scripts/mover.d.ts", "export declare const moverDeclared: number;\n");
+    std::optional<engine::editor::EditorApp> app =
+        openScriptApp(*device, *window, ctx, created.root, AERO_TEST_ESBUILD);
+    REQUIRE(app.has_value());
+    tickUntilScriptsIdle(*app);  // the transpiler is idle before the TempDir goes (Windows holds an open file)
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const engine::Entity cube = focusInspectorOnCube(*app);
+
+    const engine::ComponentTypeId scriptId = app->world().findComponentType("engine::ScriptComponent");
+    REQUIRE(scriptId.valid());
+    REQUIRE(engine::editor::addComponent(app->world(), cube, scriptId));
+    REQUIRE(app->tick());
+    const engine::ScriptComponent* held = app->world().get<engine::ScriptComponent>(cube);
+    REQUIRE(held != nullptr);
+    CHECK((held->script == engine::Guid{}));
+
+    app->requestInspectorAssetPicker("engine::ScriptComponent", "script");
+    REQUIRE(app->tick());
+    // Chosen at run time, not by an #if: with the reflect tools OFF there is no generated meta, the Inspector draws no
+    // Guid row, and the request has nothing to open on.
+    if (engine::editor::componentFieldsAreReflected(app->world(), scriptId)) {
+        REQUIRE(app->assetPickerOpen());
+        CHECK(app->assetPickerCandidateCount() == 1U);  // mover.ts; mover.d.ts and aero-engine.d.ts are text
+        CHECK(app->assetPickerCursor() == 0U);          // a nil field lands on None
+        app->requestAssetPickerMove(1);
+        REQUIRE(app->tick());
+        CHECK(app->assetPickerCursor() == 1U);
+        const std::size_t beforeCommit = app->commands().count();
+        app->requestAssetPickerCommit();
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+
+        const std::optional<engine::Guid> moverGuid = app->assetGuidForPath("scripts/mover.ts");
+        REQUIRE(moverGuid.has_value());
+        held = app->world().get<engine::ScriptComponent>(cube);
+        REQUIRE(held != nullptr);
+        CHECK((held->script == *moverGuid));
+        CHECK(app->commands().count() == beforeCommit + 1U);
+
+        app->requestUndo();
+        REQUIRE(app->tick());
+        held = app->world().get<engine::ScriptComponent>(cube);
+        REQUIRE(held != nullptr);
+        CHECK((held->script == engine::Guid{}));
+    } else {
+        for (int i = 0; i < 5; ++i) {
+            CAPTURE(i);
+            REQUIRE(app->tick());
+            CHECK_FALSE(app->assetPickerOpen());
+        }
+        CHECK(app->assetPickerCandidateCount() == 0U);
+        CHECK_FALSE(app->commands().canUndo());
+    }
+
+    tickUntilScriptsIdle(*app);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
