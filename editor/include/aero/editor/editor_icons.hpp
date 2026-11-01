@@ -43,6 +43,7 @@
 #define AERO_ICON_VOLUME_2 "\xEE\x86\xAB"       // U+E1AB volume-2
 #define AERO_ICON_EAR "\xEE\x8E\x82"            // U+E382 ear
 #define AERO_ICON_FILM "\xEE\x83\x90"           // U+E0D0 film
+#define AERO_ICON_CODE "\xEE\x82\x93"           // U+E093 code
 // ---- Assets ----
 #define AERO_ICON_FOLDER "\xEE\x83\x97"        // U+E0D7 folder
 #define AERO_ICON_FOLDER_OPEN "\xEE\x89\x87"   // U+E247 folder-open
@@ -96,7 +97,7 @@ struct EditorIcon {
     std::string_view utf8;   // the macro
 };
 
-inline constexpr std::array<EditorIcon, 67> EDITOR_ICONS{{
+inline constexpr std::array<EditorIcon, 68> EDITOR_ICONS{{
     {"mouse-pointer-2", 0xE1C3, AERO_ICON_MOUSE_POINTER_2},
     {"move", 0xE121, AERO_ICON_MOVE},
     {"rotate-cw", 0xE149, AERO_ICON_ROTATE_CW},
@@ -126,6 +127,7 @@ inline constexpr std::array<EditorIcon, 67> EDITOR_ICONS{{
     {"volume-2", 0xE1AB, AERO_ICON_VOLUME_2},
     {"ear", 0xE382, AERO_ICON_EAR},
     {"film", 0xE0D0, AERO_ICON_FILM},
+    {"code", 0xE093, AERO_ICON_CODE},
     {"folder", 0xE0D7, AERO_ICON_FOLDER},
     {"folder-open", 0xE247, AERO_ICON_FOLDER_OPEN},
     {"folder-plus", 0xE0D9, AERO_ICON_FOLDER_PLUS},

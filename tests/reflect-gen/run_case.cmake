@@ -34,6 +34,7 @@ set(LIGHT_HPP "${SCENE_INCLUDE}/aero/scene/light.hpp")    # task 1.3.3
 set(MESH_RENDERER_HPP "${SCENE_INCLUDE}/aero/scene/mesh_renderer.hpp")  # task 1.4.1
 set(ENVIRONMENT_HPP "${SCENE_INCLUDE}/aero/scene/environment.hpp")     # task E.2.1
 set(SPOT_LIGHT_HPP "${SCENE_INCLUDE}/aero/scene/spot_light.hpp")       # task E.2.2
+set(SCRIPT_COMPONENT_HPP "${SCENE_INCLUDE}/aero/scene/script_component.hpp")  # task 4.4.1
 set(ANNOTATIONS_HPP "${FIXTURES_DIR}/component_annotations.hpp")  # task 2.2.2
 set(TEXT_HPP "${FIXTURES_DIR}/component_text.hpp")                # task 2.2.2
 set(GUID_HPP "${FIXTURES_DIR}/component_guid.hpp")                # task 3.1.5
@@ -1154,6 +1155,39 @@ elseif(CASE STREQUAL "components_engine_spot_light")
     string(FIND "${err}" "error:" _idx_err)
     if(NOT _idx_err EQUAL -1)
         message(FATAL_ERROR "case 'components_engine_spot_light': error-severity diagnostic:\n${err}")
+    endif()
+
+elseif(CASE STREQUAL "components_engine_script_component")
+    # Task 4.4.1: the REAL tool over the REAL engine::ScriptComponent header. ONE component, ONE
+    # field: a Guid carrying the `script` asset kind token.
+    aero_run_tool(ARGS --components "${SCRIPT_COMPONENT_HPP}" -- ${CLANG_ARGS}
+        -I "${ENGINE_INCLUDE}" -I "${SCENE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "component engine::ScriptComponent")
+    aero_expect_stdout_contains("${out}" "field script : Guid [guid] [asset script]")
+
+    # exactly ONE component (the header declares no other type)
+    string(FIND "${out}" "component " _first)
+    math(EXPR _after "${_first} + 1")
+    string(SUBSTRING "${out}" ${_after} -1 _rest)
+    string(FIND "${_rest}" "component " _second)
+    if(NOT _second EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_script_component': expected exactly ONE component:\n${out}")
+    endif()
+
+    # anti-drift: no unsupported field, warning-free, error-free (the same three checks as spot light)
+    string(FIND "${out}" "[unsupported]" _idx_unsupported)
+    if(NOT _idx_unsupported EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_script_component': must have NO unsupported field:\n${out}")
+    endif()
+    string(FIND "${err}" "aero_reflect_gen: warning:" _idx_warn)
+    if(NOT _idx_warn EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_script_component': expected a warning-free parse:\n${err}")
+    endif()
+    string(FIND "${err}" "error:" _idx_err)
+    if(NOT _idx_err EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_script_component': error-severity diagnostic:\n${err}")
     endif()
 
 elseif(CASE STREQUAL "annotations_components")

@@ -70,6 +70,7 @@ add_executable(aero_tests
     light_test.cpp        # task 1.3.3 — engine::DirectionalLight + PointLight
     environment_test.cpp  # task E.2.1 — engine::Environment: layout, defaults, registration, selectors
     spot_light_test.cpp   # task E.2.2 — engine::SpotLight: layout, defaults, registration tenth, plain data
+    scene_script_component_test.cpp # task 4.4.1 — engine::ScriptComponent: layout, nil default, registration eleventh
     animation_player_test.cpp # task 3.5.2 — engine::AnimationPlayer: layout, defaults, the clock's six steps
     scene_render_test.cpp # task 1.4.1 — buildRenderView (tier-0) + gated SceneRenderer GPU draw-smoke
     asset_bindings_test.cpp # task 3.1.5 — AssetBindingTable: sorted-vector set/find/remove, nil refusal
@@ -881,6 +882,7 @@ if(AERO_REFLECT_TOOLS)
         components_engine_mesh_renderer   # task 1.4.1
         components_engine_environment     # task E.2.1
         components_engine_spot_light      # task E.2.2
+        components_engine_script_component  # task 4.4.1
         # task 2.2.2: field annotations (AERO_RANGE/AERO_COLOR) and the std::string category
         annotations_components annotations_meta annotations_malformed annotations_nonfinite
         annotations_misapplied annotations_unknown annotations_determinism
@@ -1387,7 +1389,7 @@ endfunction()
 # These two name no built-in component, so they run in the reflect-tools-OFF tree too; driver_e2e needs no Node at all.
 aero_add_typescript_case(prelude_only)
 aero_add_typescript_case(driver_e2e)
-# These two name the ten built-ins, which the tools-OFF artifact does not declare.
+# These two name built-in components, which the tools-OFF artifact does not declare.
 if(AERO_REFLECT_TOOLS)
     aero_add_typescript_case(clean)
     aero_add_typescript_case(broken)

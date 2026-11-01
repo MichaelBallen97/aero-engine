@@ -1,4 +1,4 @@
-// Aero Engine -- the generated built-in binding table (task 4.2.1; BN6, and from the later steps BN37-BN49).
+// Aero Engine -- the generated built-in binding table (task 4.2.1; BN6, and from the later steps BN37-BN52).
 //
 // Compiled into aero_tests only when AERO_REFLECT_TOOLS is ON: with the tools OFF the table is empty by design and
 // there is nothing generated to check.
@@ -12,6 +12,7 @@
 #include <aero/scene/environment.hpp>
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>
+#include <aero/scene/script_component.hpp>
 #include <aero/scene/spot_light.hpp>
 #include <aero/scene/transform.hpp>
 #include <aero/scene/world.hpp>
@@ -49,7 +50,8 @@ TEST_CASE("script: the generated table binds exactly a fresh World's registratio
     }
 }
 
-// ---- BN37-BN49: the ten built-in components, end to end through the generated table -------------------------------
+// ---- BN37-BN52: the eleven built-in components, end to end through the generated table
+// -------------------------------
 
 namespace {
 
@@ -89,7 +91,7 @@ template <class... Values>
     return out;
 }
 
-// A World (all ten built-ins registered by its constructor), a VM over the generated table bound to it, and one
+// A World (all eleven built-ins registered by its constructor), a VM over the generated table bound to it, and one
 // entity defined as the global `e`. The VM is declared after the World, so it is destroyed first.
 struct BuiltinScene {
     World world;
@@ -537,10 +539,11 @@ TEST_CASE("script: a held Transform and position refuse a destroyed entity, and 
 }
 
 TEST_CASE("script: the end-to-end list names every built-in a fresh World registers (BN48)") {
-    // One entry per case BN37-BN46. A new built-in reddens this case until its end-to-end case exists and is listed.
-    constexpr std::array<std::string_view, 10> END_TO_END{
-        "Transform",       "Camera",      "DirectionalLight", "PointLight",  "MeshRenderer",
-        "AnimationPlayer", "AudioSource", "AudioListener",    "Environment", "SpotLight"};
+    // One entry per case BN37-BN46 and BN52. A new built-in reddens this case until its end-to-end case exists and is
+    // listed.
+    constexpr std::array<std::string_view, 11> END_TO_END{
+        "Transform",   "Camera",        "DirectionalLight", "PointLight", "MeshRenderer",   "AnimationPlayer",
+        "AudioSource", "AudioListener", "Environment",      "SpotLight",  "ScriptComponent"};
 
     const World world;
     std::set<std::string> registered;
@@ -562,6 +565,39 @@ TEST_CASE("script: the end-to-end list names every built-in a fresh World regist
         INFO("listed, not registered: " << name);
         CHECK(registered.contains(name));
     }
+}
+
+TEST_CASE("script: ScriptComponent end to end, the Guid shape of AudioSource::clip (BN52)") {
+    const LogCapture log;
+    BuiltinScene scene;
+    REQUIRE(scene.vm.defineEntityGlobal("e", scene.entity) == BindStatus::Ok);
+
+    CHECK(completion(scene.vm, "e.has(engine.ScriptComponent)") == "false");
+    CHECK(completion(scene.vm, "globalThis.c = e.add(engine.ScriptComponent); e.has(engine.ScriptComponent)") ==
+          "true");
+    CHECK(completion(scene.vm, "c.script") == "00000000000000000000000000000000");
+    CHECK(scene.held<engine::ScriptComponent>().script == Guid{});
+
+    const Guid stored{0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
+    completion(scene.vm, "c.script = '0123456789abcdeffedcba9876543210'; 0");
+    CHECK(scene.held<engine::ScriptComponent>().script == stored);
+    CHECK(completion(scene.vm, "c.script") == "0123456789abcdeffedcba9876543210");
+    completion(scene.vm,
+               "c.script = '00000000000000000000000000000000'; c.script = '0123456789ABCDEFFEDCBA9876543210'; 0");
+    CHECK(scene.held<engine::ScriptComponent>().script == stored);
+    CHECK(completion(scene.vm, "c.script") == "0123456789abcdeffedcba9876543210");
+
+    CHECK(scene.thrown("c.script = 5") == "TypeError: engine.ScriptComponent.script: expected a string, got a number");
+    CHECK(scene.thrown("c.script = 'xyz'") == "RangeError: engine.ScriptComponent.script: expected 32 hex digits");
+    CHECK(scene.thrown("c.script = '0123456789abcdeffedcba987654321'") ==
+          "RangeError: engine.ScriptComponent.script: expected 32 hex digits");
+    CHECK(scene.held<engine::ScriptComponent>().script == stored);
+
+    CHECK(completion(scene.vm, "e.get(engine.ScriptComponent).script") == "0123456789abcdeffedcba9876543210");
+    CHECK(completion(scene.vm, "e.remove(engine.ScriptComponent)") == "true");
+    CHECK(completion(scene.vm, "e.has(engine.ScriptComponent)") == "false");
+    CHECK_FALSE(scene.world.has<engine::ScriptComponent>(scene.entity));
+    expectCleanShutdown(scene.vm);
 }
 
 TEST_CASE("script: a thousand cached Transforms take fifty frames of position writes (BN49)") {

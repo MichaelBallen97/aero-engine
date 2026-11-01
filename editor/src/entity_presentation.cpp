@@ -17,7 +17,7 @@ namespace engine::editor {
 
 namespace {
 
-// THE ten built-ins (CMakeLists.txt's AERO_BUILTIN_COMPONENT_HEADERS), keyed by registration name.
+// THE eleven built-ins (CMakeLists.txt's AERO_BUILTIN_COMPONENT_HEADERS), keyed by registration name.
 constexpr std::array<ComponentIconRow, COMPONENT_ICON_COUNT> COMPONENT_ICONS{{
     {"engine::Transform", AERO_ICON_AXIS_3D},
     {"engine::Camera", AERO_ICON_CAMERA},
@@ -29,6 +29,7 @@ constexpr std::array<ComponentIconRow, COMPONENT_ICON_COUNT> COMPONENT_ICONS{{
     {"engine::AudioSource", AERO_ICON_VOLUME_2},
     {"engine::AudioListener", AERO_ICON_EAR},
     {"engine::Environment", AERO_ICON_CLOUD_SUN},
+    {"engine::ScriptComponent", AERO_ICON_CODE},
 }};
 
 [[nodiscard]] bool isAsciiUpper(char c) noexcept { return c >= 'A' && c <= 'Z'; }

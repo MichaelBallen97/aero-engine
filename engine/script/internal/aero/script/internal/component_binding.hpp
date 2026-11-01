@@ -128,7 +128,7 @@ template <typename C, typename... Fields>
     return ComponentBinding{scriptName, componentTypeId<C>(), std::vector<FieldBinding>{fields.binding...}};
 }
 
-// The generated ten built-ins, or an empty table when reflect-gen is not built.
+// The generated built-ins, or an empty table when reflect-gen is not built.
 [[nodiscard]] const ComponentBindingTable& builtinComponentBindings();
 
 struct VmAccess {

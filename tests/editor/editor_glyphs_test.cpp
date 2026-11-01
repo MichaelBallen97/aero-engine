@@ -366,7 +366,7 @@ TEST_CASE("glyphs: every glyph macro is its code point (task E.6.1, GL1)") {
 }
 
 TEST_CASE("glyphs: every icon macro is its code point (task E.6.1, GL2)") {
-    REQUIRE(ed::EDITOR_ICONS.size() == 67U);
+    REQUIRE(ed::EDITOR_ICONS.size() == 68U);
     std::set<std::string_view> names;
     std::set<char32_t> codepoints;
     for (const ed::EditorIcon& icon : ed::EDITOR_ICONS) {
@@ -391,7 +391,7 @@ TEST_CASE("glyphs: icon names are the upstream names (task E.6.1, GL3)") {
     for (const std::string& line : code) {
         defineLines += line.starts_with("#define AERO_ICON_") ? 1U : 0U;
     }
-    REQUIRE(defineLines == 67U);  // anti-vacuity: the reader saw the whole roster
+    REQUIRE(defineLines == 68U);  // anti-vacuity: the reader saw the whole roster
     for (const ed::EditorIcon& icon : ed::EDITOR_ICONS) {
         CAPTURE(icon.name);
         const std::string macro = "AERO_ICON_" + upperSnake(icon.name);

@@ -77,6 +77,7 @@ set(AERO_BUILTIN_COMPONENT_HEADERS
     ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/audio_listener.hpp    # 3.7.2 -- 8th
     ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/environment.hpp       # E.2.1 -- 9th
     ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/spot_light.hpp        # E.2.2 -- 10th
+    ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/script_component.hpp  # 4.4.1 -- 11th
 )
 
 # Layer order = dependency order (docs/03). The golden rule is physical here:

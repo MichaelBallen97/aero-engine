@@ -3164,11 +3164,11 @@ namespace {
 }
 
 // The atom array grows 711 -> 1066 -> 1599 entries, and the fresh VM's atoms are the backend's 633 plus the `engine`
-// namespace's (task 4.2.1), which depends on the build: measured on macos-debug, 773 with the ten built-ins bound (the
-// array is already at 1066) and 652 with an empty table (reflect tools OFF, still at 711). This prelude interns 272
-// more (and about two of its own), which leaves the bound VM under 1066 (about 1047) and the empty one at about 926, so
-// the 160 fresh names below cross 1066 on BOTH builds. A binding that adds or removes more than a dozen atoms moves
-// this window; the case then fails on its REQUIRE until the count is re-derived.
+// namespace's (task 4.2.1), which depends on the build: measured on macos-debug, 777 with the eleven built-ins bound
+// (the array is already at 1066) and 652 with an empty table (reflect tools OFF, still at 711). This prelude interns
+// 272 more (and about two of its own), which leaves the bound VM under 1066 (about 1051) and the empty one at about
+// 926, so the 160 fresh names below cross 1066 on BOTH builds. A binding that adds or removes more than a dozen atoms
+// moves this window; the case then fails on its REQUIRE until the count is re-derived.
 constexpr std::string_view ATOM_PRELUDE = "for (let i = 0; i < 272; i++) globalThis['q' + i] = 0; 0";
 
 }  // namespace

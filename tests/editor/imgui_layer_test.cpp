@@ -14467,7 +14467,7 @@ TEST_CASE("editor: the Inspector draws every field kind inside a table without a
     // Bool, UInt, Float, a non-colour Vec3 (Transform::position/scale), a colour Vec3
     // (MeshRenderer::color and four more), Quat (Transform::rotation) and Guid (AudioSource::clip).
     const std::size_t typeCount = world.componentTypeCount();
-    REQUIRE(typeCount == 10);
+    REQUIRE(typeCount == 11);
     std::size_t added = 0;
     for (std::size_t i = 0; i < typeCount; ++i) {
         const engine::ComponentTypeId id = world.componentTypeAt(i);
@@ -21828,7 +21828,7 @@ TEST_CASE("editor: every roster icon draws in Body and Strong, centred on the ca
     for (const engine::editor::EditorIcon& icon : engine::editor::EDITOR_ICONS) {
         points.push_back(icon.codepoint);
     }
-    REQUIRE(points.size() == 67U);
+    REQUIRE(points.size() == 68U);
     points.push_back(U'H');
     const std::size_t hIndex = points.size() - 1U;
 
