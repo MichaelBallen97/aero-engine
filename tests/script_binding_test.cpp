@@ -1261,6 +1261,7 @@ TEST_CASE("script: no hand-written script source names a built-in component (BN3
     bool sawApiHeader = false;
     bool sawPublicHeader = false;    // include/
     bool sawInternalHeader = false;  // internal/
+    bool sawLifecycleName = false;   // the one exception below
     for (const fs::path& file : files) {
         const std::string text = strippedSource(file);
         INFO("file: " << file.filename().string());
@@ -1271,11 +1272,18 @@ TEST_CASE("script: no hand-written script source names a built-in component (BN3
                                                   holdsIdentifier(text, "ComponentBindingTable"));
         for (const std::string& name : names) {
             INFO("component: " << name);
+            // The one sanctioned exception (task 4.4.1): ScriptSystem walks the component that names a script, and
+            // that file names no other component.
+            if (file.filename() == "script_system.cpp" && name == "ScriptComponent") {
+                sawLifecycleName = sawLifecycleName || holdsIdentifier(text, name);
+                continue;
+            }
             CHECK_FALSE(holdsIdentifier(text, name));
         }
     }
     // Anti-vacuity: the scan reached all three roots (src, include, internal), and the same scan finds a real
     // identifier in each.
+    CHECK(sawLifecycleName);
     CHECK(sawApiSource);
     CHECK(sawApiHeader);
     CHECK(sawPublicHeader);

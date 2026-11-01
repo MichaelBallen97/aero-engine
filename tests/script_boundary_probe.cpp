@@ -97,3 +97,8 @@ static_assert(std::is_same_v<decltype(script::cookScriptBytecode(std::string_vie
                              script::ScriptCookResult>);
 static_assert(script::MAX_COOK_SOURCE_BYTES == std::size_t{16} * 1024U * 1024U);
 static_assert(script::COOK_HEAP_LIMIT_BYTES == std::size_t{1024} * 1024U * 1024U);
+
+// ---- the script lifecycle (task 4.4.1) ----
+static_assert(!std::is_copy_constructible_v<script::ScriptSystem>);
+static_assert(!std::is_move_constructible_v<script::ScriptSystem>);
+static_assert(noexcept(script::scriptEntityStateLabel(script::ScriptEntityState::None)));
