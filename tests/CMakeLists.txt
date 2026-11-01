@@ -47,7 +47,7 @@ add_executable(aero_tests
     script_bytecode_test.cpp  # task 4.3.2 — the bytecode cook and the loader's container branch (BY8-BY37)
     script_module_test.cpp    # task 4.1.2 — ES modules through the VFS: the grammar, the cache, the statuses (ML1-ML51)
     script_binding_test.cpp   # task 4.2.1 — the binding runtime over a fixture table (BN1–BN5, BN7–BN36, BN53-BN55)
-    script_declarations_test.cpp # task 4.2.2 -- the declarations against a live VM (DT1-DT7, DT22-DT23)
+    script_declarations_test.cpp # task 4.2.2 -- the declarations against a live VM (DT1-DT7, DT22-DT25)
     script_reload_test.cpp # task 4.3.3 -- script classes, instances and hot reload (HR1-HR32)
     script_source_map_test.cpp # task 4.3.4 -- source maps: the pure core and the VM's mapped errors (SR1-SR30)
     script_attach_test.cpp # task 4.4.1 -- engine.Script and the instances the VM attaches to entities (VM66-VM81)
