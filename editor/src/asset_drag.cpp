@@ -63,6 +63,8 @@ bool assetKindIsDraggable(AssetKind kind) noexcept {
         case AssetKind::Texture:
         case AssetKind::Model:
         case AssetKind::Material:
+        // task 4.4.1: Script is draggable so a script component's asset field can take a .ts.
+        case AssetKind::Script:
         // task E.3.3: Audio joins the set, because AudioSource::clip is a drop target now and a
         // target whose payload can never be dragged is a dead surface -- the SOURCE refuses to start
         // a drag for a non-draggable kind (asset_browser_panel.cpp). Its four pre-existing matrix
@@ -205,6 +207,7 @@ DropAction classifyAssetDrop(AssetKind kind, DropSurface surface, bool targetHas
         // `return DropAction::None;` here would read identically today and would silently NOT widen.
         // AR2's Text-on-a-Text-field row is what proves the term is live.
         case AssetKind::Audio:
+        case AssetKind::Script:
         case AssetKind::Folder:
         case AssetKind::Text:
         case AssetKind::Unknown:

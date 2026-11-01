@@ -4,6 +4,7 @@
 #include <aero/editor/asset_view.hpp>
 #include <aero/editor/editor_glyphs.hpp>
 #include <aero/editor/editor_theme.hpp>  // task E.6.1 -- iconColorFor's seven colours
+#include <aero/editor/esbuild_tool.hpp>  // task 4.4.1 -- isScriptAssetName (pure)
 
 #include <algorithm>
 #include <array>
@@ -88,6 +89,10 @@ AssetKind classifyAssetKind(std::string_view fileName, bool isDirectory) noexcep
     if (isDirectory) {
         return AssetKind::Folder;
     }
+    // task 4.4.1: before the tables, so a .ts the transpiler bundles is never Text.
+    if (isScriptAssetName(fileName)) {
+        return AssetKind::Script;
+    }
     const std::string_view ext = rawExtensionOf(fileName);
     if (ext.empty()) {
         return AssetKind::Unknown;
@@ -132,6 +137,8 @@ std::string_view assetKindLabel(AssetKind kind) noexcept {
             return "Text";
         case AssetKind::Material:
             return "Material";
+        case AssetKind::Script:
+            return "Script";
         case AssetKind::Unknown:
             return "Unknown";
     }
@@ -191,6 +198,8 @@ IconColor iconColorFor(AssetKind kind) noexcept {
             return iconColorOf(EDITOR_THEME.assetKind.text);
         case AssetKind::Material:
             return iconColorOf(EDITOR_THEME.assetKind.material);
+        case AssetKind::Script:
+            return iconColorOf(EDITOR_THEME.assetKind.script);
         case AssetKind::Unknown:
             return iconColorOf(EDITOR_THEME.assetKind.unknown);
     }

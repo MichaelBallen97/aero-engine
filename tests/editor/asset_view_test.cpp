@@ -11,6 +11,8 @@
 #include <aero/editor/asset_browser_chrome.hpp>  // task E.6.3 (AV66): the contents pane's group
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/asset_view.hpp>
+#include <aero/editor/editor_theme.hpp>  // task 4.4.1 (AV70): the Script colour token
+#include <aero/editor/esbuild_tool.hpp>  // task 4.4.1 (AV68): isScriptAssetName
 #include <aero/editor/project_files.hpp>
 
 #include <doctest/doctest.h>
@@ -47,6 +49,7 @@ using engine::editor::isBrowserVisibleName;
 using engine::editor::isIgnoredAssetName;
 using engine::editor::isMetaFileName;
 using engine::editor::isScannableAssetName;
+using engine::editor::isScriptAssetName;
 using engine::editor::isThumbnailDecodable;
 using engine::editor::matchesFilter;
 using engine::editor::searchAssets;
@@ -85,7 +88,9 @@ TEST_CASE("asset view: every Audio extension classifies as Audio (AV3)") {
 }
 
 TEST_CASE("asset view: every Text extension classifies as Text (AV4)") {
-    constexpr std::array<std::string_view, 7> EXTS{"json", "txt", "md", "hlsl", "glsl", "ts", "js"};
+    // task 4.4.1: "ts" left the loop -- a lower-case .ts that is not a .d.ts is a Script (AV68), and the
+    // table keeps "ts" for the names that stay Text.
+    constexpr std::array<std::string_view, 6> EXTS{"json", "txt", "md", "hlsl", "glsl", "js"};
     for (const std::string_view ext : EXTS) {
         const std::string name = std::string("x.") + std::string(ext);
         CHECK(classifyAssetKind(name, false) == AssetKind::Text);
@@ -137,7 +142,7 @@ TEST_CASE("asset view: classifyAssetKind is total (AV14)") {
         const AssetKind kind = classifyAssetKind(name, false);
         CHECK((kind == AssetKind::Folder || kind == AssetKind::Texture || kind == AssetKind::Model ||
                kind == AssetKind::Audio || kind == AssetKind::Text || kind == AssetKind::Material ||
-               kind == AssetKind::Unknown));
+               kind == AssetKind::Script || kind == AssetKind::Unknown));
     }
 }
 
@@ -201,9 +206,9 @@ TEST_CASE("asset view: iconLabelFor is always <= 4 chars and ASCII uppercase (AV
 }
 
 TEST_CASE("asset view: iconColorFor is total and stable across calls (AV25)") {
-    constexpr std::array<AssetKind, 7> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+    constexpr std::array<AssetKind, 8> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
                                              AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
-                                             AssetKind::Unknown};
+                                             AssetKind::Script, AssetKind::Unknown};
     for (const AssetKind kind : KINDS) {
         const auto c1 = iconColorFor(kind);
         const auto c2 = iconColorFor(kind);
@@ -215,9 +220,9 @@ TEST_CASE("asset view: iconColorFor is total and stable across calls (AV25)") {
 }
 
 TEST_CASE("asset view: iconColorFor gives distinct colours to every kind (AV26)") {
-    constexpr std::array<AssetKind, 7> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+    constexpr std::array<AssetKind, 8> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
                                              AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
-                                             AssetKind::Unknown};
+                                             AssetKind::Script, AssetKind::Unknown};
     for (std::size_t i = 0; i < KINDS.size(); ++i) {
         for (std::size_t j = i + 1; j < KINDS.size(); ++j) {
             const auto a = iconColorFor(KINDS[i]);
@@ -230,9 +235,9 @@ TEST_CASE("asset view: iconColorFor gives distinct colours to every kind (AV26)"
 }
 
 TEST_CASE("asset view: assetKindLabel is total and non-empty (AV27)") {
-    constexpr std::array<AssetKind, 7> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+    constexpr std::array<AssetKind, 8> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
                                              AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
-                                             AssetKind::Unknown};
+                                             AssetKind::Script, AssetKind::Unknown};
     for (const AssetKind kind : KINDS) {
         CHECK_FALSE(assetKindLabel(kind).empty());
     }
@@ -493,9 +498,9 @@ TEST_CASE("asset view: the kind-filter option list is EVERY kind, in enum order 
     // filter -- and all 1570 shell cases and all 119 GPU cases stayed green. No runtime tier can read
     // a combo's contents, so the fix was to delete the second copy rather than to test the panel: the
     // list now lives beside the enum and this case is its pin.
-    constexpr std::array<AssetKind, 7> EXPECTED{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+    constexpr std::array<AssetKind, 8> EXPECTED{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
                                                 AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
-                                                AssetKind::Unknown};
+                                                AssetKind::Script, AssetKind::Unknown};
     REQUIRE(ASSET_KIND_FILTER_OPTIONS.size() == EXPECTED.size());
     for (std::size_t i = 0; i < EXPECTED.size(); ++i) {
         CAPTURE(i);
@@ -1657,4 +1662,52 @@ TEST_CASE("asset view: a first code point wider than one byte is kept when it fi
     CHECK(elideCaptionRight(text, fitsBytes(6U)) == ELLIPSIS);
     // The subtitled line inherits the rule where it falls back to eliding the leaf.
     CHECK(subtitledTileCaptionLine(text, text, fitsCodePoints(2U)) == withEllipsis(grin, ELLIPSIS));
+}
+
+TEST_CASE("asset view: a .ts the transpiler bundles is a Script, every other spelling is not (AV68)") {
+    for (const std::string_view name : {"mover.ts", "a.D.ts"}) {
+        CAPTURE(name);
+        CHECK(classifyAssetKind(name, false) == AssetKind::Script);
+    }
+    for (const std::string_view name : {"mover.d.ts", "mover.TS", "mover.Ts", "mover.js", ".ts"}) {
+        CAPTURE(name);
+        CHECK(classifyAssetKind(name, false) == AssetKind::Text);
+    }
+    for (const std::string_view name : {"mover.tsx", "mover.mts"}) {
+        CAPTURE(name);
+        CHECK(classifyAssetKind(name, false) == AssetKind::Unknown);
+    }
+    for (const std::string_view name : {"mover.ts", "a.D.ts", "mover.d.ts", "mover.TS", "mover.Ts", "mover.js", ".ts",
+                                        "mover.tsx", "mover.mts", "x.png", "README", "x.aeromat"}) {
+        CAPTURE(name);
+        CHECK((classifyAssetKind(name, false) == AssetKind::Script) == isScriptAssetName(name));
+    }
+}
+
+TEST_CASE("asset view: a directory named mover.ts is a Folder (AV69)") {
+    CHECK(classifyAssetKind("mover.ts", true) == AssetKind::Folder);
+}
+
+TEST_CASE("asset view: Script has a label, a slot before Unknown and a theme colour (AV70)") {
+    CHECK(assetKindLabel(AssetKind::Script) == "Script");
+    CHECK(static_cast<int>(AssetKind::Script) == 6);
+    CHECK(static_cast<int>(AssetKind::Unknown) == 7);
+    CHECK((ASSET_KIND_FILTER_OPTIONS[6] == AssetKind::Script));
+    CHECK((ASSET_KIND_FILTER_OPTIONS[7] == AssetKind::Unknown));
+    const engine::editor::IconColor colour = iconColorFor(AssetKind::Script);
+    const engine::editor::Srgb8 token = engine::editor::EDITOR_THEME.assetKind.script;
+    CHECK(colour.r == token.r);
+    CHECK(colour.g == token.g);
+    CHECK(colour.b == token.b);
+    CHECK(colour.a == token.a);
+}
+
+TEST_CASE("asset view: the kind filter separates a Script from Text by the kind, not the extension (AV71)") {
+    const AssetFilter script{.kind = AssetKind::Script, .anyKind = false};
+    const AssetFilter text{.kind = AssetKind::Text, .anyKind = false};
+    CHECK(matchesFilter("mover.ts", false, script));
+    CHECK_FALSE(matchesFilter("mover.ts", false, text));
+    CHECK(matchesFilter("mover.d.ts", false, text));
+    CHECK_FALSE(matchesFilter("mover.d.ts", false, script));
+    CHECK_FALSE(matchesFilter("mover.ts", true, script));
 }
