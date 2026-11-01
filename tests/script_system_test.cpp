@@ -1,5 +1,5 @@
-// tests/script_system_test.cpp -- task 4.4.1: engine::script::ScriptSystem over one World (LC1-LC25, LC27, LC31). The
-// system is written against the Vm's public API, so every case drives it through a VM over the built-in table, a
+// tests/script_system_test.cpp -- task 4.4.1: engine::script::ScriptSystem over one World (LC1-LC25, LC27, LC31-LC33).
+// The system is written against the Vm's public API, so every case drives it through a VM over the built-in table, a
 // World, and a resolver from a script Guid to a res:// path. Scripts observe through `globalThis.log`, instance fields
 // and `this.entity.alive`, so none of these cases needs a bound component and all of them run with the reflect tools
 // OFF. A TU of aero_tests, which supplies main() from test_main.cpp.
@@ -206,6 +206,19 @@ void expectReport(const ScriptSystemReport& report, const Expected& expected) {
                     "  {2}onUpdate() {{ log.push('{0}update:' + this.c); if (globalThis.spin{0}) {{ {1} }} }}\n"
                     "  onDestroy() {{ log.push('{0}destroy:' + this.c); }}",
                     tag, spin, async ? "async " : ""));
+}
+
+// A script counting its constructions in globalThis.ctor<tag>, logging `<tag>update:<c>` and `<tag>destroy:<c>`, and
+// spinning in onDestroy, after its log line, in each instance whose c is at least globalThis.spin<tag> once it is set.
+[[nodiscard]] std::string destroySpinSource(std::string_view tag) {
+    return classSource(
+        std::format("  c = globalThis.ctor{0}++;\n"
+                    "  onUpdate() {{ log.push('{0}update:' + this.c); }}\n"
+                    "  onDestroy() {{\n"
+                    "    log.push('{0}destroy:' + this.c);\n"
+                    "    if (globalThis.spin{0} !== undefined && this.c >= globalThis.spin{0}) {{ for (;;) {{}} }}\n"
+                    "  }}",
+                    tag));
 }
 
 // The line of the throw in faultySource(true): classSource puts the members from line 2.
@@ -792,6 +805,117 @@ TEST_CASE("system: a constructor past its budget suspends the script and no othe
     CHECK(fx.log() == "Bupdate:0");
     static_cast<void>(fx.tick());
     CHECK(capture.countAtLeast(LogLevel::Warn) == 2U);
+    fx.finish();
+}
+
+// N counts every instance of the path in the run order as the detach began: the released one and the two survivors
+// that precede it, 3 -- never only the survivors (2) nor the entries a half-compacted run order still names (1).
+TEST_CASE("system: an onDestroy past its budget at a detach counts every instance of its script (LC32)") {
+    script_test::LogCapture capture;
+    SystemFixture fx{briefBudget()};
+    fx.run("globalThis.ctorP = 0; globalThis.ctorQ = 0;");
+    fx.publish(guidOf(1), "p.js", destroySpinSource("P"));
+    fx.publish(guidOf(2), "q.js", destroySpinSource("Q"));
+    const Entity p0 = fx.attachScript(guidOf(1));
+    const Entity p1 = fx.attachScript(guidOf(1));
+    const Entity p2 = fx.attachScript(guidOf(1));
+    const Entity q0 = fx.attachScript(guidOf(2));
+    expectReport(fx.tick(), Expected{.attached = 4, .detached = 0, .initialised = 4, .updated = 4, .running = 4});
+    const std::array<ScriptInstance, 4> held{fx.system->instanceOf(p0), fx.system->instanceOf(p1),
+                                             fx.system->instanceOf(p2), fx.system->instanceOf(q0)};
+    for (const ScriptInstance handle : held) {
+        REQUIRE(handle.valid());
+    }
+
+    fx.run("globalThis.spinP = 0;");
+    REQUIRE(fx.world.get<ScriptComponent>(p2) != nullptr);
+    fx.world.get<ScriptComponent>(p2)->script = Guid{};
+    fx.clearLog();
+    capture.clear();
+    const ScriptSystemReport detach = fx.tick();
+    const std::vector<script_test::CapturedRecord> loud = capture.atLeast(LogLevel::Warn);
+    REQUIRE(loud.size() == 2U);
+    CHECK(loud[0].level == LogLevel::Error);
+    CHECK(loud[0].message.find("interrupted after exceeding") != std::string::npos);
+    CHECK(loud[1].level == LogLevel::Warn);
+    CHECK(loud[1].message ==
+          "script: res://s/p.js: suspended: a hook ran past its 100 ms time budget; its 3 instances run no hook "
+          "until the script reloads");
+    CHECK(detach.detached == 1U);
+    CHECK(detach.faulted == 0U);
+    CHECK(detach.updated == 1U);
+    CHECK(detach.running == 1U);
+    CHECK(detach.suspendedScripts == 1U);
+    CHECK(fx.log() == "Pdestroy:2|Qupdate:0");
+    CHECK_FALSE(fx.system->instanceOf(p2).valid());
+    CHECK(label(fx.system->stateOf(p2)) == "None");
+    CHECK(fx.system->instanceOf(p0) == held[0]);
+    CHECK(fx.system->instanceOf(p1) == held[1]);
+    CHECK(fx.system->instanceOf(q0) == held[3]);
+    CHECK(label(fx.system->stateOf(p0)) == "Suspended");
+    CHECK(label(fx.system->stateOf(p1)) == "Suspended");
+    CHECK(label(fx.system->stateOf(q0)) == "Running");
+
+    static_cast<void>(fx.tick());
+    static_cast<void>(fx.tick());
+    CHECK(fx.log() == "Pdestroy:2|Qupdate:0|Qupdate:0|Qupdate:0");
+    CHECK(script_test::completion(fx.vm, "String(globalThis.ctorP)") == "3");
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 2U);
+
+    fx.clearLog();
+    capture.clear();
+    const ScriptSystemReport stopped = fx.system->stop();
+    CHECK(stopped.detached == 3U);
+    CHECK(fx.log() == "Qdestroy:0");
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+    for (const ScriptInstance handle : held) {
+        CHECK(answersUnknown(fx.vm, handle));
+    }
+    fx.finish();
+}
+
+// P's second instance spins: its first already ran onDestroy, so N = 3 tells a count over the intact run order from
+// one over what is left of it (2); the third never runs onDestroy, and Q's instance after the spin still does.
+TEST_CASE("system: an onDestroy past its budget at stop() runs no later onDestroy of its script (LC33)") {
+    script_test::LogCapture capture;
+    SystemFixture fx{briefBudget()};
+    fx.run("globalThis.ctorP = 0; globalThis.ctorQ = 0;");
+    fx.publish(guidOf(1), "p.js", destroySpinSource("P"));
+    fx.publish(guidOf(2), "q.js", destroySpinSource("Q"));
+    const Entity p0 = fx.attachScript(guidOf(1));
+    const Entity q0 = fx.attachScript(guidOf(2));
+    const Entity p1 = fx.attachScript(guidOf(1));
+    const Entity p2 = fx.attachScript(guidOf(1));
+    const Entity q1 = fx.attachScript(guidOf(2));
+    expectReport(fx.tick(), Expected{.attached = 5, .detached = 0, .initialised = 5, .updated = 5, .running = 5});
+    const std::array<ScriptInstance, 5> held{fx.system->instanceOf(p0), fx.system->instanceOf(q0),
+                                             fx.system->instanceOf(p1), fx.system->instanceOf(p2),
+                                             fx.system->instanceOf(q1)};
+    for (const ScriptInstance handle : held) {
+        REQUIRE(handle.valid());
+    }
+
+    fx.run("globalThis.spinP = 1;");
+    fx.clearLog();
+    capture.clear();
+    const ScriptSystemReport stopped = fx.system->stop();
+    const std::vector<script_test::CapturedRecord> loud = capture.atLeast(LogLevel::Warn);
+    REQUIRE(loud.size() == 2U);
+    CHECK(loud[0].level == LogLevel::Error);
+    CHECK(loud[0].message.find("interrupted after exceeding") != std::string::npos);
+    CHECK(loud[1].level == LogLevel::Warn);
+    CHECK(loud[1].message ==
+          "script: res://s/p.js: suspended: a hook ran past its 100 ms time budget; its 3 instances run no hook "
+          "until the script reloads");
+    CHECK(stopped.bound);
+    CHECK(stopped.detached == 5U);
+    CHECK(fx.log() == "Pdestroy:0|Qdestroy:0|Pdestroy:1|Qdestroy:1");
+    CHECK_FALSE(fx.system->bound());
+    capture.clear();
+    for (const ScriptInstance handle : held) {
+        CHECK(answersUnknown(fx.vm, handle));
+    }
+    CHECK(capture.countAtLeast(LogLevel::Warn) == held.size());  // one refusal ERROR per probe, nothing else
     fx.finish();
 }
 
