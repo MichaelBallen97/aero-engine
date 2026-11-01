@@ -1,5 +1,5 @@
 // Aero Engine -- the generated built-in binding table (task 4.2.1; BN6, and from the later steps BN37-BN52), and the
-// script lifecycle end to end over it (task 4.4.1; BN56, BN57, LC26, LC28-LC30).
+// script lifecycle end to end over it (task 4.4.1; BN56, BN57, LC26, LC28-LC30, LC39).
 //
 // Compiled into aero_tests only when AERO_REFLECT_TOOLS is ON: with the tools OFF the table is empty by design and
 // there is nothing generated to check.
@@ -895,6 +895,38 @@ TEST_CASE(
     const ScriptSystemReport third = scene.system->update(0.5);
     CHECK(third.detached == 0U);
     CHECK(scene.log() == "init|destroy");
+    CHECK(loudRecordsNaming(log, "") == 0U);
+    scene.finish();
+}
+
+TEST_CASE(
+    "script: an onInit that clears another entity's ScriptComponent keeps that entity's onInit from running (LC39)") {
+    const LogCapture log;
+    const std::string clearer = script_test::classSource(
+        "  onInit() { log.push('a:init'); globalThis.b.get(engine.ScriptComponent).script = "
+        "'00000000000000000000000000000000'; }\n  onUpdate() { log.push('a:update'); }");
+    const std::string victim = script_test::classSource(
+        "  onInit() { log.push('b:init'); }\n  onUpdate() { log.push('b:update'); }\n"
+        "  onDestroy() { log.push('b:destroy'); }");
+    LifecycleScene scene{memoryOf({{"a.js", clearer}, {"b.js", victim}})};
+    scene.publish(scriptGuid(1), "res://s/a.js");
+    scene.publish(scriptGuid(2), "res://s/b.js");
+    const Entity a = scene.spawn(scriptGuid(1));
+    const Entity b = scene.spawn(scriptGuid(2));
+    REQUIRE(a.index < b.index);  // A's onInit runs before B's
+    REQUIRE(scene.vm.defineEntityGlobal("b", b) == BindStatus::Ok);
+
+    const ScriptSystemReport first = scene.system->update(0.5);
+    CHECK(first.attached == 2U);
+    CHECK(first.initialised == 1U);  // B attached, but no longer names its script when its turn comes
+    CHECK(first.updated == 1U);
+    CHECK(scene.log() == "a:init|a:update");
+    CHECK(scene.world.get<ScriptComponent>(b)->script == Guid{});
+
+    const ScriptSystemReport second = scene.system->update(0.5);
+    CHECK(second.detached == 1U);
+    CHECK(scene.log() == "a:init|a:update|a:update");  // B never ran onInit, so it gets no onDestroy either
+    CHECK_FALSE(scene.system->instanceOf(b).valid());
     CHECK(loudRecordsNaming(log, "") == 0U);
     scene.finish();
 }

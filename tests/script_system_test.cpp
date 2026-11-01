@@ -1,4 +1,4 @@
-// tests/script_system_test.cpp -- task 4.4.1: engine::script::ScriptSystem over one World (LC1-LC25, LC27, LC31-LC33).
+// tests/script_system_test.cpp -- task 4.4.1: engine::script::ScriptSystem over one World (LC1-LC25, LC27, LC31-LC38).
 // The system is written against the Vm's public API, so every case drives it through a VM over the built-in table, a
 // World, and a resolver from a script Guid to a res:// path. Scripts observe through `globalThis.log`, instance fields
 // and `this.entity.alive`, so none of these cases needs a bound component and all of them run with the reflect tools
@@ -1202,5 +1202,129 @@ TEST_CASE("system: ten thousand instances of a hook-less script are all detached
         CHECK(answersUnknown(fx.vm, handle));
     }
     CHECK(capture.countAtLeast(LogLevel::Warn) == spread.size());  // one refusal ERROR per probe, nothing else
+    fx.finish();
+}
+
+TEST_CASE("system: a system destroyed without stop() runs onDestroy once per initialised instance and unbinds (LC34)") {
+    script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "m.js", classSource(hooks()));
+    const Entity e0 = fx.attachScript(guidOf(1));
+    const Entity e1 = fx.attachScript(guidOf(1));
+    expectReport(fx.tick(), Expected{.attached = 2, .detached = 0, .initialised = 2, .updated = 2, .running = 2});
+    const std::array<ScriptInstance, 2> held{fx.system->instanceOf(e0), fx.system->instanceOf(e1)};
+    for (const ScriptInstance handle : held) {
+        REQUIRE(handle.valid());
+    }
+    fx.clearLog();
+    capture.clear();
+
+    fx.system.reset();  // never stop()ped: the destructor is the only teardown
+    CHECK(fx.log() == "destroy:0|destroy:1");
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+    CHECK(fx.vm.defineEntityGlobal("probe", e0) == engine::script::BindStatus::NoWorld);
+    for (const ScriptInstance handle : held) {
+        CHECK(answersUnknown(fx.vm, handle));
+    }
+    CHECK(fx.world.has<ScriptComponent>(e0));
+    CHECK(fx.world.has<ScriptComponent>(e1));
+    fx.finish();
+}
+
+TEST_CASE("system: an entity whose ScriptComponent is nil is neither resolved nor counted unresolved (LC35)") {
+    const script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "m.js", classSource(hooks()));
+    const Entity nil = fx.attachScript(Guid{});
+    const Entity named = fx.attachScript(guidOf(1));
+    REQUIRE(nil.index < named.index);
+
+    for (int i = 0; i < 3; ++i) {
+        const ScriptSystemReport report = fx.tick();
+        CHECK(report.unresolved == 0U);
+        CHECK(report.attached == (i == 0 ? 1U : 0U));
+        CHECK(report.running == 1U);
+    }
+    CHECK(fx.queriesFor(Guid{}) == 0U);
+    CHECK(fx.queriesFor(guidOf(1)) == 1U);
+    CHECK(label(fx.system->stateOf(nil)) == "None");
+    CHECK_FALSE(fx.system->instanceOf(nil).valid());
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+    fx.finish();
+}
+
+TEST_CASE("system: an entity renamed to another script forgets the attach that failed under the old one (LC36)") {
+    script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "boom.js", classSource("  constructor() {\n    super();\n    throw new Error('boom');\n  }"));
+    fx.publish(guidOf(2), "ok.js", classSource(hooks()));
+    const Entity entity = fx.attachScript(guidOf(1));
+
+    const ScriptSystemReport failed = fx.tick();
+    CHECK(failed.failedAttaches == 1U);
+    CHECK(label(fx.system->stateOf(entity)) == "AttachFailed");
+
+    REQUIRE(fx.world.get<ScriptComponent>(entity) != nullptr);
+    fx.world.get<ScriptComponent>(entity)->script = guidOf(2);
+    capture.clear();
+    const ScriptSystemReport renamed = fx.tick();
+    CHECK(renamed.attached == 1U);
+    CHECK(renamed.running == 1U);
+    CHECK(renamed.failedAttaches == 0U);  // the failure belonged to the old name
+    CHECK(label(fx.system->stateOf(entity)) == "Running");
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+    CHECK(fx.log() == "init:0|update:0:0.5");
+    fx.finish();
+}
+
+TEST_CASE("system: a script the VM already loaded attaches, its module is not evaluated again (LC37)") {
+    const script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "m.js", "globalThis.evals += 1;\n" + classSource(hooks()));
+    const engine::script::ScriptLoadResult loaded = fx.vm.loadScript("res://s/m.js");
+    REQUIRE(loaded.status == engine::script::ScriptStatus::Ok);
+    const Entity entity = fx.attachScript(guidOf(1));
+
+    const ScriptSystemReport report = fx.tick();
+    CHECK(report.failedLoads == 0U);
+    expectReport(report, Expected{.attached = 1, .detached = 0, .initialised = 1, .updated = 1, .running = 1});
+    CHECK(label(fx.system->stateOf(entity)) == "Running");
+    CHECK(script_test::completion(fx.vm, "String(evals)") == "1");
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+    fx.finish();
+}
+
+// A module whose body interrupts inside a promise executor leaves the rejection's reaction job queued (R34). The
+// system's settle call runs it under the script's own path, so its record names a.js and B's load, the next VM call,
+// finds nothing to run first.
+TEST_CASE("system: a module load past its budget is settled under the script's path and spares the next load (LC38)") {
+    script_test::LogCapture capture;
+    SystemFixture fx{briefBudget()};
+    fx.publish(guidOf(1), "a.js",
+               classSource("  onUpdate() {}") + "(async () => { await new Promise(() => { for (;;) {} }); })();\n");
+    fx.publish(guidOf(2), "b.js", classSource(hooks("b:")));
+    const Entity a = fx.attachScript(guidOf(1));
+    const Entity b = fx.attachScript(guidOf(2));
+    REQUIRE(a.index < b.index);  // A's load is the one that is interrupted, and B's the next VM call
+    capture.clear();
+
+    const ScriptSystemReport first = fx.tick();
+    const std::vector<script_test::CapturedRecord> loud = capture.atLeast(LogLevel::Warn);
+    REQUIRE(loud.size() == 2U);
+    CHECK(loud[0].level == LogLevel::Error);
+    CHECK(loud[0].message.starts_with("script: res://s/a.js: interrupted after exceeding"));
+    CHECK(loud[1].level == LogLevel::Error);
+    CHECK(loud[1].message.starts_with("script: res://s/a.js: uncaught InternalError: interrupted"));
+    CHECK(recordsNaming(capture, "res://s/b.js") == 0U);
+    CHECK(first.failedLoads == 1U);
+    CHECK(first.attached == 1U);
+    CHECK(first.running == 1U);
+    CHECK(label(fx.system->stateOf(a)) == "LoadFailed");
+    CHECK(label(fx.system->stateOf(b)) == "Running");
+    CHECK(fx.log() == "b:init:0|b:update:0:0.5");
+
+    static_cast<void>(fx.tick());
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 2U);
+    CHECK(fx.log() == "b:init:0|b:update:0:0.5|b:update:0:0.5");
     fx.finish();
 }

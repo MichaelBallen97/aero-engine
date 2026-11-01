@@ -30422,3 +30422,65 @@ TEST_CASE(
     CHECK(app->tick() == false);
     app.reset();
 }
+
+// ---- task 4.4.1 (I369): the ScriptComponent's picker is constrained to the script kind
+TEST_CASE("editor: the ScriptComponent picker offers no asset of another kind beside the script (task 4.4.1, I369)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "script picker i369", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    writeScriptProjectFile(created.root, "assets/scripts/mover.ts",
+                           "export default class Mover extends engine.Script {\n    speed = 2;\n}\n");
+    // A material is an asset an unconstrained picker would offer; only the field's own kind keeps it out.
+    writeScriptProjectFile(created.root, "assets/shade.aeromat", MINIMAL_AEROMAT_TEXT);
+    std::optional<engine::editor::EditorApp> app =
+        openScriptApp(*device, *window, ctx, created.root, AERO_TEST_ESBUILD);
+    REQUIRE(app.has_value());
+    tickUntilScriptsIdle(*app);
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const engine::Entity cube = focusInspectorOnCube(*app);
+
+    const engine::ComponentTypeId scriptId = app->world().findComponentType("engine::ScriptComponent");
+    REQUIRE(scriptId.valid());
+    REQUIRE(engine::editor::addComponent(app->world(), cube, scriptId));
+    REQUIRE(app->tick());
+    REQUIRE(app->assetGuidForPath("shade.aeromat").has_value());  // the material is a record the picker could list
+
+    app->requestInspectorAssetPicker("engine::ScriptComponent", "script");
+    REQUIRE(app->tick());
+    // As I368: with the reflect tools OFF there is no generated meta and no Guid row to open on.
+    if (engine::editor::componentFieldsAreReflected(app->world(), scriptId)) {
+        REQUIRE(app->assetPickerOpen());
+        CHECK(app->assetPickerCandidateCount() == 1U);  // mover.ts alone
+
+        app->requestAssetPickerMove(1);
+        REQUIRE(app->tick());
+        app->requestAssetPickerCommit();
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        const std::optional<engine::Guid> moverGuid = app->assetGuidForPath("scripts/mover.ts");
+        REQUIRE(moverGuid.has_value());
+        const engine::ScriptComponent* const held = app->world().get<engine::ScriptComponent>(cube);
+        REQUIRE(held != nullptr);
+        CHECK((held->script == *moverGuid));
+    } else {
+        CHECK_FALSE(app->assetPickerOpen());
+    }
+
+    tickUntilScriptsIdle(*app);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
