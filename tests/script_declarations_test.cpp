@@ -1,4 +1,4 @@
-// Aero Engine -- the TypeScript declarations against a live VM (task 4.2.2; DT1-DT7, and since 4.4.1 DT22-DT23).
+// Aero Engine -- the TypeScript declarations against a live VM (task 4.2.2; DT1-DT7, and since 4.4.1 DT22-DT24).
 //
 // The build joins engine/script/types/prelude.d.ts with one reflect-gen --emit-dts block per built-in component header
 // into aero-engine.d.ts. These cases read that file from disk with a deliberately strict reader (the line grammar in
@@ -7,6 +7,8 @@
 // forgets the prelude, or an emitter that disagrees with the binding table, reddens here. With the reflect tools OFF
 // the table is empty and the file is the prelude alone; every case still runs and compares what exists.
 
+#include <aero/core/vfs.hpp>
+#include <aero/scene/world.hpp>
 #include <aero/script/internal/component_binding.hpp>
 #include <aero/script/script.hpp>
 
@@ -19,6 +21,8 @@
 #include <cstdint>
 #include <fstream>
 #include <iterator>
+#include <memory>
+#include <optional>
 #include <ostream>  // a CHECK on std::string_view needs the complete std::ostream on MSVC (ci-portability.md)
 #include <set>
 #include <string>
@@ -793,4 +797,66 @@ TEST_CASE(
     REQUIRE(live != nullptr);
     CHECK(live->constructorLength == 0);
     CHECK(live->members.empty());
+}
+
+namespace {
+
+// One module file in memory, for the VM DT24 builds.
+class OneFileBackend final : public engine::FileSystemBackend {
+public:
+    OneFileBackend(std::string name, std::string text) : name(std::move(name)), text(std::move(text)) {}
+
+    [[nodiscard]] bool exists(std::string_view relPath) const override { return relPath == name; }
+    [[nodiscard]] std::optional<std::uint64_t> fileSize(std::string_view relPath) const override {
+        return relPath == name ? std::optional<std::uint64_t>{text.size()} : std::nullopt;
+    }
+    [[nodiscard]] std::optional<engine::ByteBuffer> readFile(std::string_view relPath) const override {
+        if (relPath != name) {
+            return std::nullopt;
+        }
+        engine::ByteBuffer bytes;
+        bytes.reserve(text.size());
+        for (const char c : text) {
+            bytes.push_back(static_cast<std::byte>(c));
+        }
+        return bytes;
+    }
+
+private:
+    std::string name;
+    std::string text;
+};
+
+}  // namespace
+
+TEST_CASE("declarations: an attached instance holds exactly the declared non-optional members of Script (DT24)") {
+    const Declarations declared = parseDeclarations(builtFile());
+    REQUIRE(declared.error.empty());
+    const DeclaredClass* const script = findDeclared(declared, "Script");
+    REQUIRE(script != nullptr);
+    std::vector<std::string> required;
+    for (const DeclaredMember& member : script->members) {
+        if (!member.optional) {
+            required.push_back(member.name);
+        }
+    }
+
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<OneFileBackend>(
+        "s/x.js", "var X = class extends engine.Script {\n};\nexport {\n  X as default\n};\n"));
+    engine::script::VmCreateResult created = engine::script::Vm::create(script_test::patient(), vfs);
+    REQUIRE(created.vm.valid());
+    engine::script::Vm vm = std::move(created.vm);
+    engine::World world;
+    const engine::Entity entity = world.create();
+    REQUIRE(vm.bindWorld(world) == engine::script::BindStatus::Ok);
+    REQUIRE(engine::script::scriptStatusLabel(vm.loadScript("res://s/x.js").status) == "Ok");
+    const engine::script::ScriptInstanceResult made = vm.createInstance("res://s/x.js", entity);
+    REQUIRE(engine::script::scriptStatusLabel(made.status) == "Ok");
+    REQUIRE(engine::script::internal::VmAccess::defineInstanceGlobal(vm, made.instance, "i"));
+
+    CHECK(completion(vm, "Object.getOwnPropertyNames(i).join()") == "entity");
+    CHECK(required == std::vector<std::string>{"entity"});
+    CHECK(completion(vm, "String(i.entity instanceof engine.Entity)") == "true");
+    expectCleanShutdown(vm);
 }

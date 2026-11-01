@@ -177,6 +177,8 @@ enum class ScriptStatus : std::uint8_t {
     UnknownInstance,  // destroyInstance: the handle names no live instance (null, destroyed or stale)
     AlreadyRefused,   // loadScript: the file holds the bytes of the script's last refused load since its last
                       // success; nothing ran, nothing is logged, the result's error is empty
+    NoWorld,          // createInstance(path, entity): no World is bound; nothing ran
+    DeadEntity,       // createInstance(path, entity): the entity is not alive in the bound World; nothing ran
 };
 // Never named toString: doctest's DOCTEST_STRINGIFY finds an unqualified toString by ADL (CLAUDE.md).
 [[nodiscard]] std::string_view scriptStatusLabel(ScriptStatus status) noexcept;
@@ -197,7 +199,8 @@ struct ScriptLoadResult {
 struct ScriptInstanceResult {
     ScriptStatus status = ScriptStatus::InvalidVm;
     ScriptInstance instance;  // valid() iff Ok
-    ScriptError error;        // filled iff Exception, OutOfMemory, Interrupted or NotAClass
+    ScriptError error;        // filled iff Exception, OutOfMemory, Interrupted or NotAClass (empty for NotLoaded,
+                              // NoWorld and DeadEntity)
 };
 
 // The state of a module path's CURRENT generation, as the VM last observed it. The backend reports an evaluation's
@@ -432,7 +435,9 @@ public:
     // instance has keeps its default. Fields are read as descriptors and written with a define, so no getter and no
     // setter runs, and a frozen or otherwise unwritable new field keeps its default (counted as reset) rather than
     // refusing the reload. fieldsKept, fieldsReset, fieldsAdded and fieldsDropped sum these over the moved instances; a
-    // refused load reports none. A class is a constructor whose own `prototype` is a non-writable data property: a
+    // refused load reports none. An attached instance (createInstance with an entity) is re-created with its entity
+    // defined before the carry, under the binding it was attached with; an object that cannot hold it refuses the
+    // whole load, as NotAClass. A class is a constructor whose own `prototype` is a non-writable data property: a
     // plain, bound, arrow, async or generator function, an object, a primitive and a missing default are not, and
     // finding out runs no script code. The VM's thread only, and never from inside another call.
     [[nodiscard]] ScriptLoadResult loadScript(std::string_view virtualPath);
@@ -443,6 +448,19 @@ public:
     // ERROR and makes nothing. Each instance holds its own fields. A constructor that returns a Proxy is refused, so no
     // live instance is a Proxy.
     [[nodiscard]] ScriptInstanceResult createInstance(std::string_view virtualPath);
+
+    // Constructs one instance attached to `entity`. The refusals, in this order, each one ERROR and made before
+    // anything runs: InvalidVm, WrongThread, NotLoaded, NoWorld ("script: <path>: createInstance refused: no World is
+    // bound"), DeadEntity ("... the entity is not alive in the bound World"). The construction is the one-argument
+    // overload's, under one time budget, with the entity held pending: the first construction of engine.Script inside
+    // it defines the instance's own `entity`, so a class that extends it sees `this.entity` in its field initializers
+    // and constructor and keeps that very object. The instance then holds an own `entity` property: data, not
+    // writable, not enumerable, configurable, an engine.Entity of `entity` under the binding current now, so a bind
+    // made later leaves it stale. An instance that cannot hold one (frozen, sealed, not extensible, or with a
+    // non-configurable own `entity`) is refused NotAClass with one ERROR ("script: <path>: not a script: its instance
+    // cannot hold its entity (frozen, sealed, not extensible, or with a non-configurable own 'entity')") and nothing
+    // is made. Once the call's budget has fired, no engine refusal joins the interrupt's record.
+    [[nodiscard]] ScriptInstanceResult createInstance(std::string_view virtualPath, Entity entity);
 
     // Frees an instance. UnknownInstance, with one ERROR ("script: destroyInstance refused: the handle names no live
     // instance"), when the handle is null, already destroyed or stale. Runs no script code.

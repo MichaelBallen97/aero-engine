@@ -1995,3 +1995,164 @@ TEST_CASE("script: ten thousand instances destroy by halves without disturbing a
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     script_test::expectCleanShutdown(fx.vm);
 }
+
+// ---- HR44-HR47: a reload re-creates an attached instance with its entity ----------------------------------------
+
+namespace {
+
+// A script in esbuild's shape whose class extends engine.Script.
+[[nodiscard]] std::string derivedSource(std::string_view members) {
+    return std::format("var Mover = class extends engine.Script {{\n{}\n}};\nexport {{\n  Mover as default\n}};\n",
+                       members);
+}
+
+[[nodiscard]] ScriptInstance attachedTo(Vm& vm, std::string_view path, engine::Entity entity) {
+    const ScriptInstanceResult made = vm.createInstance(path, entity);
+    INFO("attach: ", made.error.message);
+    REQUIRE(scriptStatusLabel(made.status) == "Ok");
+    REQUIRE(made.instance.valid());
+    return made.instance;
+}
+
+[[nodiscard]] std::string countsOfLoad(const ScriptLoadResult& loaded) {
+    return std::format("{} {} {} {} {}", loaded.instancesMoved, loaded.fieldsKept, loaded.fieldsReset,
+                       loaded.fieldsAdded, loaded.fieldsDropped);
+}
+
+}  // namespace
+
+TEST_CASE("script: a reload re-creates an attached instance with its entity before the carry (HR44)") {
+    const script_test::LogCapture log;
+    engine::World world;
+    Fixture fx;
+    const engine::Entity mine = world.create();
+    const engine::Entity other = world.create();
+    REQUIRE(fx.vm.bindWorld(world) == engine::script::BindStatus::Ok);
+    constexpr std::string_view KEY = "res://s/a.js";
+    fx.files->set("s/a.js", derivedSource("  speed = 1;\n  tag = \"x\";"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    const ScriptInstance instance = attachedTo(fx.vm, KEY, mine);
+    expose(fx.vm, instance, "i");
+    REQUIRE(script_test::completion(fx.vm, "i.speed = 5; String(i.speed)") == "5");
+
+    fx.files->set("s/a.js", derivedSource("  speed = 1;\n  tag = \"x\";\n  extra = this.entity.alive;"));
+    const ScriptLoadResult loaded = fx.vm.loadScript(KEY);
+    INFO("reload: ", loaded.error.message);
+    REQUIRE(scriptStatusLabel(loaded.status) == "Ok");
+    CHECK(countsOfLoad(loaded) == "1 2 0 1 0");
+    expose(fx.vm, instance, "i");
+    CHECK(script_test::completion(fx.vm, R"js(
+        const d = Object.getOwnPropertyDescriptor(i, 'entity');
+        [i.speed, i.extra, d.enumerable, d.writable, d.configurable, d.value instanceof engine.Entity,
+         Object.keys(i).join('|')].join();
+    )js") == "5,true,false,false,true,true,speed|tag|extra");
+    // The entity is the one the instance was attached to.
+    REQUIRE(world.destroy(other));
+    CHECK(script_test::completion(fx.vm, "String(i.entity.alive)") == "true");
+    REQUIRE(world.destroy(mine));
+    CHECK(script_test::completion(fx.vm, "String(i.entity.alive)") == "false");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a reload whose new object cannot hold the entity refuses all of it (HR45)") {
+    script_test::LogCapture log;
+    engine::World world;
+    Fixture fx;
+    const engine::Entity e1 = world.create();
+    const engine::Entity e2 = world.create();
+    REQUIRE(fx.vm.bindWorld(world) == engine::script::BindStatus::Ok);
+    constexpr std::string_view KEY = "res://s/a.js";
+    const std::string v1 = derivedSource("  hello() {\n    return \"v1\";\n  }");
+    const std::string v2 = derivedSource(
+        "  constructor() {\n    super();\n    Object.freeze(this);\n  }\n  hello() {\n"
+        "    return \"v2\";\n  }");
+    fx.files->set("s/a.js", v1);
+    fx.files->set("s/c.js", v1);
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/c.js").status) == "Ok");
+    const ScriptInstance a = attachedTo(fx.vm, KEY, e1);
+    const ScriptInstance b = attachedTo(fx.vm, KEY, e2);
+    const ScriptInstance control = instanceOf(fx.vm, "res://s/c.js");
+
+    fx.files->set("s/a.js", v2);
+    log.clear();
+    const ScriptLoadResult refused = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(refused.status) == "NotAClass");
+    static_cast<void>(theOneError(log));
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    CHECK(script_test::completion(fx.vm, "[a.hello(), b.hello(), a.entity.alive, b.entity.alive].join()") ==
+          "v1,v1,true,true");
+    const ScriptInstance fresh = attachedTo(fx.vm, KEY, e1);
+    expose(fx.vm, fresh, "f");
+    CHECK(script_test::completion(fx.vm, "f.hello()") == "v1");
+
+    // Control: the same bytes over an unattached instance reload fine.
+    fx.files->set("s/c.js", v2);
+    log.clear();
+    const ScriptLoadResult working = fx.vm.loadScript("res://s/c.js");
+    CHECK(scriptStatusLabel(working.status) == "Ok");
+    CHECK(working.instancesMoved == 1U);
+    expose(fx.vm, control, "c");
+    CHECK(script_test::completion(fx.vm, "c.hello()") == "v2");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a new entity field does not count as added over an attached instance (HR46)") {
+    const script_test::LogCapture log;
+    engine::World world;
+    Fixture fx;
+    const engine::Entity e = world.create();
+    REQUIRE(fx.vm.bindWorld(world) == engine::script::BindStatus::Ok);
+    const std::string v1 = derivedSource("  speed = 1;");
+    const std::string v2 = derivedSource("  speed = 1;\n  entity = null;");
+    fx.files->set("s/a.js", v1);
+    fx.files->set("s/c.js", v1);
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/a.js").status) == "Ok");
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/c.js").status) == "Ok");
+    const ScriptInstance a = attachedTo(fx.vm, "res://s/a.js", e);
+    const ScriptInstance control = instanceOf(fx.vm, "res://s/c.js");
+
+    fx.files->set("s/a.js", v2);
+    fx.files->set("s/c.js", v2);
+    const ScriptLoadResult attachedLoad = fx.vm.loadScript("res://s/a.js");
+    const ScriptLoadResult controlLoad = fx.vm.loadScript("res://s/c.js");
+    REQUIRE(scriptStatusLabel(attachedLoad.status) == "Ok");
+    REQUIRE(scriptStatusLabel(controlLoad.status) == "Ok");
+    CHECK(attachedLoad.fieldsAdded == 0U);
+    CHECK(controlLoad.fieldsAdded == 1U);
+    expose(fx.vm, a, "a");
+    expose(fx.vm, control, "c");
+    CHECK(script_test::completion(fx.vm, R"js(
+        const d = Object.getOwnPropertyDescriptor(a, 'entity');
+        [d.enumerable, d.value instanceof engine.Entity, Object.keys(a).join('|'), c.entity === null].join();
+    )js") == "false,true,speed,true");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a reload re-creates the entity under the binding its instance was attached with (HR47)") {
+    const script_test::LogCapture log;
+    engine::World world;
+    Fixture fx;
+    const engine::Entity e = world.create();
+    REQUIRE(fx.vm.bindWorld(world) == engine::script::BindStatus::Ok);
+    constexpr std::string_view KEY = "res://s/a.js";
+    fx.files->set("s/a.js", derivedSource("  speed = 1;"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    const ScriptInstance instance = attachedTo(fx.vm, KEY, e);
+    expose(fx.vm, instance, "i");
+    REQUIRE(script_test::completion(fx.vm, "String(i.entity.alive)") == "true");
+
+    REQUIRE(fx.vm.bindWorld(world) == engine::script::BindStatus::Ok);  // the same World, a new binding
+    CHECK(script_test::completion(fx.vm, "String(i.entity.alive)") == "false");
+
+    fx.files->set("s/a.js", derivedSource("  speed = 2;"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    expose(fx.vm, instance, "i");
+    CHECK(script_test::completion(fx.vm, "String(i.entity.alive)") == "false");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}

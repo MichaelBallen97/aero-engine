@@ -221,7 +221,8 @@ struct LoadAttempt {
 struct InstanceSlot {
     JSValue object;
     std::string key;
-    std::uint64_t order = 0;  // the creation sequence: this instance's key in its script's map
+    std::optional<EntityRef> attached;  // the entity and the binding it was attached under; nullopt: no entity
+    std::uint64_t order = 0;            // the creation sequence: this instance's key in its script's map
 };
 
 // One script path a loadScript call has reached (a record exists from that call's first backend step on).
@@ -371,7 +372,8 @@ struct Vm::Impl {
 
     // ---- script classes and instances (vm_scripts.cpp, task 4.3.3) ------------------------------------------------
     [[nodiscard]] ScriptLoadResult loadScriptCall(std::string_view virtualPath);
-    [[nodiscard]] ScriptInstanceResult createInstanceCall(std::string_view virtualPath);
+    [[nodiscard]] ScriptInstanceResult createInstanceCall(std::string_view virtualPath,
+                                                          const std::optional<Entity>& entity);
     [[nodiscard]] ScriptStatus destroyInstanceCall(ScriptInstance instance);
     void releaseScripts() noexcept;  // shutdown: every instance object and class, before the context; then clears both
     // The default export of the entry's current generation when it is a class, else JS_UNDEFINED. A failure is adopted
@@ -386,6 +388,11 @@ struct Vm::Impl {
     // objects and changes neither a slot nor the record.
     void rebuildInstances(const ScriptRecord& record, JSValueConst scriptClass, EvalResult& evaluation,
                           std::optional<ScriptRefusal>& refusal, HeldBatch& fresh, FieldCounts& counts);
+    // Makes `object` hold its own `entity` for `ref`: data, not writable, not enumerable, configurable. True when it
+    // does (the base class already defined it, or the define landed). False: the budget had fired (no refusal is made),
+    // the heap refused (adopted into `evaluation`), or the object cannot hold it (a refusal, logged once).
+    [[nodiscard]] bool holdEntity(JSValueConst object, const EntityRef& ref, EvalResult& evaluation,
+                                  std::optional<ScriptRefusal>& refusal);
     void endScriptCall(EvalResult& evaluation);  // the call's job drain and tail, in evaluateModuleCall's order
     void logRefusal(const ScriptRefusal& refusal) const;
 
