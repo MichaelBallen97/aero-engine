@@ -179,7 +179,7 @@ TEST_CASE(
     script_test::expectCleanShutdown(fx.vm);
 }
 
-// ---- VM67-VM73: createInstance(path, entity) -----------------------------------------------------------------
+// ---- VM67-VM73, VM82: createInstance(path, entity) ---------------------------------------------------------
 
 TEST_CASE("vm: createInstance with an entity refuses in order, each once and before anything runs (VM67)") {
     script_test::LogCapture log;
@@ -442,6 +442,32 @@ TEST_CASE("vm: only the first base construction inside an attach takes the entit
           "entity/entity");
     CHECK(script_test::completion(fx.vm, "[i.entity.alive, inner.entity.alive, i.entity !== inner.entity].join()") ==
           "true,true,true");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("vm: a job the construction queues cannot take the entity its constructor left pending (VM82)") {
+    const script_test::LogCapture log;
+    engine::World world;
+    Fixture fx;
+    const Entity e = world.create();
+    bind(fx, world);
+    // A plain class never reaches engine.Script's constructor, so the pending entity is still set when the
+    // construction ends; the job it queued runs in the call's own drain and must find nothing to take.
+    load(fx, "p.js",
+         moduleSource("var D = class extends engine.Script {\n};\n"
+                      "var Plain = class {\n  constructor() {\n    Promise.resolve().then(() => {\n"
+                      "      try { globalThis.made = new D(); } catch (e) { globalThis.refused = String(e); }\n"
+                      "    });\n  }\n};",
+                      "Plain"));
+    const ScriptInstance plain = attached(fx, "p.js", e);
+    expose(fx.vm, plain, "p");
+    CHECK(script_test::completion(fx.vm, "p.entity.alive") == "true");
+    // The job ran (made exists), took no entity, and was neither refused nor rejected.
+    CHECK(script_test::completion(fx.vm,
+                                  "typeof made + '/' + Object.getOwnPropertyNames(made).length + '/' + "
+                                  "('entity' in made) + '/' + typeof globalThis.refused") ==
+          "object/0/false/undefined");
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     script_test::expectCleanShutdown(fx.vm);
 }
