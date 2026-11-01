@@ -184,6 +184,7 @@ struct LoadAttempt {
 struct InstanceSlot {
     JSValue object;
     std::string key;
+    std::uint64_t order = 0;  // the creation sequence: this instance's key in its script's map
 };
 
 // One script path a loadScript call has reached (a record exists from that call's first backend step on).
@@ -191,7 +192,8 @@ struct ScriptRecord {
     JSValue scriptClass = JS_UNDEFINED;      // HELD: the last good class; JS_UNDEFINED until a load succeeds
     std::optional<std::string> runningText;  // the bytes scriptClass's generation was compiled from
     std::optional<std::string> refusedText;  // the bytes of the last refused load since the last success
-    std::vector<ScriptInstance> instances;   // the live instances of this script, in creation order
+    // The live instances by creation sequence: iteration is creation order, a destroy is one erase.
+    std::map<std::uint64_t, ScriptInstance> instances;
 };
 
 struct Vm::Impl {
@@ -390,6 +392,7 @@ struct Vm::Impl {
     // the instances' current objects. Both change on the VM's thread, outside the backend's callbacks.
     std::map<std::string, ScriptRecord, std::less<>> scripts;  // by canonical key
     SlotMap<InstanceSlot, ScriptInstanceTag> instanceSlots;
+    std::uint64_t nextInstanceOrder = 0;  // the next InstanceSlot::order; never reused
     bool loadingScript = false;  // the current call is a loadScript: the pending-await WARN is the load's to refuse
 };
 

@@ -338,13 +338,15 @@ ScriptLoadResult Vm::Impl::loadScriptCall(std::string_view virtualPath) {
     assert(!succeeded || compiled.has_value());  // an Ok load compiled its entry
     if (succeeded && compiled.has_value()) {
         assert(fresh.size() == record.instances.size());
-        for (std::size_t i = 0; i < record.instances.size(); ++i) {
-            InstanceSlot* const slot = instanceSlots.get(record.instances[i]);
+        std::size_t at = 0;
+        for (const auto& entry : record.instances) {
+            InstanceSlot* const slot = instanceSlots.get(entry.second);
             assert(slot != nullptr);
             if (slot != nullptr) {
                 JS_FreeValue(ctx, slot->object);
-                slot->object = fresh.take(i);
+                slot->object = fresh.take(at);
             }
+            ++at;
         }
         JS_FreeValue(ctx, record.scriptClass);
         record.scriptClass = newClass.release();
@@ -448,7 +450,8 @@ HeldValue Vm::Impl::constructInstance(JSValueConst scriptClass, EvalResult& eval
 
 void Vm::Impl::rebuildInstances(const ScriptRecord& record, JSValueConst scriptClass, EvalResult& evaluation,
                                 std::optional<ScriptRefusal>& refusal, HeldBatch& fresh, FieldCounts& counts) {
-    for (const ScriptInstance instance : record.instances) {
+    for (const auto& entry : record.instances) {
+        const ScriptInstance instance = entry.second;
         HeldValue made = constructInstance(scriptClass, evaluation, refusal);
         if (!JS_IsObject(made.get())) {
             return;  // the failure or the refusal is recorded; the batch frees what it holds
@@ -498,8 +501,9 @@ ScriptInstanceResult Vm::Impl::createInstanceCall(std::string_view virtualPath) 
     endScriptCall(evaluation);
     if (evaluation.status == EvalStatus::Ok && !refusal.has_value() && JS_IsObject(made.get())) {
         ScriptInstanceResult done = instanceResultOf(ScriptStatus::Ok);
-        done.instance = instanceSlots.insert(InstanceSlot{made.release(), entry.key});
-        record.instances.push_back(done.instance);
+        const std::uint64_t order = nextInstanceOrder++;
+        done.instance = instanceSlots.insert(InstanceSlot{made.release(), entry.key, order});
+        record.instances.emplace(order, done.instance);
         return done;
     }
     if (refusal.has_value()) {
@@ -520,7 +524,7 @@ ScriptStatus Vm::Impl::destroyInstanceCall(ScriptInstance instance) {
         return ScriptStatus::UnknownInstance;
     }
     if (const auto home = scripts.find(slot->key); home != scripts.end()) {
-        std::erase(home->second.instances, instance);
+        home->second.instances.erase(slot->order);
     }
     JS_FreeValue(ctx, slot->object);
     static_cast<void>(instanceSlots.remove(instance));
@@ -530,8 +534,8 @@ ScriptStatus Vm::Impl::destroyInstanceCall(ScriptInstance instance) {
 void Vm::Impl::releaseScripts() noexcept {
     for (auto& entry : scripts) {
         ScriptRecord& record = entry.second;
-        for (const ScriptInstance instance : record.instances) {
-            if (InstanceSlot* const slot = instanceSlots.get(instance); slot != nullptr) {
+        for (const auto& member : record.instances) {
+            if (InstanceSlot* const slot = instanceSlots.get(member.second); slot != nullptr) {
                 JS_FreeValue(ctx, slot->object);
                 slot->object = JS_UNDEFINED;
             }

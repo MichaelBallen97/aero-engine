@@ -1908,3 +1908,90 @@ TEST_CASE("script: a script file that grew past the cap after its size was asked
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     script_test::expectCleanShutdown(fx.vm);
 }
+
+// ---- HR42-HR43: the instances of one script keep their creation order across destroys ----------------------------
+
+TEST_CASE("script: a reload re-creates the surviving instances in their creation order after destroys (HR42)") {
+    script_test::LogCapture log;
+    Fixture fx;
+    constexpr std::string_view KEY = "res://s/a.js";
+    fx.files->set("s/a.js", classSource("  id = 0;\n  hello() {\n    return \"v1\";\n  }"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    std::array<ScriptInstance, 6> made{};
+    for (std::size_t i = 0; i < made.size(); ++i) {
+        made[i] = instanceOf(fx.vm, KEY);
+        expose(fx.vm, made[i], "s");
+        REQUIRE(script_test::completion(fx.vm, std::format("s.id = {}; String(s.id)", i + 1U)) ==
+                std::format("{}", i + 1U));
+    }
+    // The 2nd, 5th and 1st: neither the destroy order nor a handle's index is the creation order.
+    for (const std::size_t at : {std::size_t{1}, std::size_t{4}, std::size_t{0}}) {
+        CHECK(scriptStatusLabel(fx.vm.destroyInstance(made[at])) == "Ok");
+    }
+    log.clear();
+
+    REQUIRE(script_test::completion(fx.vm, "globalThis.n = 0; String(n)") == "0");
+    fx.files->set("s/a.js",
+                  classSource("  id = 0;\n  rebuiltAt = globalThis.n++;\n  hello() {\n    return \"v2\";\n  }"));
+    const ScriptLoadResult loaded = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(loaded.status) == "Ok");
+    CHECK(loaded.instancesMoved == 3U);
+    for (const std::size_t at : {std::size_t{2}, std::size_t{3}, std::size_t{5}}) {
+        expose(fx.vm, made[at], "s");
+        const std::size_t rebuilt = at == 2U ? 0U : (at == 3U ? 1U : 2U);
+        CHECK(script_test::completion(fx.vm, "s.id + ':' + s.rebuiltAt + ':' + s.hello()") ==
+              std::format("{}:{}:v2", at + 1U, rebuilt));
+    }
+    for (const std::size_t at : {std::size_t{1}, std::size_t{4}, std::size_t{0}}) {
+        CHECK(scriptStatusLabel(fx.vm.destroyInstance(made[at])) == "UnknownInstance");
+    }
+    CHECK(script_test::completion(fx.vm, "String(n)") == "3");
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: ten thousand instances destroy by halves without disturbing a reload (HR43)") {
+    const script_test::LogCapture log;
+    Fixture fx;
+    constexpr std::string_view KEY = "res://s/a.js";
+    constexpr std::size_t COUNT = 10000;
+    fx.files->set("s/a.js", classSource("  id = globalThis.next++;\n  hello() {\n    return \"v1\";\n  }"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    REQUIRE(script_test::completion(fx.vm, "globalThis.next = 0; String(next)") == "0");
+    std::vector<ScriptInstance> instances;
+    instances.reserve(COUNT);
+    for (std::size_t i = 0; i < COUNT; ++i) {
+        instances.push_back(instanceOf(fx.vm, KEY));
+    }
+
+    const auto firstStart = std::chrono::steady_clock::now();
+    for (std::size_t i = 0; i < COUNT; i += 2U) {
+        REQUIRE(scriptStatusLabel(fx.vm.destroyInstance(instances[i])) == "Ok");
+    }
+    const auto firstEnd = std::chrono::steady_clock::now();
+    const auto firstLoop = std::chrono::duration_cast<std::chrono::milliseconds>(firstEnd - firstStart);
+
+    fx.files->set("s/a.js", classSource("  id = -1;\n  hello() {\n    return \"v2\";\n  }"));
+    const ScriptLoadResult loaded = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(loaded.status) == "Ok");
+    CHECK(loaded.instancesMoved == COUNT / 2U);
+    CHECK(loaded.fieldsKept == COUNT / 2U);
+    std::vector<std::size_t> sampled{1, COUNT - 1};
+    for (std::size_t i = 1001; i < COUNT; i += 998) {
+        sampled.push_back(i | 1U);
+    }
+    for (const std::size_t i : sampled) {
+        expose(fx.vm, instances[i], "s");
+        CHECK(script_test::completion(fx.vm, "s.id + ':' + s.hello()") == std::format("{}:v2", i));
+    }
+
+    const auto secondStart = std::chrono::steady_clock::now();
+    for (std::size_t i = COUNT; i > 0U; i -= 2U) {
+        REQUIRE(scriptStatusLabel(fx.vm.destroyInstance(instances[i - 1U])) == "Ok");
+    }
+    const auto secondEnd = std::chrono::steady_clock::now();
+    const auto secondLoop = std::chrono::duration_cast<std::chrono::milliseconds>(secondEnd - secondStart);
+    MESSAGE("10000 instances: the even half in creation order " << firstLoop.count() << " ms, the rest in reverse "
+                                                                << secondLoop.count() << " ms");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
