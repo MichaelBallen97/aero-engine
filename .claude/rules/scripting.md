@@ -23,6 +23,8 @@ Each rule here was earned by a defect, a green-and-wrong test or a measurement t
   Since 4.3.2 it also links `aero::assets` PRIVATE (the `.aeroscript` container and its byte primitives, never a public
   dependency) and holds the cook (`cookScriptBytecode`, `bytecode_cook.cpp`) and the loader's bytecode branch
   (`vm_modules.cpp`, with the format's byte arithmetic in `bytecode_format.{hpp,cpp}`).
+  Since 4.3.4 it maps stack frames through source maps (`source_map.cpp`, the internal `source_map.hpp`) and links
+  `aero::reflect` PRIVATE for `engine::parseJson`, which also arrives PUBLIC through `aero::scene`.
 
 
 ## Scripting
@@ -185,6 +187,30 @@ executor skips its job drain, and the VM's next call of any kind runs the reject
 `Exception` (`uncaught InternalError: interrupted`). A case that interrupts a call inside an executor asserts the next
 call's status and records, as HR33 does.
 
+**A STACK IS MAPPED AT THE VM'S ONE DESCRIPTION POINT, THROUGH THE MAP READ WITH ITS MODULE'S JAVASCRIPT (4.3.4).**
+Every stack the VM describes goes through `SourceMapStore::mapStack` where it is described, so the ERROR record and
+`ScriptError::stack` agree and nothing downstream rewrites log text. `keepSourceMap` runs at `readModuleSource`'s tail
+for every read, outside R33's frames (inside `compileModule` it grew one level to 3936 B in Debug), and keys the slot by
+the name the backend holds, `<path>?gen=N` included, so each generation maps through the map read with its own
+JavaScript: read at the first error instead, a refused reload's generation 1 mapped through generation 2's map. A
+cooked text forgets its name's slot before any URL scan, because a failed JavaScript compile bumps no generation and a
+cooked read under the same name would keep the stale slot (SR18). The cook, `evaluateScript` and `peekModuleSource`
+read no map, and a new read path keeps the slot in step with what it compiled.
+
+**THE LOOKUP TAKES QUICKJS'S BYTE COLUMN AS THE MAP'S UTF-16 COLUMN (4.3.4, plan G4).** quickjs prints UTF-8 byte
+columns, 1-based except on a module's first line, where they are 0-based; the lookup is the last segment at or before
+the 0-based column on the frame's own line, never an earlier line. esbuild escapes every non-ASCII character in code,
+so the two columns agree on every line it emits. A hand-written map over code (not comments) that holds non-ASCII
+before a frame lands on a neighbouring segment of the same line; converting would need the module's text at error
+time, which the VM keeps only for the entry.
+
+**A MISSING MAP IS SILENT, AND AN UNUSABLE ONE IS ONE WARN PER MAP PATH PER VM (4.3.4).** The committed bytecode
+fixtures' bundles name a map that is not committed and BY30/BY31 compare their stacks, so no URL, a URL the VM does not
+follow and a missing file change nothing. A map that exists but cannot be used warns once, at the first error that
+needed it and before that error's record: `script: <map path>: source map not used: <reason>; stack frames name the
+JavaScript`. The frame grammar anchors on the last ` (res://` and matches only names the VM gave a generation that has
+a map, because a split from the right breaks on a file named like `a (b).js`; one rewrite reads at most 64 lines.
+
 ## What Phase 4's next tasks inherit
 
 **Phase 4 is open; Epic 4.1 is closed (4.1.1, 4.1.2) and 4.2.1, quickjs binding emission, is merged (`docs/tasks/phase-4.md`).**
@@ -203,3 +229,9 @@ engine holds its instances behind `ScriptInstance` handles, and an instance's ow
 dispatch. 4.7.4's hot-reload part connects 4.3.1's publishes to `loadScript` during play; any trigger is safe, and
 `ScriptLoadResult`'s heap figures let it warn before a full heap. R34's VM-core fix and a native watcher are unowned
 handoffs in `docs/08`.
+
+**What 4.3.4 leaves for later tasks.** 4.7.4 picks the play session's mount, and with it what a mapped frame names: the
+project root at `res://` gives `res://assets/...`, a `Library/Scripts` mount the map's own `../../assets/...`. A load
+between a publish's map write and its JavaScript write reads the next build's map with the previous JavaScript, so
+4.7.4 reloads on the provenance record, which 4.3.1 writes last. Its page hovers the Console's tooltip. R35 (quickjs's
+recorded positions) and R36 (nothing of a generation is freed before teardown) are in `docs/08`.

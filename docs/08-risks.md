@@ -42,6 +42,8 @@
 | **R32** | **A module nested in a bytecode payload under a name other than atom #0 is listed by the reader and later imported without the loader** (found by task 4.3.2's second code-review round) — `JS_ReadObject` lists every `BC_TAG_MODULE` it meets, at any depth, as an array element, an object property or a function's constant-pool entry, whether the root is a module or not (`quickjs.c:29652`, `:39029-39034`, `:39569-39575`). The loader renames atom #0 only, so a module nested under another name stays listed under that name, and a later `import` of the name resolves to the listed module before the loader is called (`quickjs.c:30031-30037`); retiring the container's own key does not reach it. A module nested under atom #0 is closed on both arms: when the payload is not a module (BY36) and when the read fails after listing it (BY37), because any read that started retires the key. The residue (a module nested under another name) stands | Low | High | **Recorded, not fixed.** Reachable only through a container this build did not cook, and the loader's checks defend against damage, not against a hostile writer (docs/09 section 16.0; `quickjs.h` warns that adversarial bytecode can corrupt memory). Owned by 5.1.1, whose pak mount is the first reader of containers this build did not cook |
 | **R33** | **The import cap's 8 KiB per level is a C-stack budget measured on macOS alone** (raised by task 4.3.2's CI run `41060944618`) — `maxImportDepth = stackLimitBytes / 8 KiB` admits a chain only while one level's frames (seven of the backend's, three of the engine's) stay under 8 KiB on every lane; past that the backend's own stack check refuses a chain the cap admits, a `CompileError` "Maximum call stack size exceeded" in place of the cap's `LoadError`. At `8191af2` the loader's bytecode branch grew `compileModule`'s frame by about 1.4 KB per level in Debug (6624 B against `main`'s 5216 on macOS) and ML35 failed on Windows Debug (MSVC, ASan) alone; from ML35's pass at `main`, MSVC Debug was already within `F/64` of the budget there, `F` being the stack below the first level. | Low | Low | **Mitigated; not measured off macOS.** The three engine frames hold only what is live across the nested compile (`.claude/rules/scripting.md`): a level is 3904 B in Debug and 1040 B in Release on macOS arm64, against 5216 / 1024 at `main`. ML35 on all six lanes is the witness; the MSVC and GCC figures are unmeasured and need a Windows or a Linux machine (a test backend's `fileSize` frame address, level by level). If a lane nears 8 KiB, the next frame to shrink is `loadModule` (1376 B in macOS Debug); a larger budget is the last resort, since it shortens every chain the cap admits. |
 | **R34** | **A call interrupted inside a promise executor leaves its rejection's reaction job for the VM's next call** (found by task 4.3.3's first fix round, 2026-10-31) — when a call's time budget ends inside a `new Promise` executor, the call skips its job drain, so the rejection's reaction job stays queued, and the VM's next call of any kind runs it first and answers `Exception` (`script: <file>: uncaught InternalError: interrupted`). A corrected `loadScript` that happens to be that next call is refused and remembers its bytes, so it answers `AlreadyRefused` until they change. It predates 4.3.3: 4.1.1's budget design, and `evaluateModule` behaves the same | Low | Low | **Accepted and documented, not fixed (4.3.3).** HR33 pins it: the executor body's next call is `Exception` with exactly that one ERROR, and a thenable body's next call is `Ok` with no record. 4.3.3 makes no VM-core change; the fix is an unowned handoff, revisited when 4.7.4's play loop exists |
+| **R35** | **A source-mapped frame can name the wrong line, because quickjs records a position only at some operations** (raised by task 4.3.4's spike, 2026-10-31) — quickjs-ng 0.15.1 records a frame's position only at `new`, a call, a binary operator, `throw`, an expression statement and a destructuring or `for-of` close, so a frame can name its function's first line or the previous loop iteration (five of the spike's measured frames did, before any map). The source map translates that position faithfully, so the `.ts` line is as wrong as the JavaScript one; the file and the function name stay right. A stack also holds at most 10 frames (the VM fixes `Error.stackTraceLimit`), so a deeper one loses its outermost frames | Med | Low | **Accepted and documented, not fixed (4.3.4).** The validation page lists both under "known and expected". A fix is a quickjs-ng patch that records more positions (R21's family), owned by no task |
+| **R36** | **Nothing of a script generation is freed before its VM is torn down** (raised by task 4.3.4's plan, 2026-10-31; the module half measured by 4.3.3) — every reload keeps the old generation's module, about 4.3–4.5× its bundle plus about 3 KB of heap (4.3.3, in Release: a 64 MiB VM held 8 632, 1 532 and 165 reloads of 1, 9.4 and 93 KB bundles), and since 4.3.4 its source map, outside the heap: the map's bytes (about 2.4× the bundle) until the generation's first error, then 16–20 bytes per decoded segment. The heap limit refuses one map larger than itself, never the sum, so a long hot-reload session grows with its reload count and nothing else bounds it | Med | Low | **Accepted and documented (4.3.3, 4.3.4).** A new VM is the full reset, and `ScriptLoadResult`'s heap figures let 4.7.4 warn before a full heap. A `VmStats` figure for map bytes is 4.7.4's to ask for if its play loop shows pressure |
 
 ---
 
@@ -68,7 +70,7 @@ Decisions deliberately deferred until there is data or the relevant phase arrive
 Work a task found, measured or declined that no task in `docs/tasks/` owns yet. The list moved here from
 `CLAUDE.md`'s state block on 2026-10-26, where a pointer to this section remains.
 
-**EIGHTY-THREE UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**EIGHTY-FOUR UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs in `CLAUDE.md`'s state block (fact
 4's four permitted cases, the inspector-row gap, the closed `File` section, E.1.1's fired thick-line handoff) are
@@ -246,6 +248,12 @@ not repeated here.
   and 50 scripts: esbuild is 10–25 ms of it, and the watcher's 2 s settle and up to 1 s of cooldown are the rest.
   4.3.3 left the watcher alone. Whether the latency is felt is settled when Story 2's demo runs (4.7.4); a native
   backend would be a new task that fills `WatchSnapshot` behind `poll()`'s seam.
+- **The play session's script mount and the publish window** (4.3.4) — what a mapped frame names depends on the mount
+  4.7.4's play session gives the VFS: the project root at `res://` makes a frame read `res://assets/scripts/<name>.ts`,
+  while 4.3.1's `Library/Scripts` mount (ST20–ST22's) makes it read the map's own `../../assets/scripts/<name>.ts`. And
+  a load between a publish's map write and its JavaScript write reads the next build's map with the previous
+  JavaScript (`vm.hpp` documents it); the transpiler writes the provenance record last, so a reload keyed on the
+  record sees both files of one build. Decided when 4.7.4 mounts the play session's VFS.
 
 ---
 
@@ -355,6 +363,12 @@ included. Of the page's three rows only row 2, the 10 000-instance reload time, 
 and 3 (the cached macOS esbuild) are NOT EXECUTABLE there. HR32's time off macOS is known only through `aero_tests` on
 that run's Windows Debug lane: 222.84 s against `main`'s 227.06 s, on a runner whose unchanged `aero_editor_shell_test`
 took 196.24 s against 217.79 s, so the 41 HR cases cost about 18 s there together.
+
+**4.3.4'S WINDOWS AND LINUX PAGES HAVE NO EXECUTABLE ROW.** Both rows of its page are NOT EXECUTABLE off macOS: row 1
+runs `leaks` over SR1–SR30, CS11–CS16, ST43 and ST44, and row 2 compares SR9's mapping times with the spike's macOS
+figures. Linux CI's LeakSanitizer covers row 1's property in Debug. CI's Windows and Linux lanes ran SR1–SR30,
+CS11–CS16, ST43, ST44 and I367 green in both configurations on PR #131's run (`41252762043`), ML35 on MSVC Debug and
+SR30's heap sweep included.
 
 **METHOD TRAPS FOR DRIVING THE EDITOR, ALL MEASURED.** A pending TCC prompt stalls the editor to ~0.2% CPU
 with a window that **NEVER RENDERS** (a black capture); the prompts **CASCADE**, one per bundle identity, and

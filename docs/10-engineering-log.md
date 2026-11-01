@@ -67,6 +67,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | 4.3.1 esbuild integration on import | #127 | `d06a635` | **7 / 7**, nothing failed (the editor GUI driven on macOS: transpile on open and on save, an error line and Refresh, an up-to-date reopen, a quarantined esbuild stopped at 30 s, the copy beside the editor, a cold and an offline configure); row 3 re-run on the final head. Four code-review rounds (8 findings, all closed); a 125-row sabotage matrix whose eight holes were closed and re-run red; the first CI run was red on Windows alone (esbuild's `X` error mark), the second green |
 | 4.3.2 Bytecode compile & cache | #129 | `c26b890` | **3 / 3**, nothing failed (the editor GUI driven on macOS to write a real project's two bundles, then the cook's exit, silence, header bytes and size; a 519 KB bundle cooked in 0.10 s; the bytecode cases under `leaks`, 0 leaks); rows 1–3 re-run on the final head with byte-identical artifacts. Six code-review rounds (14 findings: 10 closed, 4 wording minors recorded); a 77-row doctest and 12-row ctest sabotage matrix whose four holes were closed and re-run red; CI red twice on lane-only failures (an MSVC C2280 and a Linux clang-tidy finding, then ML35 on Windows Debug alone, R33), the third run green |
 | 4.3.3 Script hot reload | #130 | `08025f9` | **3 / 3**, nothing failed (terminal rows, no editor UI: the HR cases under `leaks`, 0 leaks; a reload of 10 000 instances in 3 ms in Release and 32 ms in Debug; the pinned esbuild's class shape, line for line). Three code-review rounds (two blocking findings, each a refusal made after the time budget had ended, and four should-fix, all closed); a 69-row sabotage matrix, 68 red and one non-finding, whose holes HR38–HR41 closed and re-ran red; R34 (the job an interrupted call leaves) recorded; CI green on the first push (`41186262804`) and on `main`'s push run (`41190384148`), 6 / 6 each |
+| 4.3.4 Source-mapped errors | #131 | `4d9d1ef` | **2 / 2**, nothing failed (terminal rows, no editor UI: SR1–SR30, CS11–CS16, ST43 and ST44 under `leaks`, 0 leaks; SR9's first mapping of 120 000 segments in 2.9–3.2 ms in Release and 79–80 ms in Debug, the second in 0 µs and 13–17 µs). Two code-review rounds (two should-fix findings, a cooked read keeping the map a failed JavaScript compile left under its name and the VM-tier arms no case reached, and two minors, all closed); a 99-row sabotage matrix whose ten holes SR22–SR30 and CS16 closed and re-ran red; R35 (quickjs's recorded positions) and R36 (nothing of a generation freed before teardown) recorded; CI green on the first push (`41252762043`) and on `main`'s push run (`41259313081`), 6 / 6 each |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -20795,3 +20796,150 @@ internal `script_carry.hpp`; `vm.hpp`, `vm_impl.hpp`, `vm.cpp`, `vm_errors.cpp`,
 `module_graph.{hpp,cpp}` and `component_binding.hpp` grow; `tests/script_reload_test.cpp` joins `aero_tests`. Docs:
 `docs/08` (R34, R29's mitigation, two unowned handoffs and the validation debt), the phase file and the scripting rule
 file.
+
+### 4.3.4 — Source-mapped errors — every stack a VM describes names the TypeScript file, line and column through the source map its module's JavaScript names, and the Console shows a record's frames in its row's tooltip
+
+A script error now reads `res://assets/scripts/util.ts:4:11`, not a line of the bundle esbuild generated: the VM maps
+every stack it describes through the map its module's JavaScript names, and the Console shows a multi-line record as one
+row with the rest in the row's tooltip. Merged as PR #131 (`4d9d1ef`, a true merge commit): nine commits on `dc03e0c` —
+the plan's four steps, round 1's two commits, round 2's one, the sabotage-hole tests and a clang-tidy fix. CI: run
+`41252762043` at `1b3be1c`, 6 / 6 green on the first push, the cross-lane cook-determinism job included; `main`'s push
+run `41259313081` on the merged head, 6 / 6 green. This is the engine and Console halves of Story 2's last line (a
+script that throws while the game plays names its `.ts` file and line in the Console); nothing in the editor runs a
+script before 4.7.4, so the line becomes visible with 4.7.4's play session, and Story 2's demo waits on 4.7.3 and
+4.7.4's hot-reload part.
+
+**What shipped.**
+- **The map is read with its JavaScript** (`keepSourceMap`, at `readModuleSource`'s tail in `vm_modules.cpp`): a module
+  whose last line is `//# sourceMappingURL=<url>` has the map read through the VM's VFS when the loader reads the
+  JavaScript, and the bytes are kept under the module name the backend holds, so each generation maps its frames
+  through its own map whatever the files hold later. A relative URL resolves against the module's directory and an
+  absolute `res://` URL is decoded and normalised; any other scheme (`data:` included), a `/`-rooted URL, a raw `?` or
+  `#` and a bad escape are not followed. No URL, a URL not followed and a missing map are silent, so the committed
+  bytecode fixtures, whose bundles name a map that is not committed, keep BY30's and BY31's equal stacks. A cooked
+  text forgets its name's map before any URL scan or VFS call; the cook, `evaluateScript` and `peekModuleSource` never
+  read one.
+- **The source-map core** (`engine/script/src/source_map.cpp` and the internal `source_map.hpp`, new): the URL rule,
+  the map-path and source-name rules, a version-3 decoder, the lookup (the last segment at or before the frame's
+  0-based column on its own line, never an earlier line), the frame grammar and `SourceMapStore`, which decodes a slot
+  at the first error with a frame in it, once, and then releases its bytes. The decoder refuses a text that is not
+  JSON, a `version` other than 3, an indexed map with `sections`, `sources` that are not strings, `mappings` that do
+  not decode and a position past 31 bits.
+- **The description point** (`vm_errors.cpp`): every stack the VM describes, the ERROR record and `ScriptError::stack`
+  alike, is rewritten through the store. A frame becomes `    at <fn> (<source>:<line>:<col>)` with quickjs's function
+  name, the original 1-based line and the map's 1-based UTF-16 column; `<source>` is `sourceRoot` + `sources[i]`,
+  resolved against the map's path and percent-decoded to a canonical `res://` path when it stays inside `res://`, else
+  the map's own spelling. A frame the map does not cover keeps its JavaScript text, and one rewrite reads at most 64
+  lines. When the first positioned frame maps, the record names its site in place of the module's path (`script:
+  res://assets/scripts/util.ts:4:11: uncaught Error: boom`), for every stack-carrying shape and the out-of-memory
+  record.
+- **A map that exists but cannot be used** (unreadable, larger than the heap limit, or refused by the decoder) leaves
+  the JavaScript text and logs one WARN per map path per VM, at the first error that needed it and before that
+  error's record: `script: <map path>: source map not used: <reason>; stack frames name the JavaScript`.
+- **The Console** (`console_model.{hpp,cpp}`, `console_panel.cpp`): `LogSink::push` splits a record at its first line
+  break before sanitising. The first line is `LogEntry::message`, the row, one line as before (D8); the rest is
+  `LogEntry::detail` (`sanitizeLogDetail`: line breaks kept, capped at `MAX_LOG_DETAIL_BYTES` = 8192 on a UTF-8
+  boundary). The row's tooltip is `buildLogTooltip` (the detail, then the C++ `file:line`), the filter matches the
+  message or the detail, and Copy writes the detail's lines after the row.
+
+**Code-review rounds.** Round 1 (on `dc03e0c..2c1ab6e`): no blocking, two should-fix and one minor — a failed
+JavaScript compile never bumps its key's generation, so a cooked container read next under the same name kept the
+JavaScript's map slot and its frames mapped through it (the plan's AC-7); no VM-tier case reached `keepSourceMap`'s two
+forget arms, an imported or `import()`ed module's map, or the unreadable, refused and grown-map WARN arms; and
+`vm.hpp`'s out-of-memory sentence still named `<path>`. Closed by `9e5019e` (`keepSourceMap` runs for every read and
+forgets a cooked text's name first, plan Addendum 2; SR18) and `59ab1fa` (SR19–SR21). Round 2 (on
+`2c1ab6e..59ab1fa`): one minor (a section divider named SR10–SR18), fixed by `89ade88`; the loop ended.
+
+**The sabotage matrix.** 99 doctest rows through `macos-debug` (84 in `aero_tests`, 13 in `aero_editor_shell_test`, 2
+in `aero_editor_imgui_test`), designed at `89ade88`. The first run read 89 red and ten holes, each an arm no case
+reached: S11 (a lower-case hex escape), S16 (a source that leaves `res://`, shown decoded), S17 (an absolute `res://`
+source that needs decoding), S28 (an eighth VLQ digit whose bits are zero), S48 (the anchor on the last ` (res://`),
+S49 (a ten-digit line past 32 bits), S51 (a parenthesised first positioned frame outside `res://`), S59
+(`keepUnusable` over an existing slot), V21 (a mapped out-of-memory record) and E13 (the detail's 8192-byte cap).
+Closed by `3846eb7` (SR22–SR30 and CS16), each row re-run red; standing 99 red, no hole. One run was interrupted after
+S9: S10's seed made a test print bytes that are not UTF-8, the matrix script's strict decode stopped with the seed
+live, and the seed was reverted from its diff before the run resumed.
+
+**Traps found, each measured.**
+- **quickjs prints UTF-8 byte columns, 1-based except on a module's first line, where they are 0-based.** esbuild
+  escapes every non-ASCII character in code, so on a code line the byte column is the UTF-16 column, and the lookup
+  takes it as it is (plan G4; the rules file).
+- **A map read at the first error maps one generation through another's map:** a refused reload leaves generation 1
+  running beside generation 2's map on disk (measured in the spike). The map is therefore read with its JavaScript and
+  kept per module name.
+- **A frame split from the right breaks on a file named like `a (b).js`,** so the grammar anchors on the last
+  ` (res://` and matches only names the VM gave a generation that has a map.
+- **quickjs records a position only at `new`, a call, a binary operator, `throw`, an expression statement and a
+  destructuring or `for-of` close,** so five of the spike's frames named a wrong line before any map: the function's
+  first line or the previous loop iteration. The map translates that position faithfully (plan G5; `docs/08`). A
+  stack holds at most 10 frames: the VM fixes `Error.stackTraceLimit`.
+- **esbuild 0.28.2's maps:** `sources` are relative to the map's directory and percent-encode non-ASCII, `%`, `#` and
+  `?`; `names` is non-empty only on a rename (a frame shows `helper2`); the URL line is always last, with one `\n` (43
+  bundles); the `using` lowering's helpers have no segments; a map is about 2.4× its bundle, 55 % of it
+  `sourcesContent`.
+- **Cost:** reading, parsing and decoding a 150 KB map takes 0.84 ms in Release and 9.8 ms in Debug, a 1.5 MB one 5.6
+  and 96 ms; a decoded segment costs 16–20 bytes and a lookup nanoseconds. The page's row 2: SR9's first mapping of
+  120 000 segments takes 2.9–3.2 ms in Release and 79–80 ms in Debug, the second 0 µs and 13–17 µs.
+- **R33: the map read on `compileModule`'s frame grew one import level to 3936 B in Debug,** 32 B over 3904 B against
+  the plan's +16 B acceptance, so the call moved to `readModuleSource`'s tail (plan G1's fallback, Addendum 1): 3904 B
+  in Debug and 1040 B in Release, with `compileModule` byte-identical to `dc03e0c`.
+- **A failed compile is never in `attempt->created`,** so it bumps no generation, and a later read under the same key
+  compiles under the same name (round 1's finding). **`import()` loads at import depth 0 with a fresh attempt,** so a
+  gate on depth alone would leave it mapped (SR20).
+- **SR30's heap sweep:** 5 of 29 rooms report a SyntaxError in Debug and 12 of 29 in Release on this Mac (ML69's
+  generator, sweep and `REQUIRE`).
+
+**Where the implementation departed from the plan.**
+- `keepSourceMap` is called at `readModuleSource`'s tail (Addendum 1, G1's fallback) and for every read, a cooked text
+  forgetting its name's slot (Addendum 2).
+- `DescribedError` is nested in `Vm::Impl`. SR11(d)'s VM is built from `VmConfig{.callTimeBudget = 50ms}` directly,
+  because `script_test::patient()` resets the budget to 60 s. The end-to-end cases' `ConsoleCapture` holds a nested
+  logging `Session` and then the `LogSinkScope`, so logging shuts down after the scope detaches.
+- `aero_script` names `aero::reflect` `PRIVATE` for `engine::parseJson`, though it also arrives `PUBLIC` through
+  `aero::scene`.
+- SR18–SR30 and CS16 came from the code-review rounds and the sabotage holes: the plan predicted `aero_tests` 1747 and
+  `aero_editor_shell_test` 2507, and they read 1760 and 2508.
+
+**What was deliberately left out, and which task holds each.**
+- The play session that makes a script error reach the Console, and the VFS mount it uses: 4.7.4. Mounting the project
+  root at `res://` gives `res://assets/...`; a `Library/Scripts` mount gives the map's own `../../assets/...` (an
+  unowned handoff in `docs/08`). The live hover over the tooltip joins 4.7.4's page.
+- A source map for a cooked script: none. A cooked `.aeroscript` carries no map (`docs/09` §16.8), so an exported
+  game's frames name the JavaScript.
+- quickjs's recorded positions and the 10-frame cap: the backend's (`docs/08`).
+- A load that races a publish can read the next build's map with the previous JavaScript: documented in `vm.hpp`.
+- Freeing a generation's map before teardown: none, as with the generation's module (`docs/08`).
+- The Windows and Linux pages: validation debt.
+
+**The sentences that govern new work.** A stack is mapped at the VM's one description point, never by rewriting log
+text downstream. A module's map is read with its JavaScript and kept under the name the backend holds, so each
+generation maps through its own map, and a cooked read forgets its name's map. A missing map is silent, and an
+unusable one is one WARN per map path per VM. A log record's first line is its Console row and the rest its detail.
+The scripting rule file holds the rules.
+
+**Validation and sabotage status — macOS 2 / 2 (2026-11-01), Windows and Linux unrun.** `macos-release` and
+`macos-debug` at `1b3be1c`, terminal rows (no editor UI: nothing in the editor runs a script before 4.7.4): `leaks
+-atExit` over SR1–SR30 read 30 passed and `0 leaks for 0 total leaked bytes`, and over CS11–CS16, ST43 and ST44 8 passed
+and 0 leaks; SR9's first mapping took 2925, 3195 and 3248 µs in Release (the row's bound 11.2 ms) and 80 021, 78 819 and
+78 606 µs in Debug (bound 192 ms), and the second 0 µs each in Release and 13, 17 and 14 µs in Debug. No row was NOT
+EXECUTABLE on macOS; both rows are NOT EXECUTABLE on Windows and Linux (`leaks` and the spike's reference figures are
+macOS's). Off macOS, CI is the only witness: PR #131's run `41252762043` ran SR1–SR30, CS11–CS16, ST43, ST44 and I367
+green in Debug (ASan/UBSan) and Release on the Windows and Linux lanes, ML35 on MSVC Debug and SR30's heap sweep
+included, and clang-tidy found nothing on the Linux lane.
+
+Measured at `1b3be1c` on fresh build directories:
+- `aero_tests` **1760** (+30: SR1–SR30), `aero_editor_shell_test` **2508** (+8: CS11–CS16, ST43, ST44),
+  `aero_editor_imgui_test` **373** (+1: I367), and **40 / 73 / 14 / 28** unchanged; reflect-tools-OFF `aero_tests` 1746,
+  shell 2466 and ImGui 373; shader-tools-OFF `aero_tests` 1620, shell 2508 and ImGui 354.
+- `ctest -N` **232 / 219 / 107**, with `cooker.*` 81 in all three; nothing added.
+- The guards read math **639**, platform **96**, rhi **190**, scene **96**, golden-rule **192**, project-no-delete **A=8
+  B=113**, audio **11-3-62**, probes **7-64** and script **177-96-15**.
+
+**Case ids claimed:** SR1–SR30 (next free: SR31), CS11–CS16 (next free: CS17), ST43–ST44 (next free: ST45) and I367
+(next free: I368).
+
+**Build & dependency impact:** no vcpkg port and no new target. `engine/script` gains `src/source_map.cpp` and the
+internal `source_map.hpp`, and links `aero::reflect` `PRIVATE`; `vm.hpp`, `vm_impl.hpp`, `vm.cpp`, `vm_errors.cpp` and
+`vm_modules.cpp` grow; `tests/script_source_map_test.cpp` joins `aero_tests`; the editor's `console_model.{hpp,cpp}` and
+`console_panel.cpp` change. Docs: `docs/08` (R35, R36, one unowned handoff and the validation debt), the phase file, and
+the scripting and editor-invariants rule files.

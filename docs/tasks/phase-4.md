@@ -201,6 +201,14 @@ is 4.4.1's, and nothing under `editor/` changed.
 **Deliverable:** JS stack traces remapped through source maps in the log/console panel.
 Subtasks:
 - Source-map lookup for stack frames; console panel rendering
+**Outcome:** a VM maps every stack it describes through the source map its module's JavaScript names. When a module's
+last line is `//# sourceMappingURL=<url>`, the map is read through the VM's VFS with the JavaScript and kept with that
+generation, and each frame of the ERROR record and of `ScriptError::stack` names the original `.ts` file, line and
+column (`    at <fn> (res://assets/scripts/util.ts:4:11)`), while the record's first line names the throw site. No map
+changes nothing, a map that cannot be used is one WARN per map per VM, and a cooked script has no map. The Console
+shows a record's first line as its row and the lines after it in the row's tooltip, above the C++ location; the filter
+searches them and Copy writes them. Nothing in the editor runs a script yet: the play session that brings a script's
+error to the Console, and the VFS mount that decides whether a frame reads `res://assets/...`, are 4.7.4's.
 
 ---
 

@@ -311,6 +311,14 @@ before constructing an `EditorApp` is silently displaced by the Console panel's 
 when the app clears the slot at teardown. **Any case observing a log record around an `EditorApp` lifetime
 must install its callback AFTER the last `app.reset()`**, inside the scope that still owns the device.
 
+**A LOG RECORD'S FIRST LINE IS ITS CONSOLE ROW, AND THE REST IS ITS DETAIL (4.3.4).** `LogSink::push` splits a record
+at its first line break BEFORE sanitising. The first line is `LogEntry::message`, still one line, so every row keeps
+one height for `ImGuiListClipper` (D8); the rest is `LogEntry::detail` (`sanitizeLogDetail` keeps `\n` and caps at
+`MAX_LOG_DETAIL_BYTES` = 8192 on a UTF-8 boundary). The row's tooltip is `buildLogTooltip` (the detail, then the C++
+`file:line`), passed to `SetTooltip("%s", …)` and never as the format; the filter reads the message and the detail,
+never the source file (D12); Copy writes the detail after its row. A script's stack frames are the first multi-line
+records (CS11–CS16, I367).
+
 **ONE UI SCALE SIZES THE STYLE, THE FONTS AND THE VIEWPORT'S CHROME (E.6.1, closing E.3.4's doubled style).**
 `resolveUiScale(SDL_GetWindowDisplayScale, SDL_GetWindowPixelDensity, previous)` — quantised to 0.05 **by
 division**, clamped to [0.5, 4], **no platform branch** — is 1 on a Retina Mac (the style used to be doubled
