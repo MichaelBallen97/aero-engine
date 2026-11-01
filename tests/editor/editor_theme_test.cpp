@@ -500,9 +500,10 @@ TEST_CASE("theme: iconColorFor reads the theme (task E.6.1, TH9)") {
         {ed::AssetKind::Audio, k.audio},        // a violet
         {ed::AssetKind::Text, k.text},          // a neutral grey
         {ed::AssetKind::Material, k.material},  // a warm coral
+        {ed::AssetKind::Script, k.script},      // a gold (task 4.4.1)
         {ed::AssetKind::Unknown, k.unknown},    // a darker grey
     };
-    REQUIRE(rows.size() == 7U);
+    REQUIRE(rows.size() == 8U);
     for (const KindRow& row : rows) {
         CAPTURE(static_cast<int>(row.kind));
         const ed::IconColor c = ed::iconColorFor(row.kind);
@@ -868,5 +869,13 @@ TEST_CASE("theme: every text the first-contact windows draw meets its floor on i
         const double ratio = contrastRatio(row.foreground, row.background);
         CAPTURE(ratio);
         CHECK(ratio >= row.floor);
+    }
+}
+
+TEST_CASE("theme: the Script asset colour is a gold of its own (task 4.4.1, TH19)") {
+    const ed::ThemeAssetKinds& k = ed::EDITOR_THEME.assetKind;
+    CHECK((k.script == ed::Srgb8{0xD0U, 0xB0U, 0x40U, 255U}));
+    for (const ed::Srgb8& other : {k.folder, k.texture, k.model, k.audio, k.text, k.material, k.unknown}) {
+        CHECK_FALSE((k.script == other));
     }
 }

@@ -3,8 +3,9 @@
 // Inspector's swatch), its components' icons, a field name humanised for a label, and its id text. PUBLIC and PURE:
 // it asks World::has<T> only, never each<T>, which logs per call for an unregistered type (viewport_icons.hpp:110-113).
 //
-// THE COMPONENT ICON TABLE IS A COMPONENT-COUNT SITE: it holds exactly the ten built-ins (EK5 pins ten rows), so the
-// next built-in adds a row here, beside RF7's and IR21's literals. A missing row is the fallback glyph, never an error.
+// THE COMPONENT ICON TABLE IS A COMPONENT-COUNT SITE: it holds exactly the eleven built-ins (EK5 pins eleven rows),
+// so the next built-in adds a row here, beside RF7's and IR21's literals. A missing row is the fallback glyph, never
+// an error.
 #include <aero/editor/panel_chrome_model.hpp>  // ChromeRole
 #include <aero/scene/entity.hpp>
 
@@ -32,7 +33,7 @@ struct ComponentIconRow {
     std::string_view registrationName;  // World::componentTypeName, "engine::Transform"
     std::string_view icon;              // an AERO_ICON_* view
 };
-inline constexpr std::size_t COMPONENT_ICON_COUNT = 10;  // the built-ins: the next one moves this and EK5
+inline constexpr std::size_t COMPONENT_ICON_COUNT = 11;  // the built-ins: the next one moves this and EK5
 [[nodiscard]] std::span<const ComponentIconRow> componentIconTable() noexcept;
 // By REGISTRATION name (never the short name: "game::Camera" is not engine::Camera); AERO_ICON_SHAPES otherwise.
 [[nodiscard]] std::string_view componentIconFor(std::string_view registrationName) noexcept;

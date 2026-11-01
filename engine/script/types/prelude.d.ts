@@ -1,9 +1,11 @@
-// Aero Engine -- the hand-written half of aero-engine.d.ts (task 4.2.2): Vec3, Quat and Entity as
-// engine/script/src/script_api*.cpp installs them, and the component types each generated block merges into.
+// Aero Engine -- the hand-written half of aero-engine.d.ts (task 4.2.2): Vec3, Quat, Entity and Script (the base class
+// a script's class extends, task 4.4.1) as engine/script/src/script_api*.cpp installs them, and the component types
+// each generated block merges into.
 // The build joins this file first, then one reflect-gen --emit-dts block per built-in component header.
 // A change to the script API changes this file in the same commit: DT3-DT7 compare it with a live VM.
 // Grammar (the drift reader refuses anything else): one declaration per line, doc comments on one line,
-// no at-sign anywhere.
+// no at-sign anywhere. A class's constructor line is `constructor(...)`, `private constructor(...)` or, for a base
+// class a script extends, `protected constructor(...)`; a method may be optional (`name?(...): type;`), a field never.
 
 declare namespace engine {
     /** Every component class, keyed by its script name. Each generated block adds its own entries. */
@@ -60,5 +62,18 @@ declare namespace engine {
         add<T extends Component>(type: ComponentClass<T>): T;
         /** Removes the component; false when the entity had none. */
         remove<T extends Component>(type: ComponentClass<T>): boolean;
+    }
+
+    /** The base class of a script: a script module's default export extends it, and the engine makes one instance per entity whose ScriptComponent names the script. */
+    class Script {
+        protected constructor();
+        /** The entity this instance is attached to; already set in field initializers and the constructor body. */
+        readonly entity: Entity;
+        /** Runs once, before the first onUpdate. */
+        onInit?(): void;
+        /** Runs every frame; dt is the seconds since the previous frame. */
+        onUpdate?(dt: number): void;
+        /** Runs once, when the instance is detached or the session stops. */
+        onDestroy?(): void;
     }
 }

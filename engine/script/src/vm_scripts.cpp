@@ -12,6 +12,8 @@
 //   6. the commit, only now: a job that threw or a budget that fired in the report refuses the load as well.
 
 #include <aero/core/log.hpp>
+#include <aero/scene/entity.hpp>
+#include <aero/scene/world.hpp>
 #include <aero/script/internal/component_binding.hpp>
 #include <aero/script/internal/module_graph.hpp>
 #include <aero/script/internal/script_carry.hpp>
@@ -20,6 +22,7 @@
 #include "script_api.hpp"
 #include "vm_impl.hpp"
 
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -33,43 +36,6 @@
 namespace engine::script {
 
 namespace {
-
-// An atom the wrapper owns; JS_ATOM_NULL frees as a no-op.
-class HeldAtom {
-public:
-    HeldAtom(JSContext* context, JSAtom held) noexcept : context(context), atom(held) {}
-    HeldAtom(const HeldAtom&) = delete;
-    HeldAtom& operator=(const HeldAtom&) = delete;
-    HeldAtom(HeldAtom&&) = delete;
-    HeldAtom& operator=(HeldAtom&&) = delete;
-    ~HeldAtom() { JS_FreeAtom(context, atom); }
-
-    [[nodiscard]] JSAtom get() const noexcept { return atom; }
-
-private:
-    JSContext* context;
-    JSAtom atom;
-};
-
-// The three values a property descriptor read may hand over; each is freed on every path.
-class HeldDescriptor {
-public:
-    explicit HeldDescriptor(JSContext* context) noexcept : context(context) {}
-    HeldDescriptor(const HeldDescriptor&) = delete;
-    HeldDescriptor& operator=(const HeldDescriptor&) = delete;
-    HeldDescriptor(HeldDescriptor&&) = delete;
-    HeldDescriptor& operator=(HeldDescriptor&&) = delete;
-    ~HeldDescriptor() {
-        JS_FreeValue(context, desc.value);
-        JS_FreeValue(context, desc.getter);
-        JS_FreeValue(context, desc.setter);
-    }
-
-    JSPropertyDescriptor desc{0, JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED};
-
-private:
-    JSContext* context;
-};
 
 // The own property names of one object, freed on every path; JS_GetOwnPropertyNames leaves a null table on failure.
 class HeldPropertyEnum {
@@ -94,33 +60,23 @@ private:
     std::uint32_t length = 0;
 };
 
-enum class ClassCheck : std::uint8_t {
-    IsClass,
-    NotAClass,
-    Failed,  // an exception is pending: only a refused allocation can cause one
-};
+// The entity the base class takes during one engine-driven construction, set for the scope and gone on every path.
+class PendingEntityScope {
+public:
+    PendingEntityScope(ScriptApi& api, const std::optional<EntityRef>& pending) : api(api) {
+        api.pendingEntity = pending;
+    }
+    PendingEntityScope(const PendingEntityScope&) = delete;
+    PendingEntityScope& operator=(const PendingEntityScope&) = delete;
+    PendingEntityScope(PendingEntityScope&&) = delete;
+    PendingEntityScope& operator=(PendingEntityScope&&) = delete;
+    ~PendingEntityScope() { end(); }
 
-// A class is a constructor whose own `prototype` is a non-writable data property. An ordinary function's `prototype`
-// is writable, a bound function has none, and a class defines it read-only (quickjs.c:17203-17210, 17292-17294).
-// JS_IsProxy comes first, because a Proxy's descriptor read would run its trap; JS_GetOwnProperty runs no getter.
-[[nodiscard]] ClassCheck checkClass(JSContext* ctx, JSValueConst value) {
-    if (!JS_IsObject(value) || JS_IsProxy(value) || !JS_IsConstructor(ctx, value)) {
-        return ClassCheck::NotAClass;
-    }
-    const HeldAtom prototype{ctx, JS_NewAtom(ctx, "prototype")};
-    if (prototype.get() == JS_ATOM_NULL) {
-        return ClassCheck::Failed;  // out of memory; nothing is pending, trap takes the sentinel
-    }
-    HeldDescriptor own{ctx};
-    const int has = JS_GetOwnProperty(ctx, &own.desc, value, prototype.get());
-    if (has < 0) {
-        return ClassCheck::Failed;
-    }
-    if (has == 0 || (own.desc.flags & (JS_PROP_GETSET | JS_PROP_WRITABLE)) != 0) {
-        return ClassCheck::NotAClass;
-    }
-    return ClassCheck::IsClass;
-}
+    void end() noexcept { api.pendingEntity.reset(); }
+
+private:
+    ScriptApi& api;
+};
 
 // The carry's kind of a value, by tag and then by class id: never by `typeof`, under which an array, a Vec3, a Quat,
 // an Entity and an object all read "object". No script code runs here.
@@ -338,13 +294,15 @@ ScriptLoadResult Vm::Impl::loadScriptCall(std::string_view virtualPath) {
     assert(!succeeded || compiled.has_value());  // an Ok load compiled its entry
     if (succeeded && compiled.has_value()) {
         assert(fresh.size() == record.instances.size());
-        for (std::size_t i = 0; i < record.instances.size(); ++i) {
-            InstanceSlot* const slot = instanceSlots.get(record.instances[i]);
+        std::size_t at = 0;
+        for (const auto& entry : record.instances) {
+            InstanceSlot* const slot = instanceSlots.get(entry.second);
             assert(slot != nullptr);
             if (slot != nullptr) {
                 JS_FreeValue(ctx, slot->object);
-                slot->object = fresh.take(i);
+                slot->object = fresh.take(at);
             }
+            ++at;
         }
         JS_FreeValue(ctx, record.scriptClass);
         record.scriptClass = newClass.release();
@@ -448,19 +406,75 @@ HeldValue Vm::Impl::constructInstance(JSValueConst scriptClass, EvalResult& eval
 
 void Vm::Impl::rebuildInstances(const ScriptRecord& record, JSValueConst scriptClass, EvalResult& evaluation,
                                 std::optional<ScriptRefusal>& refusal, HeldBatch& fresh, FieldCounts& counts) {
-    for (const ScriptInstance instance : record.instances) {
+    for (const auto& entry : record.instances) {
+        const ScriptInstance instance = entry.second;
+        const InstanceSlot* const slot = instanceSlots.get(instance);
+        assert(slot != nullptr);
+        // The entity this instance was attached with, under the binding it was attached under: never the current one.
+        const std::optional<EntityRef> attached = slot != nullptr ? slot->attached : std::nullopt;
+        PendingEntityScope pending{scriptApi, attached};
         HeldValue made = constructInstance(scriptClass, evaluation, refusal);
+        pending.end();  // nothing else that runs may take it
         if (!JS_IsObject(made.get())) {
             return;  // the failure or the refusal is recorded; the batch frees what it holds
         }
-        const InstanceSlot* const slot = instanceSlots.get(instance);
-        assert(slot != nullptr);
+        if (attached.has_value() && !holdEntity(made.get(), *attached, evaluation, refusal)) {
+            return;
+        }
         if (slot != nullptr && !carryFields(ctx, scriptApi, slot->object, made.get(), counts)) {
             adopt(evaluation, trap(Phase::Run));
             return;
         }
         fresh.add(made.release());
     }
+}
+
+bool Vm::Impl::holdEntity(JSValueConst object, const EntityRef& ref, EvalResult& evaluation,
+                          std::optional<ScriptRefusal>& refusal) {
+    // A call its budget ended is Interrupted, and the interrupt's record is its one record.
+    if (interruptFired || interruptRecorded) {
+        return false;
+    }
+    const HeldAtom name{ctx, JS_NewAtom(ctx, "entity")};
+    if (name.get() == JS_ATOM_NULL) {
+        adopt(evaluation, trap(Phase::Run));  // out of memory; nothing is pending, trap takes the sentinel
+        return false;
+    }
+    {
+        // The object is never a Proxy, so the descriptor read runs no script code.
+        HeldDescriptor own{ctx};
+        const int has = JS_GetOwnProperty(ctx, &own.desc, object, name.get());
+        if (has < 0) {
+            adopt(evaluation, trap(Phase::Run));
+            return false;
+        }
+        constexpr int SHAPE = JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE | JS_PROP_ENUMERABLE | JS_PROP_GETSET;
+        if (has > 0 && (own.desc.flags & SHAPE) == JS_PROP_CONFIGURABLE) {
+            const auto* const held = static_cast<const EntityRef*>(JS_GetOpaque(own.desc.value, scriptApi.entityClass));
+            if (held != nullptr && held->entity == ref.entity && held->binding == ref.binding) {
+                return true;  // the base class defined it: the instance keeps that very object
+            }
+        }
+    }
+    HeldValue entityObject{ctx, newOpaqueObject(ctx, scriptApi.entityClass, ref)};
+    if (entityObject.isException()) {
+        adopt(evaluation, trap(Phase::Run));
+        return false;
+    }
+    // The define consumes the value on every path. Without JS_PROP_THROW a refusal answers 0.
+    const int defined = JS_DefinePropertyValueStr(ctx, object, "entity", entityObject.release(), JS_PROP_CONFIGURABLE);
+    if (defined < 0) {
+        adopt(evaluation, trap(Phase::Run));
+        return false;
+    }
+    if (defined == 0) {
+        refusal = ScriptRefusal{ScriptStatus::NotAClass,
+                                "not a script: its instance cannot hold its entity (frozen, sealed, not extensible, "
+                                "or with a non-configurable own 'entity')"};
+        logRefusal(*refusal);
+        return false;
+    }
+    return true;
 }
 
 void Vm::Impl::endScriptCall(EvalResult& evaluation) {
@@ -480,8 +494,9 @@ void Vm::Impl::logRefusal(const ScriptRefusal& refusal) const {
 
 // ---- create and destroy ----------------------------------------------------------------------------------------
 
-ScriptInstanceResult Vm::Impl::createInstanceCall(std::string_view virtualPath) {
+ScriptInstanceResult Vm::Impl::createInstanceCall(std::string_view virtualPath, const std::optional<Entity>& entity) {
     assert(!inCall);
+    // 1. The script: no class loaded from the path is NotLoaded, before any World check.
     const internal::SpecifierResolution entry = internal::resolveModuleSpecifier(virtualPath, {});
     const bool resolved = entry.refusal == internal::SpecifierRefusal::None;
     const auto found = resolved ? scripts.find(entry.key) : scripts.end();
@@ -490,16 +505,39 @@ ScriptInstanceResult Vm::Impl::createInstanceCall(std::string_view virtualPath) 
                        resolved ? std::string_view{entry.key} : virtualPath);
         return instanceResultOf(ScriptStatus::NotLoaded);
     }
+    // 2. The World, before a call is opened: nothing runs for a refusal.
+    if (entity.has_value()) {
+        if (scriptApi.world == nullptr) {
+            AERO_LOG_ERROR("script: {}: createInstance refused: no World is bound", entry.key);
+            return instanceResultOf(ScriptStatus::NoWorld);
+        }
+        if (!scriptApi.world->alive(*entity)) {
+            AERO_LOG_ERROR("script: {}: createInstance refused: the entity is not alive in the bound World", entry.key);
+            return instanceResultOf(ScriptStatus::DeadEntity);
+        }
+    }
     ScriptRecord& record = found->second;
+    std::optional<EntityRef> ref;
+    if (entity.has_value()) {
+        ref = EntityRef{*entity, scriptApi.binding};
+    }
+    // 3. One call; the entity is pending only while the constructor runs.
     const CallScope scope{*this, entry.key};
     EvalResult evaluation{EvalStatus::Ok, {}, {}};
     std::optional<ScriptRefusal> refusal;
+    PendingEntityScope pending{scriptApi, ref};
     HeldValue made = constructInstance(record.scriptClass, evaluation, refusal);
+    pending.end();
+    // 4. The instance must hold its entity before anything else runs.
+    if (ref.has_value() && evaluation.status == EvalStatus::Ok && !refusal.has_value() && JS_IsObject(made.get())) {
+        static_cast<void>(holdEntity(made.get(), *ref, evaluation, refusal));
+    }
     endScriptCall(evaluation);
     if (evaluation.status == EvalStatus::Ok && !refusal.has_value() && JS_IsObject(made.get())) {
         ScriptInstanceResult done = instanceResultOf(ScriptStatus::Ok);
-        done.instance = instanceSlots.insert(InstanceSlot{made.release(), entry.key});
-        record.instances.push_back(done.instance);
+        const std::uint64_t order = nextInstanceOrder++;
+        done.instance = instanceSlots.insert(InstanceSlot{made.release(), entry.key, ref, order});
+        record.instances.emplace(order, done.instance);
         return done;
     }
     if (refusal.has_value()) {
@@ -520,18 +558,62 @@ ScriptStatus Vm::Impl::destroyInstanceCall(ScriptInstance instance) {
         return ScriptStatus::UnknownInstance;
     }
     if (const auto home = scripts.find(slot->key); home != scripts.end()) {
-        std::erase(home->second.instances, instance);
+        home->second.instances.erase(slot->order);
     }
     JS_FreeValue(ctx, slot->object);
     static_cast<void>(instanceSlots.remove(instance));
     return ScriptStatus::Ok;
 }
 
+ScriptHookResult Vm::Impl::callHookCall(ScriptInstance instance, ScriptHook hook, double dt) {
+    assert(!inCall);
+    const InstanceSlot* const slot = instanceSlots.get(instance);
+    if (slot == nullptr) {
+        AERO_LOG_ERROR("script: callHook refused: the handle names no live instance");
+        ScriptHookResult unknown;
+        unknown.status = ScriptStatus::UnknownInstance;
+        return unknown;
+    }
+    const std::string key = slot->key;
+    const CallScope scope{*this, key};
+    const std::uint64_t rejectionsBefore = unhandledRejections;
+    EvalResult evaluation{EvalStatus::Ok, {}, {}};
+    bool ran = false;
+    {
+        // Held across the call: nothing a hook does can free the object while it runs.
+        const HeldValue object{ctx, JS_DupValue(ctx, slot->object)};
+        const HeldAtom name{ctx, JS_NewAtom(ctx, scriptHookName(hook).data())};
+        if (name.get() == JS_ATOM_NULL) {
+            adopt(evaluation, trap(Phase::Run));  // out of memory; nothing is pending, trap takes the sentinel
+        } else {
+            const HeldValue hookValue{ctx, JS_GetProperty(ctx, object.get(), name.get())};  // a getter runs here
+            if (hookValue.isException()) {
+                adopt(evaluation, trap(Phase::Run));
+            } else if (JS_IsFunction(ctx, hookValue.get())) {
+                ran = true;
+                JSValue argument = JS_NewFloat64(ctx, dt);
+                const int argc = hook == ScriptHook::Update ? 1 : 0;
+                const HeldValue returned{ctx, JS_Call(ctx, hookValue.get(), object.get(), argc, &argument)};
+                if (returned.isException()) {
+                    adopt(evaluation, trap(Phase::Run));
+                }
+            }
+        }
+    }
+    endScriptCall(evaluation);
+    ScriptHookResult result;
+    result.status = scriptStatusOf(evaluation.status);
+    result.error = evaluation.error;
+    result.ran = ran;
+    result.rejected = unhandledRejections > rejectionsBefore;
+    return result;
+}
+
 void Vm::Impl::releaseScripts() noexcept {
     for (auto& entry : scripts) {
         ScriptRecord& record = entry.second;
-        for (const ScriptInstance instance : record.instances) {
-            if (InstanceSlot* const slot = instanceSlots.get(instance); slot != nullptr) {
+        for (const auto& member : record.instances) {
+            if (InstanceSlot* const slot = instanceSlots.get(member.second); slot != nullptr) {
                 JS_FreeValue(ctx, slot->object);
                 slot->object = JS_UNDEFINED;
             }
@@ -570,7 +652,34 @@ ScriptInstanceResult Vm::createInstance(std::string_view virtualPath) {
         AERO_LOG_ERROR("script: createInstance called from a thread that is not the VM's; refused");
         return instanceResultOf(ScriptStatus::WrongThread);
     }
-    return impl->createInstanceCall(virtualPath);
+    return impl->createInstanceCall(virtualPath, std::nullopt);
+}
+
+ScriptInstanceResult Vm::createInstance(std::string_view virtualPath, Entity entity) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("script: createInstance on an invalid Vm (a failed create or a moved-from Vm)");
+        return instanceResultOf(ScriptStatus::InvalidVm);
+    }
+    if (!impl->onVmThread()) {
+        AERO_LOG_ERROR("script: createInstance called from a thread that is not the VM's; refused");
+        return instanceResultOf(ScriptStatus::WrongThread);
+    }
+    return impl->createInstanceCall(virtualPath, entity);
+}
+
+ScriptHookResult Vm::callHook(ScriptInstance instance, ScriptHook hook, double dt) {
+    ScriptHookResult refused;
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("script: callHook on an invalid Vm (a failed create or a moved-from Vm)");
+        refused.status = ScriptStatus::InvalidVm;
+        return refused;
+    }
+    if (!impl->onVmThread()) {
+        AERO_LOG_ERROR("script: callHook called from a thread that is not the VM's; refused");
+        refused.status = ScriptStatus::WrongThread;
+        return refused;
+    }
+    return impl->callHookCall(instance, hook, dt);
 }
 
 ScriptStatus Vm::destroyInstance(ScriptInstance instance) {
@@ -615,8 +724,19 @@ std::string_view scriptStatusLabel(ScriptStatus status) noexcept {
             return "UnknownInstance";
         case ScriptStatus::AlreadyRefused:
             return "AlreadyRefused";
+        case ScriptStatus::NoWorld:
+            return "NoWorld";
+        case ScriptStatus::DeadEntity:
+            return "DeadEntity";
     }
     return "Unknown";
+}
+
+std::string_view scriptHookName(ScriptHook hook) noexcept {
+    // Terminated literals: the backend's atom is made from the view's data().
+    static constexpr std::array<const char*, SCRIPT_HOOK_COUNT> NAMES{"onInit", "onUpdate", "onDestroy"};
+    const auto index = static_cast<std::size_t>(hook);
+    return std::string_view{index < NAMES.size() ? NAMES[index] : ""};
 }
 
 // ---- the test seam ---------------------------------------------------------------------------------------------

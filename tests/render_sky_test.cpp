@@ -1020,7 +1020,7 @@ TEST_CASE("render sky: a moved-from pass is a logged no-op and the move frees ex
         auto source = engine::render::SkyPass::create(
             *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
         REQUIRE(source.has_value());
-        skyOnce(*device, *target, *source, view, clear, 8U);
+        static_cast<void>(skyOnce(*device, *target, *source, view, clear, 8U));
         CHECK(source->drawCount() == 1U);
 
         engine::render::SkyPass destination{std::move(*source)};
@@ -1035,7 +1035,7 @@ TEST_CASE("render sky: a moved-from pass is a logged no-op and the move frees ex
         CHECK(halfAt(afterMove, 64U, 32U, 32U) == expectedClear);
         // A SECOND call must not log a SECOND time: the not-renderable latch is what keeps a
         // permanently broken pass from writing a line per frame forever.
-        skyOnce(*device, *target, *source, view, clear, 8U);  // NOLINT(bugprone-use-after-move)
+        static_cast<void>(skyOnce(*device, *target, *source, view, clear, 8U));  // NOLINT(bugprone-use-after-move)
 
         // ...and the DESTINATION still draws.
         const std::vector<std::byte> fromDestination = skyOnce(*device, *target, destination, view, clear, 8U);

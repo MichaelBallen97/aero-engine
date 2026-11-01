@@ -17,14 +17,16 @@ is a `REQUIRE` failure, never a silent skip.
 | `bytecode/features.ts`, `features.js` | BY15 | one script per language area (classes, generators, regexps, BigInt, `using`, proxies, top-level await, `import.meta`), results in `globalThis.results` |
 | `bytecode/throws.ts`, `throws.js` | BY15 | fails on purpose at top level through a nested call |
 | `bytecode/source-text.ts`, `source-text.js` | BY15 | a function, a class, a method and two arrows, each one's `toString()`, `name` and `length` in `globalThis.results` |
+| `lifecycle/mover.ts`, `mover.js` | BN56, BN57 | the script lifecycle's Mover (4.4.1): a class extending `engine.Script` whose `onUpdate(dt)` adds `speed * dt` (`speed = 2`) to its entity's Transform `position.x` |
 
 The stack text ML14 asserts — `    at fail (res://dod/throws.js:5:15)` and `    at <anonymous>
 (res://dod/throws.js:8:6)` — depends on these files' exact lines and columns: an edit to `dod/throws.js` (its
 comment line included) moves it. Every file is LF-terminated (`.gitattributes`), and `encoding/bom.js` was written
 with `printf '\xef\xbb\xbfglobalThis.bomLoaded = true;\n'`, so its first three bytes are the mark itself.
 
-The three `bytecode/*.js` files are esbuild 0.28.2's bundles of the `.ts` beside them, made with 4.3.1's fixed flag list
-(`ESBUILD_FIXED_FLAGS`, `editor/include/aero/editor/esbuild_tool.hpp`) plus `--outfile`, from inside `bytecode/`:
+The three `bytecode/*.js` files and `lifecycle/mover.js` are esbuild 0.28.2's bundles of the `.ts` beside them, made with
+4.3.1's fixed flag list (`ESBUILD_FIXED_FLAGS`, `editor/include/aero/editor/esbuild_tool.hpp`) plus `--outfile`, from
+inside `bytecode/` (or `lifecycle/`):
 
 ```
 esbuild <name>.ts --bundle --format=esm --platform=neutral --target=es2023 --supported:using=false \
@@ -34,4 +36,4 @@ esbuild <name>.ts --bundle --format=esm --platform=neutral --target=es2023 --sup
 ```
 
 The `.js.map` files are not committed; the `sourceMappingURL` comment at the end of each bundle is harmless.
-`features.js` keeps `import.meta` textually. Regenerate all three together when the pinned esbuild moves.
+`features.js` keeps `import.meta` textually. Regenerate all four bundles together when the pinned esbuild moves.

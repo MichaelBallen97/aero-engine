@@ -529,12 +529,12 @@ TEST_CASE("the real selectors carry their labels and keep every older member (ta
 
 TEST_CASE("no other built-in field carries labels (task E.5.2, RF7)") {
     aero_reflect_register_all_aero_reflect_meta_test();
-    // The ten built-ins, by registration name (the project's built-in roster). Resolved by id, so a
+    // The eleven built-ins, by registration name (the project's built-in roster). Resolved by id, so a
     // missing one is a loud REQUIRE, never a silently shorter walk.
-    constexpr std::array<std::string_view, 10> BUILTINS{
-        "engine::Transform",     "engine::Camera",     "engine::DirectionalLight", "engine::PointLight",
-        "engine::MeshRenderer",  "engine::SpotLight",  "engine::AnimationPlayer",  "engine::AudioSource",
-        "engine::AudioListener", "engine::Environment"};
+    constexpr std::array<std::string_view, 11> BUILTINS{
+        "engine::Transform",     "engine::Camera",      "engine::DirectionalLight", "engine::PointLight",
+        "engine::MeshRenderer",  "engine::SpotLight",   "engine::AnimationPlayer",  "engine::AudioSource",
+        "engine::AudioListener", "engine::Environment", "engine::ScriptComponent"};
     std::size_t members = 0;
     std::vector<std::string> labelled;
     for (const std::string_view name : BUILTINS) {

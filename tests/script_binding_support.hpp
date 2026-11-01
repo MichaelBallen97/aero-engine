@@ -9,6 +9,7 @@
 #include <aero/core/guid.hpp>
 #include <aero/core/log.hpp>
 #include <aero/core/math.hpp>
+#include <aero/core/vfs.hpp>
 #include <aero/scene/component.hpp>
 #include <aero/scene/internal/world_access.hpp>
 #include <aero/scene/world.hpp>
@@ -19,7 +20,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <format>
+#include <functional>
+#include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -101,6 +106,48 @@ inline void expectCleanShutdown(engine::script::Vm& vm) {
     CHECK(report.writtenAfterRelease == 0U);
     CHECK(report.repeatedReleases == 0U);
     CHECK_FALSE(vm.valid());
+}
+
+// A module source in memory; it counts its reads, so a case can tell that nothing re-read a file.
+class MemoryBackend final : public engine::FileSystemBackend {
+public:
+    void set(std::string relPath, std::string text) { files[std::move(relPath)] = std::move(text); }
+
+    [[nodiscard]] std::size_t readCount() const noexcept { return reads; }
+
+    [[nodiscard]] bool exists(std::string_view relPath) const override { return files.contains(relPath); }
+
+    [[nodiscard]] std::optional<std::uint64_t> fileSize(std::string_view relPath) const override {
+        const auto found = files.find(relPath);
+        if (found == files.end()) {
+            return std::nullopt;
+        }
+        return static_cast<std::uint64_t>(found->second.size());
+    }
+
+    [[nodiscard]] std::optional<engine::ByteBuffer> readFile(std::string_view relPath) const override {
+        const auto found = files.find(relPath);
+        if (found == files.end()) {
+            return std::nullopt;
+        }
+        ++reads;
+        engine::ByteBuffer bytes;
+        bytes.reserve(found->second.size());
+        for (const char c : found->second) {
+            bytes.push_back(static_cast<std::byte>(c));
+        }
+        return bytes;
+    }
+
+private:
+    std::map<std::string, std::string, std::less<>> files;
+    mutable std::size_t reads = 0;
+};
+
+// A script in esbuild 0.28.2's measured shape.
+[[nodiscard]] inline std::string classSource(std::string_view members) {
+    return std::format("var Mover = class extends engine.Script {{\n{}\n}};\nexport {{\n  Mover as default\n}};\n",
+                       members);
 }
 
 // One field of every bindable kind, with non-default values.

@@ -1,10 +1,12 @@
-// Aero Engine -- the generated built-in binding table (task 4.2.1; BN6, and from the later steps BN37-BN49).
+// Aero Engine -- the generated built-in binding table (task 4.2.1; BN6, and from the later steps BN37-BN52), and the
+// script lifecycle end to end over it (task 4.4.1; BN56, BN57, LC26, LC28-LC30, LC39).
 //
 // Compiled into aero_tests only when AERO_REFLECT_TOOLS is ON: with the tools OFF the table is empty by design and
 // there is nothing generated to check.
 
 #include <aero/core/guid.hpp>
 #include <aero/core/math.hpp>
+#include <aero/core/vfs.hpp>
 #include <aero/scene/animation_player.hpp>
 #include <aero/scene/audio_listener.hpp>
 #include <aero/scene/audio_source.hpp>
@@ -12,6 +14,7 @@
 #include <aero/scene/environment.hpp>
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>
+#include <aero/scene/script_component.hpp>
 #include <aero/scene/spot_light.hpp>
 #include <aero/scene/transform.hpp>
 #include <aero/scene/world.hpp>
@@ -27,7 +30,11 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <format>
+#include <functional>
+#include <map>
+#include <memory>
 #include <ostream>  // a CHECK on std::string_view needs the complete std::ostream on MSVC (ci-portability.md)
 #include <set>
 #include <string>
@@ -49,7 +56,8 @@ TEST_CASE("script: the generated table binds exactly a fresh World's registratio
     }
 }
 
-// ---- BN37-BN49: the ten built-in components, end to end through the generated table -------------------------------
+// ---- BN37-BN52: the eleven built-in components, end to end through the generated table
+// -------------------------------
 
 namespace {
 
@@ -89,7 +97,7 @@ template <class... Values>
     return out;
 }
 
-// A World (all ten built-ins registered by its constructor), a VM over the generated table bound to it, and one
+// A World (all eleven built-ins registered by its constructor), a VM over the generated table bound to it, and one
 // entity defined as the global `e`. The VM is declared after the World, so it is destroyed first.
 struct BuiltinScene {
     World world;
@@ -537,10 +545,11 @@ TEST_CASE("script: a held Transform and position refuse a destroyed entity, and 
 }
 
 TEST_CASE("script: the end-to-end list names every built-in a fresh World registers (BN48)") {
-    // One entry per case BN37-BN46. A new built-in reddens this case until its end-to-end case exists and is listed.
-    constexpr std::array<std::string_view, 10> END_TO_END{
-        "Transform",       "Camera",      "DirectionalLight", "PointLight",  "MeshRenderer",
-        "AnimationPlayer", "AudioSource", "AudioListener",    "Environment", "SpotLight"};
+    // One entry per case BN37-BN46 and BN52. A new built-in reddens this case until its end-to-end case exists and is
+    // listed.
+    constexpr std::array<std::string_view, 11> END_TO_END{
+        "Transform",   "Camera",        "DirectionalLight", "PointLight", "MeshRenderer",   "AnimationPlayer",
+        "AudioSource", "AudioListener", "Environment",      "SpotLight",  "ScriptComponent"};
 
     const World world;
     std::set<std::string> registered;
@@ -562,6 +571,39 @@ TEST_CASE("script: the end-to-end list names every built-in a fresh World regist
         INFO("listed, not registered: " << name);
         CHECK(registered.contains(name));
     }
+}
+
+TEST_CASE("script: ScriptComponent end to end, the Guid shape of AudioSource::clip (BN52)") {
+    const LogCapture log;
+    BuiltinScene scene;
+    REQUIRE(scene.vm.defineEntityGlobal("e", scene.entity) == BindStatus::Ok);
+
+    CHECK(completion(scene.vm, "e.has(engine.ScriptComponent)") == "false");
+    CHECK(completion(scene.vm, "globalThis.c = e.add(engine.ScriptComponent); e.has(engine.ScriptComponent)") ==
+          "true");
+    CHECK(completion(scene.vm, "c.script") == "00000000000000000000000000000000");
+    CHECK(scene.held<engine::ScriptComponent>().script == Guid{});
+
+    const Guid stored{0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
+    completion(scene.vm, "c.script = '0123456789abcdeffedcba9876543210'; 0");
+    CHECK(scene.held<engine::ScriptComponent>().script == stored);
+    CHECK(completion(scene.vm, "c.script") == "0123456789abcdeffedcba9876543210");
+    completion(scene.vm,
+               "c.script = '00000000000000000000000000000000'; c.script = '0123456789ABCDEFFEDCBA9876543210'; 0");
+    CHECK(scene.held<engine::ScriptComponent>().script == stored);
+    CHECK(completion(scene.vm, "c.script") == "0123456789abcdeffedcba9876543210");
+
+    CHECK(scene.thrown("c.script = 5") == "TypeError: engine.ScriptComponent.script: expected a string, got a number");
+    CHECK(scene.thrown("c.script = 'xyz'") == "RangeError: engine.ScriptComponent.script: expected 32 hex digits");
+    CHECK(scene.thrown("c.script = '0123456789abcdeffedcba987654321'") ==
+          "RangeError: engine.ScriptComponent.script: expected 32 hex digits");
+    CHECK(scene.held<engine::ScriptComponent>().script == stored);
+
+    CHECK(completion(scene.vm, "e.get(engine.ScriptComponent).script") == "0123456789abcdeffedcba9876543210");
+    CHECK(completion(scene.vm, "e.remove(engine.ScriptComponent)") == "true");
+    CHECK(completion(scene.vm, "e.has(engine.ScriptComponent)") == "false");
+    CHECK_FALSE(scene.world.has<engine::ScriptComponent>(scene.entity));
+    expectCleanShutdown(scene.vm);
 }
 
 TEST_CASE("script: a thousand cached Transforms take fifty frames of position writes (BN49)") {
@@ -598,4 +640,380 @@ TEST_CASE("script: a thousand cached Transforms take fifty frames of position wr
     REQUIRE(moved != nullptr);
     CHECK(moved->position.x == before + 25.0F);
     expectCleanShutdown(scene.vm);
+}
+
+// ---- BN56, BN57, LC26, LC28-LC30: the script lifecycle over a World with the built-ins
+// -------------------------------
+
+namespace {
+
+using engine::ScriptComponent;
+using engine::Transform;
+using engine::script::ScriptEntityState;
+using engine::script::ScriptInstance;
+using engine::script::ScriptSystem;
+using engine::script::ScriptSystemReport;
+using engine::script::internal::VmAccess;
+
+constexpr std::string_view MOVER_PATH = "res://lifecycle/mover.js";
+
+[[nodiscard]] Guid scriptGuid(std::uint64_t id) { return Guid{0, id}; }
+
+// A VM over a VFS holding one backend, a World with the built-ins, and the ScriptSystem over both. Non-movable: the Vm
+// borrows the VFS and the system borrows the Vm and the World; the system is declared last, so it is destroyed first.
+class LifecycleScene {
+public:
+    explicit LifecycleScene(std::unique_ptr<engine::FileSystemBackend> backend) {
+        vfs.mount(std::move(backend));
+        engine::script::VmCreateResult created = Vm::create(script_test::patient(), vfs);
+        REQUIRE(created.vm.valid());
+        vm = std::move(created.vm);
+        const EvalResult primed = vm.evaluateScript("globalThis.log = [];", "prime.js");
+        REQUIRE(primed.status == EvalStatus::Ok);
+        system = std::make_unique<ScriptSystem>(vm, world, [this](const Guid& script) { return resolve(script); });
+        REQUIRE(system->bound());
+    }
+    LifecycleScene(const LifecycleScene&) = delete;
+    LifecycleScene& operator=(const LifecycleScene&) = delete;
+    LifecycleScene(LifecycleScene&&) = delete;
+    LifecycleScene& operator=(LifecycleScene&&) = delete;
+    ~LifecycleScene() = default;
+
+    void publish(const Guid& guid, std::string_view path) { paths[guid] = std::string{path}; }
+
+    // A live entity with a Transform at the origin, naming `script` when it is not nil.
+    [[nodiscard]] Entity spawn(const Guid& script) {
+        const Entity entity = world.create();
+        REQUIRE(world.add<Transform>(entity) != nullptr);
+        if (script != Guid{}) {
+            REQUIRE(world.add<ScriptComponent>(entity, ScriptComponent{script}) != nullptr);
+        }
+        return entity;
+    }
+
+    [[nodiscard]] float x(Entity entity) const {
+        const auto* const held = world.get<Transform>(entity);
+        REQUIRE(held != nullptr);
+        return held->position.x;
+    }
+
+    [[nodiscard]] std::string log() { return completion(vm, "log.join('|')"); }
+
+    // The system goes first, then the VM is shut down and checked.
+    void finish() {
+        system.reset();
+        expectCleanShutdown(vm);
+    }
+
+    engine::VirtualFileSystem vfs;
+    World world;
+    Vm vm;
+    std::map<Guid, std::string> paths;
+    std::unique_ptr<ScriptSystem> system;
+
+private:
+    [[nodiscard]] std::string resolve(const Guid& script) const {
+        const auto found = paths.find(script);
+        return found == paths.end() ? std::string{} : found->second;
+    }
+};
+
+[[nodiscard]] std::unique_ptr<engine::FileSystemBackend> fixtureDirectory() {
+    return std::make_unique<engine::DirectoryBackend>(AERO_SCRIPT_FIXTURES_DIR);
+}
+
+// A MemoryBackend holding `sources` at res://s/<name>.
+[[nodiscard]] std::unique_ptr<engine::FileSystemBackend> memoryOf(
+    const std::vector<std::pair<std::string, std::string>>& sources) {
+    auto backend = std::make_unique<script_test::MemoryBackend>();
+    for (const auto& [name, text] : sources) {
+        backend->set("s/" + name, text);
+    }
+    return backend;
+}
+
+// The records at WARN and above whose message contains `needle`.
+[[nodiscard]] std::size_t loudRecordsNaming(const LogCapture& capture, std::string_view needle) {
+    std::size_t found = 0;
+    for (const script_test::CapturedRecord& record : capture.atLeast(engine::LogLevel::Warn)) {
+        found += record.message.find(needle) != std::string::npos ? 1U : 0U;
+    }
+    return found;
+}
+
+[[nodiscard]] std::string stateName(ScriptEntityState state) {
+    return std::string{engine::script::scriptEntityStateLabel(state)};
+}
+
+}  // namespace
+
+TEST_CASE(
+    "script: the committed mover bundle moves two Transforms by their own speeds, and stop() keeps the writes "
+    "(BN56)") {
+    namespace fs = std::filesystem;
+    REQUIRE(fs::is_regular_file(fs::path{AERO_SCRIPT_FIXTURES_DIR} / "lifecycle" / "mover.js"));  // never a skip
+    const LogCapture log;
+    LifecycleScene scene{fixtureDirectory()};
+    scene.publish(scriptGuid(1), MOVER_PATH);
+    const Entity first = scene.spawn(scriptGuid(1));
+    const Entity second = scene.spawn(scriptGuid(1));
+
+    const Transform firstBefore = *scene.world.get<Transform>(first);
+    const Transform secondBefore = *scene.world.get<Transform>(second);
+    const ScriptComponent firstNames = *scene.world.get<ScriptComponent>(first);
+    const ScriptComponent secondNames = *scene.world.get<ScriptComponent>(second);
+    REQUIRE(scene.x(first) == 0.0F);
+    REQUIRE(scene.x(second) == 0.0F);
+
+    for (int frame = 0; frame < 3; ++frame) {
+        CAPTURE(frame);
+        const ScriptSystemReport report = scene.system->update(0.5);
+        CHECK(report.attached == (frame == 0 ? 2U : 0U));
+        CHECK(report.updated == 2U);
+        CHECK(report.faulted == 0U);
+    }
+    CHECK(scene.x(first) == 3.0F);  // 2 * 0.5 three times, exact in binary
+    CHECK(scene.x(second) == 3.0F);
+
+    const ScriptInstance handle = scene.system->instanceOf(second);
+    REQUIRE(handle.valid());
+    REQUIRE(VmAccess::defineInstanceGlobal(scene.vm, handle, "i"));
+    CHECK(completion(scene.vm, "i.speed = 4; i.speed") == "4");
+    CHECK(completion(scene.vm, "i.entity.alive") == "true");
+
+    const ScriptSystemReport fourth = scene.system->update(0.5);
+    CHECK(fourth.updated == 2U);
+    CHECK(scene.x(first) == 4.0F);   // still its own speed 2
+    CHECK(scene.x(second) == 5.0F);  // 3 + 4 * 0.5
+
+    const ScriptSystemReport stopped = scene.system->stop();
+    CHECK(stopped.detached == 2U);
+    Transform expectedFirst = firstBefore;
+    expectedFirst.position.x = 4.0F;
+    Transform expectedSecond = secondBefore;
+    expectedSecond.position.x = 5.0F;
+    CHECK(*scene.world.get<Transform>(first) == expectedFirst);  // the writes stay, nothing else moved
+    CHECK(*scene.world.get<Transform>(second) == expectedSecond);
+    CHECK(*scene.world.get<ScriptComponent>(first) == firstNames);
+    CHECK(*scene.world.get<ScriptComponent>(second) == secondNames);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    scene.finish();
+}
+
+TEST_CASE("script: a bind made around the system faults the hooks that touch a stale entity (LC26)") {
+    const LogCapture log;
+    const std::string toucher = script_test::classSource(
+        "  onUpdate() { const t = this.entity.get(engine.Transform); log.push('touch:' + (t ? 1 : 0)); }");
+    const std::string plain = script_test::classSource("  onUpdate() { log.push('plain'); }");
+    LifecycleScene scene{memoryOf({{"touch.js", toucher}, {"plain.js", plain}})};
+    scene.publish(scriptGuid(1), "res://s/touch.js");
+    scene.publish(scriptGuid(2), "res://s/plain.js");
+    const Entity touchA = scene.spawn(scriptGuid(1));
+    const Entity touchB = scene.spawn(scriptGuid(1));
+    const Entity quiet = scene.spawn(scriptGuid(2));
+
+    const ScriptSystemReport first = scene.system->update(0.5);
+    CHECK(first.updated == 3U);
+    CHECK(first.faulted == 0U);
+    CHECK(scene.log() == "touch:1|touch:1|plain");
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+
+    REQUIRE(scene.vm.bindWorld(scene.world) == BindStatus::Ok);  // a bind around the system: a new binding
+    const ScriptSystemReport second = scene.system->update(0.5);
+    CHECK(second.faulted == 2U);
+    CHECK(second.running == 1U);
+    CHECK(loudRecordsNaming(log, "the entity belongs to an earlier World binding") == 2U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 2U);
+    CHECK(stateName(scene.system->stateOf(touchA)) == "Faulted");
+    CHECK(stateName(scene.system->stateOf(touchB)) == "Faulted");
+    CHECK(stateName(scene.system->stateOf(quiet)) == "Running");
+    CHECK(scene.log() == "touch:1|touch:1|plain|plain");  // the hook that touches no entity kept running
+
+    const ScriptSystemReport third = scene.system->update(0.5);
+    CHECK(third.faulted == 0U);
+    CHECK(third.running == 1U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 2U);  // a faulted instance is not called again
+    scene.finish();
+}
+
+TEST_CASE(
+    "script: a hook that clears another entity's ScriptComponent keeps that entity's onUpdate from running "
+    "(LC28)") {
+    const LogCapture log;
+    const std::string clearer = script_test::classSource(
+        "  onUpdate() { log.push('a:update'); globalThis.b.get(engine.ScriptComponent).script = "
+        "'00000000000000000000000000000000'; }");
+    const std::string victim = script_test::classSource(
+        "  onInit() { log.push('b:init'); }\n  onUpdate() { log.push('b:update'); }\n"
+        "  onDestroy() { log.push('b:destroy'); }");
+    LifecycleScene scene{memoryOf({{"a.js", clearer}, {"b.js", victim}})};
+    scene.publish(scriptGuid(1), "res://s/a.js");
+    scene.publish(scriptGuid(2), "res://s/b.js");
+    const Entity a = scene.spawn(scriptGuid(1));
+    const Entity b = scene.spawn(scriptGuid(2));
+    REQUIRE(a.index < b.index);  // A runs before B
+    REQUIRE(scene.vm.defineEntityGlobal("b", b) == BindStatus::Ok);
+
+    const ScriptSystemReport first = scene.system->update(0.5);
+    CHECK(first.attached == 2U);
+    CHECK(first.updated == 1U);  // B did not update: it no longer names its script
+    CHECK(scene.log() == "b:init|a:update");
+    CHECK(scene.world.get<ScriptComponent>(b)->script == Guid{});
+
+    const ScriptSystemReport second = scene.system->update(0.5);
+    CHECK(second.detached == 1U);
+    CHECK(scene.log() == "b:init|a:update|b:destroy|a:update");
+    CHECK_FALSE(scene.system->instanceOf(b).valid());
+    CHECK(loudRecordsNaming(log, "") == 0U);
+    scene.finish();
+}
+
+TEST_CASE(
+    "script: an onInit that removes its own ScriptComponent gets no onUpdate, and one onDestroy next update "
+    "(LC29)") {
+    const LogCapture log;
+    const std::string leaver = script_test::classSource(
+        "  onInit() { log.push('init'); this.entity.remove(engine.ScriptComponent); }\n"
+        "  onUpdate() { log.push('update'); }\n  onDestroy() { log.push('destroy'); }");
+    LifecycleScene scene{memoryOf({{"leaver.js", leaver}})};
+    scene.publish(scriptGuid(1), "res://s/leaver.js");
+    const Entity entity = scene.spawn(scriptGuid(1));
+
+    const ScriptSystemReport first = scene.system->update(0.5);
+    CHECK(first.attached == 1U);
+    CHECK(first.initialised == 1U);
+    CHECK(first.updated == 0U);
+    CHECK_FALSE(scene.world.has<ScriptComponent>(entity));
+    CHECK(scene.log() == "init");
+
+    const ScriptSystemReport second = scene.system->update(0.5);
+    CHECK(second.detached == 1U);
+    CHECK(second.updated == 0U);
+    CHECK(scene.log() == "init|destroy");  // its onInit succeeded, so its onDestroy runs, once
+    CHECK_FALSE(scene.system->instanceOf(entity).valid());
+
+    const ScriptSystemReport third = scene.system->update(0.5);
+    CHECK(third.detached == 0U);
+    CHECK(scene.log() == "init|destroy");
+    CHECK(loudRecordsNaming(log, "") == 0U);
+    scene.finish();
+}
+
+TEST_CASE(
+    "script: an onInit that clears another entity's ScriptComponent keeps that entity's onInit from running (LC39)") {
+    const LogCapture log;
+    const std::string clearer = script_test::classSource(
+        "  onInit() { log.push('a:init'); globalThis.b.get(engine.ScriptComponent).script = "
+        "'00000000000000000000000000000000'; }\n  onUpdate() { log.push('a:update'); }");
+    const std::string victim = script_test::classSource(
+        "  onInit() { log.push('b:init'); }\n  onUpdate() { log.push('b:update'); }\n"
+        "  onDestroy() { log.push('b:destroy'); }");
+    LifecycleScene scene{memoryOf({{"a.js", clearer}, {"b.js", victim}})};
+    scene.publish(scriptGuid(1), "res://s/a.js");
+    scene.publish(scriptGuid(2), "res://s/b.js");
+    const Entity a = scene.spawn(scriptGuid(1));
+    const Entity b = scene.spawn(scriptGuid(2));
+    REQUIRE(a.index < b.index);  // A's onInit runs before B's
+    REQUIRE(scene.vm.defineEntityGlobal("b", b) == BindStatus::Ok);
+
+    const ScriptSystemReport first = scene.system->update(0.5);
+    CHECK(first.attached == 2U);
+    CHECK(first.initialised == 1U);  // B attached, but no longer names its script when its turn comes
+    CHECK(first.updated == 1U);
+    CHECK(scene.log() == "a:init|a:update");
+    CHECK(scene.world.get<ScriptComponent>(b)->script == Guid{});
+
+    const ScriptSystemReport second = scene.system->update(0.5);
+    CHECK(second.detached == 1U);
+    CHECK(scene.log() == "a:init|a:update|a:update");  // B never ran onInit, so it gets no onDestroy either
+    CHECK_FALSE(scene.system->instanceOf(b).valid());
+    CHECK(loudRecordsNaming(log, "") == 0U);
+    scene.finish();
+}
+
+TEST_CASE("script: a ScriptComponent a hook adds attaches at the next update, never inside the current one (LC30)") {
+    const LogCapture log;
+    const std::string adder = script_test::classSource(
+        "  onUpdate() { if (globalThis.go) { globalThis.go = false; log.push('a:add'); "
+        "globalThis.c.add(engine.ScriptComponent).script = '" +
+        engine::formatGuid(scriptGuid(2)) + "'; } }");
+    const std::string added =
+        script_test::classSource("  onInit() { log.push('c:init'); }\n  onUpdate() { log.push('c:update'); }");
+    LifecycleScene scene{memoryOf({{"adder.js", adder}, {"added.js", added}})};
+    scene.publish(scriptGuid(1), "res://s/adder.js");
+    scene.publish(scriptGuid(2), "res://s/added.js");
+    const Entity a = scene.spawn(scriptGuid(1));
+    const Entity c = scene.spawn(Guid{});
+    REQUIRE(scene.vm.defineEntityGlobal("c", c) == BindStatus::Ok);
+    CHECK(a.index < c.index);
+
+    const ScriptSystemReport first = scene.system->update(0.5);
+    CHECK(first.attached == 1U);
+    REQUIRE(scene.vm.evaluateScript("globalThis.go = true;", "go.js").status == EvalStatus::Ok);
+
+    const ScriptSystemReport second = scene.system->update(0.5);
+    CHECK(second.attached == 0U);  // the add landed during the walk; the snapshot was taken before it
+    CHECK(scene.world.has<ScriptComponent>(c));
+    CHECK_FALSE(scene.system->instanceOf(c).valid());
+    CHECK(scene.log() == "a:add");
+
+    const ScriptSystemReport third = scene.system->update(0.5);
+    CHECK(third.attached == 1U);
+    CHECK(scene.system->instanceOf(c).valid());
+    CHECK(scene.log() == "a:add|c:init|c:update");
+    CHECK(loudRecordsNaming(log, "") == 0U);
+    scene.finish();
+}
+
+TEST_CASE("script: a thousand entities on the committed bundle take two hundred updates with a flat heap (BN57)") {
+    const LogCapture log;
+    constexpr int ENTITY_COUNT = 1000;
+    constexpr int UPDATE_COUNT = 200;
+    LifecycleScene scene{fixtureDirectory()};
+    scene.publish(scriptGuid(1), MOVER_PATH);
+    std::vector<Entity> entities;
+    entities.reserve(ENTITY_COUNT);
+    for (int i = 0; i < ENTITY_COUNT; ++i) {
+        entities.push_back(scene.spawn(scriptGuid(1)));
+    }
+
+    std::vector<double> millis;
+    millis.reserve(UPDATE_COUNT);
+    std::size_t firstHeap = 0;
+    std::size_t firstAllocations = 0;
+    std::size_t heapDrift = 0;
+    std::size_t allocationDrift = 0;
+    std::size_t shortUpdates = 0;
+    for (int update = 0; update < UPDATE_COUNT; ++update) {
+        const auto start = std::chrono::steady_clock::now();
+        const ScriptSystemReport report = scene.system->update(0.5);
+        const auto stop = std::chrono::steady_clock::now();
+        millis.push_back(std::chrono::duration<double, std::milli>(stop - start).count());
+        shortUpdates += report.updated == static_cast<std::size_t>(ENTITY_COUNT) ? 0U : 1U;
+
+        const engine::script::VmStats stats = scene.vm.stats();
+        if (update == 0) {
+            firstHeap = stats.heapBytesInUse;
+            firstAllocations = stats.liveAllocations;
+        } else {
+            heapDrift += stats.heapBytesInUse == firstHeap ? 0U : 1U;
+            allocationDrift += stats.liveAllocations == firstAllocations ? 0U : 1U;
+        }
+    }
+    std::sort(millis.begin(), millis.end());
+    MESSAGE("BN57: update over ", ENTITY_COUNT, " entities, median = ", millis[millis.size() / 2],
+            " ms, p95 = ", millis[(millis.size() * 95U) / 100U], " ms");
+
+    CHECK(shortUpdates == 0U);
+    CHECK(firstHeap > 0U);  // anti-vacuity: the figure is a measurement
+    CHECK(firstAllocations > 0U);
+    CHECK(heapDrift == 0U);
+    CHECK(allocationDrift == 0U);
+    std::size_t wrongX = 0;
+    for (const Entity entity : entities) {
+        wrongX += scene.x(entity) == 200.0F ? 0U : 1U;
+    }
+    CHECK(wrongX == 0U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    scene.finish();
 }

@@ -62,6 +62,43 @@ private:
     JSValue value;
 };
 
+// An atom the wrapper owns; JS_ATOM_NULL frees as a no-op.
+class HeldAtom {
+public:
+    HeldAtom(JSContext* context, JSAtom held) noexcept : context(context), atom(held) {}
+    HeldAtom(const HeldAtom&) = delete;
+    HeldAtom& operator=(const HeldAtom&) = delete;
+    HeldAtom(HeldAtom&&) = delete;
+    HeldAtom& operator=(HeldAtom&&) = delete;
+    ~HeldAtom() { JS_FreeAtom(context, atom); }
+
+    [[nodiscard]] JSAtom get() const noexcept { return atom; }
+
+private:
+    JSContext* context;
+    JSAtom atom;
+};
+
+// The three values a property descriptor read may hand over; each is freed on every path.
+class HeldDescriptor {
+public:
+    explicit HeldDescriptor(JSContext* context) noexcept : context(context) {}
+    HeldDescriptor(const HeldDescriptor&) = delete;
+    HeldDescriptor& operator=(const HeldDescriptor&) = delete;
+    HeldDescriptor(HeldDescriptor&&) = delete;
+    HeldDescriptor& operator=(HeldDescriptor&&) = delete;
+    ~HeldDescriptor() {
+        JS_FreeValue(context, desc.value);
+        JS_FreeValue(context, desc.getter);
+        JS_FreeValue(context, desc.setter);
+    }
+
+    JSPropertyDescriptor desc{0, JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED};
+
+private:
+    JSContext* context;
+};
+
 // A C string converted from a value (JS_ToCStringLen); freed with JS_FreeCString. ok() is false when the
 // conversion threw -- the exception is then PENDING and the caller must discard it.
 class HeldCString {
@@ -184,6 +221,8 @@ struct LoadAttempt {
 struct InstanceSlot {
     JSValue object;
     std::string key;
+    std::optional<EntityRef> attached;  // the entity and the binding it was attached under; nullopt: no entity
+    std::uint64_t order = 0;            // the creation sequence: this instance's key in its script's map
 };
 
 // One script path a loadScript call has reached (a record exists from that call's first backend step on).
@@ -191,7 +230,8 @@ struct ScriptRecord {
     JSValue scriptClass = JS_UNDEFINED;      // HELD: the last good class; JS_UNDEFINED until a load succeeds
     std::optional<std::string> runningText;  // the bytes scriptClass's generation was compiled from
     std::optional<std::string> refusedText;  // the bytes of the last refused load since the last success
-    std::vector<ScriptInstance> instances;   // the live instances of this script, in creation order
+    // The live instances by creation sequence: iteration is creation order, a destroy is one erase.
+    std::map<std::uint64_t, ScriptInstance> instances;
 };
 
 struct Vm::Impl {
@@ -332,8 +372,11 @@ struct Vm::Impl {
 
     // ---- script classes and instances (vm_scripts.cpp, task 4.3.3) ------------------------------------------------
     [[nodiscard]] ScriptLoadResult loadScriptCall(std::string_view virtualPath);
-    [[nodiscard]] ScriptInstanceResult createInstanceCall(std::string_view virtualPath);
+    [[nodiscard]] ScriptInstanceResult createInstanceCall(std::string_view virtualPath,
+                                                          const std::optional<Entity>& entity);
     [[nodiscard]] ScriptStatus destroyInstanceCall(ScriptInstance instance);
+    // One hook of one instance: the read, the call, the call's tail (vm_scripts.cpp).
+    [[nodiscard]] ScriptHookResult callHookCall(ScriptInstance instance, ScriptHook hook, double dt);
     void releaseScripts() noexcept;  // shutdown: every instance object and class, before the context; then clears both
     // The default export of the entry's current generation when it is a class, else JS_UNDEFINED. A failure is adopted
     // into `evaluation`, an engine refusal is set in `refusal` and logged.
@@ -347,6 +390,11 @@ struct Vm::Impl {
     // objects and changes neither a slot nor the record.
     void rebuildInstances(const ScriptRecord& record, JSValueConst scriptClass, EvalResult& evaluation,
                           std::optional<ScriptRefusal>& refusal, HeldBatch& fresh, FieldCounts& counts);
+    // Makes `object` hold its own `entity` for `ref`: data, not writable, not enumerable, configurable. True when it
+    // does (the base class already defined it, or the define landed). False: the budget had fired (no refusal is made),
+    // the heap refused (adopted into `evaluation`), or the object cannot hold it (a refusal, logged once).
+    [[nodiscard]] bool holdEntity(JSValueConst object, const EntityRef& ref, EvalResult& evaluation,
+                                  std::optional<ScriptRefusal>& refusal);
     void endScriptCall(EvalResult& evaluation);  // the call's job drain and tail, in evaluateModuleCall's order
     void logRefusal(const ScriptRefusal& refusal) const;
 
@@ -390,6 +438,7 @@ struct Vm::Impl {
     // the instances' current objects. Both change on the VM's thread, outside the backend's callbacks.
     std::map<std::string, ScriptRecord, std::less<>> scripts;  // by canonical key
     SlotMap<InstanceSlot, ScriptInstanceTag> instanceSlots;
+    std::uint64_t nextInstanceOrder = 0;  // the next InstanceSlot::order; never reused
     bool loadingScript = false;  // the current call is a loadScript: the pending-await WARN is the load's to refuse
 };
 

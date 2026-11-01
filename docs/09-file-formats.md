@@ -98,6 +98,9 @@ additive to scene v1, with no version bump (section 3).
 And from task E.2.2 the tenth built-in, `engine::SpotLight`, whose payload is five keys in
 declaration order — one `{x,y,z}` colour and four floats, the last two half-angles in radians —
 again purely additive to scene v1, with no version bump (section 3).
+And from task 4.4.1 the eleventh built-in, `engine::ScriptComponent`, whose payload is one key, `script`, a GUID
+string — the script asset it runs, all zeros for none — again purely additive to scene v1, with no version bump
+(section 3).
 The field-level tolerance policy those generated readers apply, restated here for convenience:
 
 | Field condition (at load) | Behavior |
@@ -258,7 +261,7 @@ Three scene files under `tests/fixtures/scenes/` are **content pins** for this f
 | File | Pins |
 |---|---|
 | `empty.scene.json` | the degenerate document — an empty `entities` array |
-| `full.scene.json` | 8 entities, 15 components: all ten built-in component types, a **forward** `parent` reference, a three-level chain, an entity with no `name` key, an entity with no `components` key, and two entities sharing one name |
+| `full.scene.json` | 8 entities, 16 components: all eleven built-in component types, a **forward** `parent` reference, a three-level chain, an entity with no `name` key, an entity with no `components` key, and two entities sharing one name |
 | `edge.scene.json` | 4 entities, 3 components: the lexical corners — `-0`, two `null` payloads, both exponent signs, a full-precision decimal, all five string-escape classes, and 2-, 3- and 4-byte raw UTF-8 |
 
 Each is an exact fixpoint of the writer — `saveWorldText(load(bytes)) == bytes`, and again on a

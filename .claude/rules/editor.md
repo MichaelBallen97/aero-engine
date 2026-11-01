@@ -324,7 +324,7 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   | Model | Instantiate | Instantiate | Instantiate | None | AssignRef* |
   | Material | Assign **iff** the target has a `MeshRenderer` | None | Assign **iff** the hit has one | None | AssignRef* |
   | Texture | None | None | None | BindTextureSlot | AssignRef* |
-  | Audio | None | None | None | None | AssignRef* |
+  | Audio / Script | None | None | None | None | AssignRef* |
   | Folder / Text / Unknown | None | None | None | None | AssignRef* |
 
   **(*) `AssignAssetReference` iff `assetKindIsDraggable(kind) && (!fieldKind || *fieldKind == kind)`**

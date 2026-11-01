@@ -106,7 +106,7 @@ TEST_CASE("entity presentation: each kind's dot role, and accent when selected (
     }
 }
 
-TEST_CASE("entity presentation: the ten built-ins' icons, by registration name (task E.6.3, EK5)") {
+TEST_CASE("entity presentation: the eleven built-ins' icons, by registration name (task E.6.3, EK5)") {
     CHECK(ed::componentIconFor("engine::Transform") == std::string_view(AERO_ICON_AXIS_3D));
     CHECK(ed::componentIconFor("engine::Camera") == std::string_view(AERO_ICON_CAMERA));
     CHECK(ed::componentIconFor("engine::DirectionalLight") == std::string_view(AERO_ICON_SUN));
@@ -117,13 +117,14 @@ TEST_CASE("entity presentation: the ten built-ins' icons, by registration name (
     CHECK(ed::componentIconFor("engine::AudioSource") == std::string_view(AERO_ICON_VOLUME_2));
     CHECK(ed::componentIconFor("engine::AudioListener") == std::string_view(AERO_ICON_EAR));
     CHECK(ed::componentIconFor("engine::Environment") == std::string_view(AERO_ICON_CLOUD_SUN));
+    CHECK(ed::componentIconFor("engine::ScriptComponent") == std::string_view(AERO_ICON_CODE));  // 4.4.1
     for (const std::string_view other : {"game::Camera", "", "Transform"}) {  // "Transform": the short name (S40)
         CAPTURE(other);
         CHECK(ed::componentIconFor(other) == std::string_view(AERO_ICON_SHAPES));
     }
     // A COMPONENT-COUNT PIN: the next built-in adds a row (the RF7 / IR21 class, docs/10's sweep list).
-    CHECK(ed::componentIconTable().size() == 10U);
-    CHECK(ed::COMPONENT_ICON_COUNT == 10U);
+    CHECK(ed::componentIconTable().size() == 11U);
+    CHECK(ed::COMPONENT_ICON_COUNT == 11U);
 }
 
 TEST_CASE("entity presentation: identifiers split into words (task E.6.3, EK6)") {
@@ -167,4 +168,9 @@ TEST_CASE("entity presentation: the id tooltip names index and generation (task 
     std::string out = "stale";
     ed::entityIdTooltip(Entity{.index = 12U, .generation = 3U}, out);
     CHECK(out == "Entity 12, generation 3");
+}
+
+TEST_CASE("entity presentation: ScriptComponent has its own icon row, not the fallback (task 4.4.1, EK11)") {
+    CHECK(ed::componentIconFor("engine::ScriptComponent") == std::string_view(AERO_ICON_CODE));
+    CHECK(ed::componentIconFor("engine::ScriptComponent") != std::string_view(AERO_ICON_SHAPES));
 }

@@ -23,10 +23,16 @@ Each rule here was earned by a defect, a green-and-wrong test or a measurement t
 
 ## The built-in components
 
-**THE BUILT-IN COMPONENT COUNT IS TEN**: `Transform`, `Camera`, `DirectionalLight`, `PointLight`,
+**THE BUILT-IN COMPONENT COUNT IS ELEVEN**: `Transform`, `Camera`, `DirectionalLight`, `PointLight`,
 `MeshRenderer`, `AnimationPlayer`, `AudioSource`, `AudioListener`, `Environment` (E.2.1), `SpotLight`
-(E.2.2). Nothing since E.2.2 has added one, so the five-generation-site rule and the component-count sweep
-have not fired since — **they still apply in full to the next built-in, whenever one arrives.**
+(E.2.2), `ScriptComponent` (4.4.1). 4.4.1 fired the five-generation-site rule and the component-count sweep,
+and **they still apply in full to the next built-in, whenever one arrives.** 4.4.1's sweep found, by reading
+every hit rather than by its shape, the sites the earlier lists omit: `transform_test.cpp` (four `== 10`),
+`scene_test.cpp` (six registry-size pins and the roster comment), `scene_serialize_test.cpp`'s three component
+TALLIES of `full.scene.json` (`== 15`: G2's `componentsAttached`, G5's `totalComponents`, G6's `seen`; reachable by no
+type-count grep, and G2's and G6's were found by a red test), BN48's `END_TO_END` roster in
+`script_component_test.cpp`, `COMPONENT_ICON_COUNT` and the `EDITOR_ICONS` roster (67 to 68, pinned in three
+tests), the vm.hpp empty-VM figures and ML76's atom count.
 
 
 ## Components, reflection and serialization
@@ -42,7 +48,7 @@ worse — green and wrong.
 **A COMPONENT-COUNT LITERAL IS NOT CONFINED TO THE TESTS THAT ARE ABOUT COMPONENTS.** 3.7.2 found them in
 `scene_test.cpp`, `transform_test.cpp`, `editor/hierarchy_test.cpp`, `editor/inspector_test.cpp` and
 `scene_serialize_test.cpp` — **every one found by a red test, none by a grep.** E.5.2 added three more the
-next built-in must update: `RF7`'s hand-written ten-name `BUILTINS` array
+next built-in must update: `RF7`'s hand-written built-in-name `BUILTINS` array
 (`tests/reflect-gen/meta_test.cpp:534-537`) and `IR21`'s two `== 10` pins
 (`tests/editor/inspector_test.cpp:2536`, `:2545`). **E.6.3 added two sites no literal reaches**:
 `componentIconTable()` and `entityKindFor` (`entity_presentation.cpp`) — a built-in left out of either draws the

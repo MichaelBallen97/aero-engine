@@ -1,4 +1,4 @@
-// Aero Engine -- the TypeScript declarations against a live VM (task 4.2.2; DT1-DT7).
+// Aero Engine -- the TypeScript declarations against a live VM (task 4.2.2; DT1-DT7, and since 4.4.1 DT22-DT25).
 //
 // The build joins engine/script/types/prelude.d.ts with one reflect-gen --emit-dts block per built-in component header
 // into aero-engine.d.ts. These cases read that file from disk with a deliberately strict reader (the line grammar in
@@ -7,6 +7,8 @@
 // forgets the prelude, or an emitter that disagrees with the binding table, reddens here. With the reflect tools OFF
 // the table is empty and the file is the prelude alone; every case still runs and compares what exists.
 
+#include <aero/core/vfs.hpp>
+#include <aero/scene/world.hpp>
 #include <aero/script/internal/component_binding.hpp>
 #include <aero/script/script.hpp>
 
@@ -19,10 +21,13 @@
 #include <cstdint>
 #include <fstream>
 #include <iterator>
+#include <memory>
+#include <optional>
 #include <ostream>  // a CHECK on std::string_view needs the complete std::ostream on MSVC (ci-portability.md)
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -36,12 +41,14 @@ using script_test::makeBuiltinVm;
 
 struct DeclaredMember {
     std::string name;
-    std::string type;  // a field's type text, trimmed; empty for a method
-    int arity = -1;    // a method's parameter count; -1 for a field
+    std::string type;       // a field's type text, trimmed; empty for a method
+    int arity = -1;         // a method's parameter count; -1 for a field
+    bool optional = false;  // `name?(...)`: a method a script may define, never a property of the prototype
 };
 struct DeclaredClass {
     std::string name;
     int constructorArity = -1;
+    bool base = false;  // `protected constructor(...)`: a class a script extends, never one it constructs
     std::vector<DeclaredMember> members;  // public members, in file order
 };
 struct Declarations {
@@ -142,6 +149,13 @@ enum class Context : std::uint8_t { Top, Namespace, Map, TypeBody, Class };
     rest.remove_prefix(ident.size());
     rest.remove_suffix(1);  // the ';'
     member.name = std::string{ident};
+    if (startsWith(rest, "?")) {  // an optional METHOD only: `name?: type` stays outside the grammar
+        rest.remove_prefix(1);
+        if (rest.empty() || (rest.front() != '(' && rest.front() != '<')) {
+            return false;
+        }
+        member.optional = true;
+    }
     if (startsWith(rest, ": ")) {
         member.type = std::string{trimBoth(rest.substr(2))};
         member.arity = -1;
@@ -267,13 +281,15 @@ enum class Context : std::uint8_t { Top, Namespace, Map, TypeBody, Class };
                     }
                     context = Context::Namespace;
                     understood = true;
-                } else if (startsWith(line, "constructor(") || startsWith(line, "private constructor(")) {
+                } else if (startsWith(line, "constructor(") || startsWith(line, "private constructor(") ||
+                           startsWith(line, "protected constructor(")) {
                     const std::size_t open = line.find('(');
                     const std::string_view fromOpen = line.substr(open);
                     const std::size_t close = matchingClose(fromOpen);
                     if (close != std::string_view::npos && fromOpen.substr(close) == ";" &&
                         current.constructorArity < 0) {
                         current.constructorArity = arityOf(fromOpen.substr(0, close));
+                        current.base = startsWith(line, "protected ");
                         understood = true;
                     }
                 } else if (startsWith(line, "private ")) {
@@ -607,10 +623,11 @@ TEST_CASE("declarations: the classes the namespace holds are the classes declare
         runtimeNames.push_back(cls.name);
     }
     CHECK(sameSet(runtimeNames, declaredNames(declared), "classes"));
-    CHECK(runtime.size() == tableSize + 3U);
+    CHECK(runtime.size() == tableSize + 4U);
     CHECK(findRuntime(runtime, "Vec3") != nullptr);
     CHECK(findRuntime(runtime, "Quat") != nullptr);
     CHECK(findRuntime(runtime, "Entity") != nullptr);
+    CHECK(findRuntime(runtime, "Script") != nullptr);
 }
 
 TEST_CASE("declarations: each class declares exactly the public names its prototype holds (DT4)") {
@@ -627,10 +644,15 @@ TEST_CASE("declarations: each class declares exactly the public names its protot
         for (const RuntimeMember& member : cls.members) {
             runtimeNames.push_back(member.name);
         }
+        // A base class's members do not live on its prototype: its non-optional members are instance properties and
+        // its optional ones are hooks a script defines (DT23 pins the base class's own shape).
         std::vector<std::string> declaredMembers;
         declaredMembers.reserve(mirror->members.size());
         for (const DeclaredMember& member : mirror->members) {
-            declaredMembers.push_back(member.name);
+            CHECK((!member.optional || mirror->base));
+            if (!mirror->base) {
+                declaredMembers.push_back(member.name);
+            }
         }
         CHECK(sameSet(runtimeNames, declaredMembers, cls.name));
     }
@@ -656,7 +678,8 @@ TEST_CASE("declarations: every bound field is declared with the type its kind ma
     }
 }
 
-TEST_CASE("declarations: ComponentMap keys are exactly the declared classes beyond Vec3, Quat and Entity (DT6)") {
+TEST_CASE(
+    "declarations: ComponentMap keys are exactly the declared classes beyond the vectors, Entity and bases (DT6)") {
     const Declarations declared = parseDeclarations(builtFile());
     REQUIRE(declared.error.empty());
 
@@ -665,8 +688,10 @@ TEST_CASE("declarations: ComponentMap keys are exactly the declared classes beyo
     CHECK(std::adjacent_find(keys.begin(), keys.end()) == keys.end());
 
     std::vector<std::string> expected = declaredNames(declared);
-    std::erase_if(expected,
-                  [](const std::string& name) { return name == "Vec3" || name == "Quat" || name == "Entity"; });
+    std::erase_if(expected, [&](const std::string& name) {
+        const DeclaredClass* const cls = findDeclared(declared, name);
+        return name == "Vec3" || name == "Quat" || name == "Entity" || (cls != nullptr && cls->base);
+    });
     CHECK(sameSet(keys, expected, "ComponentMap"));
 }
 
@@ -689,6 +714,178 @@ TEST_CASE("declarations: declared constructor and method arities equal the runti
             if (member.isMethod) {
                 CHECK(it->arity == member.length);
             }
+        }
+    }
+}
+
+TEST_CASE(
+    "declarations: the reader reads a base class and an optional method, and refuses the forms beside them (DT22)") {
+    const std::string open = "declare namespace engine {\n";
+    const std::string sample = open +
+                               "    class Base {\n"
+                               "        protected constructor();\n"
+                               "        readonly host: Thing;\n"
+                               "        onTick?(dt: number): void;\n"
+                               "        onStop?(): void;\n"
+                               "    }\n"
+                               "}\n";
+    const Declarations parsed = parseDeclarations(sample);
+    CHECK(parsed.error.empty());
+    REQUIRE(parsed.classes.size() == 1U);
+    const DeclaredClass& base = parsed.classes[0];
+    CHECK(base.base);
+    CHECK(base.constructorArity == 0);
+    REQUIRE(base.members.size() == 3U);
+    CHECK(base.members[0].name == "host");
+    CHECK(base.members[0].arity == -1);
+    CHECK_FALSE(base.members[0].optional);
+    CHECK(base.members[1].name == "onTick");
+    CHECK(base.members[1].optional);
+    CHECK(base.members[1].arity == 1);
+    CHECK(base.members[2].name == "onStop");
+    CHECK(base.members[2].optional);
+    CHECK(base.members[2].arity == 0);
+
+    // The other two constructor forms do not mark a class a base.
+    const Declarations plain = parseDeclarations(open + "    class A {\n        constructor();\n    }\n" +
+                                                 "    class B {\n        private constructor();\n    }\n}\n");
+    REQUIRE(plain.error.empty());
+    CHECK_FALSE(plain.classes[0].base);
+    CHECK_FALSE(plain.classes[1].base);
+
+    // Each refusal names its line: an optional field, a protected member beside the constructor, an optional method
+    // with no return type.
+    const std::string head = open + "    class A {\n        protected constructor();\n";
+    CHECK(refusedAt(head + "        x?: number;\n    }\n}\n", 4));
+    CHECK(refusedAt(head + "        protected x: number;\n    }\n}\n", 4));
+    CHECK(refusedAt(head + "        onTick?(dt: number);\n    }\n}\n", 4));
+}
+
+TEST_CASE(
+    "declarations: the built file declares one base class, Script, and the runtime's prototype holds none of it "
+    "(DT23)") {
+    const Declarations declared = parseDeclarations(builtFile());
+    REQUIRE(declared.error.empty());
+
+    std::vector<std::string> bases;
+    for (const DeclaredClass& cls : declared.classes) {
+        if (cls.base) {
+            bases.push_back(cls.name);
+        }
+    }
+    REQUIRE(bases == std::vector<std::string>{"Script"});
+
+    const DeclaredClass* const script = findDeclared(declared, "Script");
+    REQUIRE(script != nullptr);
+    CHECK(script->constructorArity == 0);
+    REQUIRE(script->members.size() == 4U);
+    CHECK(script->members[0].name == "entity");
+    CHECK(script->members[0].arity == -1);
+    CHECK_FALSE(script->members[0].optional);
+    CHECK(std::string_view{script->members[0].type} == "Entity");
+    const std::vector<std::pair<std::string, int>> hooks{{"onInit", 0}, {"onUpdate", 1}, {"onDestroy", 0}};
+    for (std::size_t i = 0; i < hooks.size(); ++i) {
+        const DeclaredMember& member = script->members[i + 1U];
+        CAPTURE(member.name);
+        CHECK(member.name == hooks[i].first);
+        CHECK(member.optional);
+        CHECK(member.arity == hooks[i].second);
+    }
+
+    const std::vector<RuntimeClass> runtime = runtimeClasses();
+    const RuntimeClass* const live = findRuntime(runtime, "Script");
+    REQUIRE(live != nullptr);
+    CHECK(live->constructorLength == 0);
+    CHECK(live->members.empty());
+}
+
+namespace {
+
+// One module file in memory, for the VM DT24 builds.
+class OneFileBackend final : public engine::FileSystemBackend {
+public:
+    OneFileBackend(std::string name, std::string text) : name(std::move(name)), text(std::move(text)) {}
+
+    [[nodiscard]] bool exists(std::string_view relPath) const override { return relPath == name; }
+    [[nodiscard]] std::optional<std::uint64_t> fileSize(std::string_view relPath) const override {
+        return relPath == name ? std::optional<std::uint64_t>{text.size()} : std::nullopt;
+    }
+    [[nodiscard]] std::optional<engine::ByteBuffer> readFile(std::string_view relPath) const override {
+        if (relPath != name) {
+            return std::nullopt;
+        }
+        engine::ByteBuffer bytes;
+        bytes.reserve(text.size());
+        for (const char c : text) {
+            bytes.push_back(static_cast<std::byte>(c));
+        }
+        return bytes;
+    }
+
+private:
+    std::string name;
+    std::string text;
+};
+
+}  // namespace
+
+TEST_CASE("declarations: an attached instance holds exactly the declared non-optional members of Script (DT24)") {
+    const Declarations declared = parseDeclarations(builtFile());
+    REQUIRE(declared.error.empty());
+    const DeclaredClass* const script = findDeclared(declared, "Script");
+    REQUIRE(script != nullptr);
+    std::vector<std::string> required;
+    for (const DeclaredMember& member : script->members) {
+        if (!member.optional) {
+            required.push_back(member.name);
+        }
+    }
+
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<OneFileBackend>(
+        "s/x.js", "var X = class extends engine.Script {\n};\nexport {\n  X as default\n};\n"));
+    engine::script::VmCreateResult created = engine::script::Vm::create(script_test::patient(), vfs);
+    REQUIRE(created.vm.valid());
+    engine::script::Vm vm = std::move(created.vm);
+    engine::World world;
+    const engine::Entity entity = world.create();
+    REQUIRE(vm.bindWorld(world) == engine::script::BindStatus::Ok);
+    REQUIRE(engine::script::scriptStatusLabel(vm.loadScript("res://s/x.js").status) == "Ok");
+    const engine::script::ScriptInstanceResult made = vm.createInstance("res://s/x.js", entity);
+    REQUIRE(engine::script::scriptStatusLabel(made.status) == "Ok");
+    REQUIRE(engine::script::internal::VmAccess::defineInstanceGlobal(vm, made.instance, "i"));
+
+    CHECK(completion(vm, "Object.getOwnPropertyNames(i).join()") == "entity");
+    CHECK(required == std::vector<std::string>{"entity"});
+    CHECK(completion(vm, "String(i.entity instanceof engine.Entity)") == "true");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("declarations: a base class's optional methods are exactly the hooks the VM reads (DT25)") {
+    const Declarations declared = parseDeclarations(builtFile());
+    REQUIRE(declared.error.empty());
+    const DeclaredClass* const script = findDeclared(declared, "Script");
+    REQUIRE(script != nullptr);
+
+    std::vector<std::pair<std::string, int>> optionals;
+    for (const DeclaredMember& member : script->members) {
+        if (member.optional) {
+            optionals.emplace_back(member.name, member.arity);
+        }
+    }
+    std::vector<std::pair<std::string, int>> hooks;
+    for (std::size_t i = 0; i < engine::script::SCRIPT_HOOK_COUNT; ++i) {
+        const auto hook = static_cast<engine::script::ScriptHook>(i);
+        const int arity = hook == engine::script::ScriptHook::Update ? 1 : 0;
+        hooks.emplace_back(std::string{engine::script::scriptHookName(hook)}, arity);
+    }
+    CHECK(optionals == hooks);
+
+    for (const DeclaredClass& cls : declared.classes) {
+        for (const DeclaredMember& member : cls.members) {
+            CAPTURE(cls.name);
+            CAPTURE(member.name);
+            CHECK((member.optional ? cls.base : true));  // no class but a base declares an optional member
         }
     }
 }

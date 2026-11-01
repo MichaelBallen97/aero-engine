@@ -2,10 +2,11 @@
 // Aero Engine -- the JavaScript VM (task 4.1.1; ADR-007). One Vm = one quickjs-ng runtime + one context,
 // created together, used on ONE thread, torn down together. A VM offers the ECMAScript language, the backend's
 // core globals and, since task 4.2.1, one frozen global of the engine's own: `engine`, holding a class per bound
-// component plus Vec3, Quat and Entity. Nothing else is script-visible -- no file, process or timer access. Since
-// task 4.1.2 a VM given a VirtualFileSystem also loads ES modules through it (evaluateModule, and import() from
-// any code). Since task 4.3.3 a VM loads a script class (an ES module whose default export is a class) and holds its
-// instances behind handles, and a changed file re-creates every live instance from the new class.
+// component plus Vec3, Quat, Entity and Script (the base class a script's class extends). Nothing else is
+// script-visible -- no file, process or timer access. Since task 4.1.2 a VM given a VirtualFileSystem also loads ES
+// modules through it (evaluateModule, and import() from any code). Since task 4.3.3 a VM loads a script class (an ES
+// module whose default export is a class) and holds its instances behind handles, and a changed file re-creates every
+// live instance from the new class.
 //
 // The backend is an implementation detail of engine/script/src/ and never crosses this header (project
 // rule #3). .github/scripts/check-script-boundary.sh and tests/script_boundary_probe.cpp enforce that.
@@ -41,8 +42,8 @@ struct BytecodeCook;          // the cook (src/bytecode_cook.cpp): two VMs of it
 // The JavaScript heap: every byte the backend allocates, header included, is charged against it. There
 // is deliberately no "unlimited": 0 is refused rather than read as the backend's own "no limit".
 inline constexpr std::size_t DEFAULT_HEAP_LIMIT_BYTES = std::size_t{64} * 1024U * 1024U;  // 64 MiB
-// The smallest heap a VM may be given. An empty VM needs about 165 KB (152 585 B Release, 164 969 B Debug, with the
-// ten built-in components bound; 134 667 B Debug with none -- the `engine` namespace is built in every VM). That
+// The smallest heap a VM may be given. An empty VM needs about 166 KB (154 357 B Release, 166 821 B Debug, with the
+// eleven built-in components bound; 135 274 B Debug with none -- the `engine` namespace is built in every VM). That
 // includes the three builtins the backend builds lazily on a first read, which create reads once so that no later
 // read can fail, so no create runs out of heap at or above this; below it the backend's context-creation
 // failure path is not safe to take, so such a limit is refused up front instead of being tried.
@@ -176,6 +177,8 @@ enum class ScriptStatus : std::uint8_t {
     UnknownInstance,  // destroyInstance: the handle names no live instance (null, destroyed or stale)
     AlreadyRefused,   // loadScript: the file holds the bytes of the script's last refused load since its last
                       // success; nothing ran, nothing is logged, the result's error is empty
+    NoWorld,          // createInstance(path, entity): no World is bound; nothing ran
+    DeadEntity,       // createInstance(path, entity): the entity is not alive in the bound World; nothing ran
 };
 // Never named toString: doctest's DOCTEST_STRINGIFY finds an unqualified toString by ADL (CLAUDE.md).
 [[nodiscard]] std::string_view scriptStatusLabel(ScriptStatus status) noexcept;
@@ -196,7 +199,23 @@ struct ScriptLoadResult {
 struct ScriptInstanceResult {
     ScriptStatus status = ScriptStatus::InvalidVm;
     ScriptInstance instance;  // valid() iff Ok
-    ScriptError error;        // filled iff Exception, OutOfMemory, Interrupted or NotAClass
+    ScriptError error;        // filled iff Exception, OutOfMemory, Interrupted or NotAClass (empty for NotLoaded,
+                              // NoWorld and DeadEntity)
+};
+
+// The lifecycle hooks an attached instance may define, in the order a script sees them (task 4.4.1).
+enum class ScriptHook : std::uint8_t { Init = 0, Update, Destroy };
+inline constexpr std::size_t SCRIPT_HOOK_COUNT = 3;
+// "onInit", "onUpdate", "onDestroy": the property each hook reads. Never named toString (doctest's ADL trap). The view
+// is over a terminated literal.
+[[nodiscard]] std::string_view scriptHookName(ScriptHook hook) noexcept;
+
+struct ScriptHookResult {
+    ScriptStatus status = ScriptStatus::InvalidVm;  // Ok, Exception, OutOfMemory, Interrupted, UnknownInstance,
+                                                    // InvalidVm or WrongThread
+    ScriptError error;                              // filled iff Exception, OutOfMemory or Interrupted
+    bool ran = false;                               // the hook was a function and was called
+    bool rejected = false;  // the call's tail reported an unhandled promise rejection: an async hook's failure
 };
 
 // The state of a module path's CURRENT generation, as the VM last observed it. The backend reports an evaluation's
@@ -431,7 +450,9 @@ public:
     // instance has keeps its default. Fields are read as descriptors and written with a define, so no getter and no
     // setter runs, and a frozen or otherwise unwritable new field keeps its default (counted as reset) rather than
     // refusing the reload. fieldsKept, fieldsReset, fieldsAdded and fieldsDropped sum these over the moved instances; a
-    // refused load reports none. A class is a constructor whose own `prototype` is a non-writable data property: a
+    // refused load reports none. An attached instance (createInstance with an entity) is re-created with its entity
+    // defined before the carry, under the binding it was attached with; an object that cannot hold it refuses the
+    // whole load, as NotAClass. A class is a constructor whose own `prototype` is a non-writable data property: a
     // plain, bound, arrow, async or generator function, an object, a primitive and a missing default are not, and
     // finding out runs no script code. The VM's thread only, and never from inside another call.
     [[nodiscard]] ScriptLoadResult loadScript(std::string_view virtualPath);
@@ -442,6 +463,35 @@ public:
     // ERROR and makes nothing. Each instance holds its own fields. A constructor that returns a Proxy is refused, so no
     // live instance is a Proxy.
     [[nodiscard]] ScriptInstanceResult createInstance(std::string_view virtualPath);
+
+    // Constructs one instance attached to `entity`. The refusals, in this order, each one ERROR and made before
+    // anything runs: InvalidVm, WrongThread, NotLoaded, NoWorld ("script: <path>: createInstance refused: no World is
+    // bound"), DeadEntity ("... the entity is not alive in the bound World"). The construction is the one-argument
+    // overload's, under one time budget, with the entity held pending: the first construction of engine.Script inside
+    // it defines the instance's own `entity`, so a class that extends it sees `this.entity` in its field initializers
+    // and constructor and keeps that very object. The instance then holds an own `entity` property: data, not
+    // writable, not enumerable, configurable, an engine.Entity of `entity` under the binding current now, so a bind
+    // made later leaves it stale. An instance that cannot hold one (frozen, sealed, not extensible, or with a
+    // non-configurable own `entity`) is refused NotAClass with one ERROR ("script: <path>: not a script: its instance
+    // cannot hold its entity (frozen, sealed, not extensible, or with a non-configurable own 'entity')") and nothing
+    // is made. Once the call's budget has fired, no engine refusal joins the interrupt's record.
+    [[nodiscard]] ScriptInstanceResult createInstance(std::string_view virtualPath, Entity entity);
+
+    // Calls one lifecycle hook of `instance` under one call's time budget: the hook is read from the instance inside
+    // the call (a prototype method, an own arrow field, or whatever a getter returns; a getter runs), and called with
+    // `this` = the instance. onUpdate gets `dt` as its one argument, onInit and onDestroy get none. The return value is
+    // ignored. A value that is not a function is an absent hook: Ok, `ran` false, nothing logged. Any other property
+    // read or call that fails is evaluateScript's: Exception, OutOfMemory or Interrupted with one ERROR in its shape,
+    // its stack source-mapped; a getter that throws leaves `ran` false. An async hook that rejects ends Ok with
+    // `rejected` true and one "unhandled promise rejection" record; `rejected` is this call's own report, never the
+    // lifetime count. A generator's body never runs. Each call has its own budget, status and record, so one runaway
+    // hook ends one call. UnknownInstance, with one ERROR ("script: callHook refused: the handle names no live
+    // instance"), for a handle that is null, destroyed or stale; nothing runs. The VM's thread only, and never from
+    // inside another call.
+    [[nodiscard]] ScriptHookResult callHook(ScriptInstance instance, ScriptHook hook, double dt);
+
+    // The configured per-call time budget; 0 ms for an invalid Vm. Safe from any thread.
+    [[nodiscard]] std::chrono::milliseconds callTimeBudget() const noexcept;
 
     // Frees an instance. UnknownInstance, with one ERROR ("script: destroyInstance refused: the handle names no live
     // instance"), when the handle is null, already destroyed or stale. Runs no script code.

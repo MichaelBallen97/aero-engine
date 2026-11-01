@@ -5,6 +5,7 @@
 // committed samples/phase-1-scene/scene.json test 9 reads.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <aero/core/guid.hpp>  // task 3.1.5 — MeshRenderer's two Guid fields
+#include <aero/core/log.hpp>   // task 4.4.1 — the WARN count of SE5
 #include <aero/core/math.hpp>
 #include <aero/reflect/json_reader.hpp>
 #include <aero/reflect/json_value.hpp>
@@ -16,7 +17,8 @@
 #include <aero/scene/environment.hpp>  // task E.2.1
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>
-#include <aero/scene/spot_light.hpp>  // task E.2.2
+#include <aero/scene/script_component.hpp>  // task 4.4.1
+#include <aero/scene/spot_light.hpp>        // task E.2.2
 #include <aero/scene/transform.hpp>
 #include <aero/scene/world.hpp>
 #include <aero/scene_serialize/scene_serialize.hpp>
@@ -616,7 +618,7 @@ TEST_CASE("scene_serialize: the committed samples/phase-1-scene/scene.json (AC-6
 TEST_CASE("scene_serialize: dispatch/registration parity (AC-3/D8)") {
     const World world;
     const std::span<const std::string_view> names = builtinComponentNames();
-    CHECK(names.size() == 10);  // task E.2.2: SpotLight is the 10th, after Environment
+    CHECK(names.size() == 11);  // task 4.4.1: ScriptComponent is the 11th, after SpotLight
     CHECK(names.size() == world.componentTypeCount());
     for (const std::string_view name : names) {
         CHECK(world.findComponentType(name).valid());
@@ -715,7 +717,7 @@ TEST_CASE("scene_golden: full.scene.json is a byte-exact fixpoint (G2/AC-1/AC-2/
     World world;
     const SceneLoadReport report = loadScene(world, doc);
     CHECK(report.entitiesCreated == 8);
-    CHECK(report.componentsAttached == 15);  // task E.2.2: entity 6 gained SpotLight (E.2.1: 14)
+    CHECK(report.componentsAttached == 16);  // task 4.4.1: entity 8 gained ScriptComponent (E.2.2: 15)
     CHECK(report.componentsSkipped == 0);    // non-zero here means the fixture named a type this build
     CHECK(report.componentsFailed == 0);     // cannot resolve -- i.e. the fixture degraded (E2)
 
@@ -849,13 +851,13 @@ TEST_CASE("scene_golden: full.scene.json still contains everything it is for (G5
     CHECK(twoComponents == 4);     // ids 1, 2, 3, 4 -- id 6 gained a THIRD component at E.2.1
     CHECK(grandParented == 1);     // id 4 -> 3 -> 2, the three-level chain
     CHECK(namedProp == 2);         // duplicate names are legal, unvalidated and preserved (E4)
-    CHECK(totalComponents == 15);  // task E.2.2: entity 6 gained SpotLight (E.2.1: 14)
+    CHECK(totalComponents == 16);  // task 4.4.1: entity 8 gained ScriptComponent (E.2.2: 15)
 
     // EVERY built-in type name appears somewhere in the file. A new built-in arriving later reddens
     // G8, not this -- deliberately: this asks "did the fixture lose one?", G8 asks "did the registry
     // change?".
     const std::span<const std::string_view> builtins = builtinComponentNames();
-    REQUIRE(builtins.size() == 10);
+    REQUIRE(builtins.size() == 11);
     for (const std::string_view name : builtins) {
         INFO(std::string{name});
         CHECK(std::find(typeNames.begin(), typeNames.end(), std::string{name}) != typeNames.end());
@@ -1033,17 +1035,18 @@ TEST_CASE("scene_golden: registry order is pinned, and the fixture obeys it (G8/
     // order must be a SUBSEQUENCE of the registry order. A writer that sorted alphabetically, or a
     // BUILTINS table reordered, breaks one or both halves.
     const std::span<const std::string_view> builtins = builtinComponentNames();
-    REQUIRE(builtins.size() == 10);
+    REQUIRE(builtins.size() == 11);
     CHECK(builtins[0] == "engine::Transform");
     CHECK(builtins[1] == "engine::Camera");
     CHECK(builtins[2] == "engine::DirectionalLight");
     CHECK(builtins[3] == "engine::PointLight");
     CHECK(builtins[4] == "engine::MeshRenderer");
     CHECK(builtins[5] == "engine::AnimationPlayer");
-    CHECK(builtins[6] == "engine::AudioSource");    // task 3.7.2
-    CHECK(builtins[7] == "engine::AudioListener");  // task 3.7.2
-    CHECK(builtins[8] == "engine::Environment");    // task E.2.1
-    CHECK(builtins[9] == "engine::SpotLight");      // task E.2.2
+    CHECK(builtins[6] == "engine::AudioSource");       // task 3.7.2
+    CHECK(builtins[7] == "engine::AudioListener");     // task 3.7.2
+    CHECK(builtins[8] == "engine::Environment");       // task E.2.1
+    CHECK(builtins[9] == "engine::SpotLight");         // task E.2.2
+    CHECK(builtins[10] == "engine::ScriptComponent");  // task 4.4.1
     // A new built-in reddens exactly here, by design (E12). The correct response is to regenerate
     // full.scene.json to exercise the new type and update this list in the SAME pull request -- not
     // to relax the assertion. Task 3.7.2 followed it to the letter, twice over.
@@ -1069,7 +1072,7 @@ TEST_CASE("scene_golden: registry order is pinned, and the fixture obeys it (G8/
         }
     }
     CHECK_MESSAGE(offenders.empty(), offenders);
-    CHECK(seen == 15);  // ANTI-VACUITY: the loop above must actually have inspected fifteen components
+    CHECK(seen == 16);  // ANTI-VACUITY: the loop above must actually have inspected sixteen components
 }
 
 TEST_CASE("scene_golden: the committed sample scene is still canonical (G9/AC-13/D9)") {
@@ -1881,5 +1884,160 @@ TEST_CASE("scene_serialize: section 2.3's tolerance rules on the SpotLight paylo
         const std::string resaved = saveWorldText(world);
         CHECK(resaved.find("\"coneTexture\"") == std::string::npos);
         CHECK(resaved.find("\"intensity\": 0.25") != std::string::npos);
+    }
+}
+
+// ---- task 4.4.1: engine::ScriptComponent, the eleventh built-in
+// ------------------------------------------------------
+
+namespace {
+
+// Counts the WARN-or-worse records emitted while it lives: section 2.3's "one WARN" is a count, not a flag.
+class ScriptWarnCapture {
+public:
+    ScriptWarnCapture() {
+        engine::setLogCallback([this](const engine::LogRecord& record) {
+            if (record.level >= engine::LogLevel::Warn) {
+                ++warnings;
+            }
+        });
+    }
+    ScriptWarnCapture(const ScriptWarnCapture&) = delete;
+    ScriptWarnCapture& operator=(const ScriptWarnCapture&) = delete;
+    ScriptWarnCapture(ScriptWarnCapture&&) = delete;
+    ScriptWarnCapture& operator=(ScriptWarnCapture&&) = delete;
+    ~ScriptWarnCapture() { engine::setLogCallback(nullptr); }
+
+    [[nodiscard]] int count() const noexcept { return warnings; }
+
+private:
+    int warnings = 0;
+};
+
+[[nodiscard]] std::string scriptSceneText(std::string_view payload) {
+    return "{\n  \"version\": 1,\n  \"entities\": [\n    {\n      \"id\": 1,\n      \"components\": {\n"
+           "        \"engine::ScriptComponent\": " +
+           std::string{payload} + "\n      }\n    }\n  ]\n}\n";
+}
+
+}  // namespace
+
+TEST_CASE("scene_serialize: ScriptComponent round-trips its guid, nil included, byte for byte (task 4.4.1, SE3)") {
+    // Through the real saveWorldText/loadSceneText pair: a component that reads and writes perfectly but is
+    // missing from BUILTINS passes every reflect-gen case and fails exactly here -- registered, inspectable,
+    // editable and NOT SAVED. The value is deliberately NON-NIL, so an uppercasing writer is visible.
+    World world;
+    const Entity set = world.create();
+    const Entity nil = world.create();
+    const Guid script{0x4410000000000000ULL, 0x0000000000000001ULL};
+    world.add<ScriptComponent>(set, ScriptComponent{.script = script});
+    world.add<ScriptComponent>(nil, ScriptComponent{});
+
+    const std::string text = saveWorldText(world);
+    CHECK(text.find("\"engine::ScriptComponent\"") != std::string::npos);
+    CHECK(text.find("\"script\": \"44100000000000000000000000000001\"") != std::string::npos);
+    CHECK(text.find("\"script\": \"00000000000000000000000000000000\"") != std::string::npos);
+
+    World reloaded;
+    const SceneLoadResult result = loadSceneText(reloaded, text);
+    REQUIRE_FALSE(result.error.has_value());
+    CHECK(result.report.componentsAttached == 2);
+    CHECK(result.report.componentsSkipped == 0);
+    CHECK(result.report.componentsFailed == 0);
+
+    const std::vector<Entity> entities = collectEntities(reloaded);
+    REQUIRE(entities.size() == 2);
+    const ScriptComponent* first = reloaded.get<ScriptComponent>(entities[0]);
+    const ScriptComponent* second = reloaded.get<ScriptComponent>(entities[1]);
+    REQUIRE(first != nullptr);
+    REQUIRE(second != nullptr);
+    CHECK(first->script == script);
+    CHECK_FALSE(second->script.valid());
+
+    const std::string again = saveWorldText(reloaded);
+    CHECK(again == text);  // canonical fixpoint, on the second cycle as on the first
+    World third;
+    REQUIRE_FALSE(loadSceneText(third, again).error.has_value());
+    CHECK(saveWorldText(third) == text);
+}
+
+TEST_CASE("scene_serialize: ScriptComponent emits LAST, after SpotLight, in REGISTRATION order (task 4.4.1, SE4)") {
+    // Save emission order is BUILTINS' declaration order: Transform (0) precedes SpotLight (9), which precedes
+    // ScriptComponent (10), whatever order the components were added in.
+    World world;
+    const Entity e = world.create();
+    world.add<ScriptComponent>(e, ScriptComponent{});  // ADDED FIRST, deliberately
+    world.add<SpotLight>(e, SpotLight{});
+    world.add<Transform>(e, Transform{});
+
+    const std::string text = saveWorldText(world);
+    const std::size_t transformAt = text.find("\"engine::Transform\"");
+    const std::size_t spotAt = text.find("\"engine::SpotLight\"");
+    const std::size_t scriptAt = text.find("\"engine::ScriptComponent\"");
+    REQUIRE(transformAt != std::string::npos);
+    REQUIRE(spotAt != std::string::npos);
+    REQUIRE(scriptAt != std::string::npos);
+    CHECK(transformAt < spotAt);
+    CHECK(spotAt < scriptAt);
+}
+
+TEST_CASE("scene_serialize: section 2.3's tolerance rules on the ScriptComponent payload (task 4.4.1, SE5)") {
+    const auto load = [&](std::string_view payload, int& warnings, ScriptComponent& out) {
+        const ScriptWarnCapture capture;
+        World world;
+        const SceneLoadResult result = loadSceneText(world, scriptSceneText(payload));
+        REQUIRE_FALSE(result.error.has_value());
+        const std::vector<Entity> entities = collectEntities(world);
+        REQUIRE(entities.size() == 1);
+        const ScriptComponent* got = world.get<ScriptComponent>(entities[0]);
+        REQUIRE(got != nullptr);
+        out = *got;
+        warnings = capture.count();
+    };
+
+    SUBCASE("a MISSING key is silent and leaves the field nil") {
+        int warnings = -1;
+        ScriptComponent got{};
+        load("{}", warnings, got);
+        CHECK(warnings == 0);
+        CHECK_FALSE(got.script.valid());
+    }
+
+    SUBCASE("an EXTRA key is one WARN and is never carried") {
+        int warnings = -1;
+        ScriptComponent got{};
+        load(R"({"script": "44100000000000000000000000000001", "enabled": true})", warnings, got);
+        CHECK(warnings == 1);
+        CHECK(got.script == Guid{0x4410000000000000ULL, 0x1ULL});
+        World world;
+        const Entity e = world.create();
+        world.add<ScriptComponent>(e, got);
+        CHECK(saveWorldText(world).find("\"enabled\"") == std::string::npos);
+    }
+
+    SUBCASE("a number, a short string and a 31-digit string are one WARN each and leave the field nil") {
+        for (const std::string_view payload :
+             {std::string_view{R"({"script": 5})"}, std::string_view{R"({"script": "xyz"})"},
+              std::string_view{R"({"script": "4410000000000000000000000000001"})"}}) {
+            CAPTURE(payload);
+            int warnings = -1;
+            ScriptComponent got{};
+            load(payload, warnings, got);
+            CHECK(warnings == 1);
+            CHECK_FALSE(got.script.valid());  // a bad field leaves the component's own nil
+        }
+    }
+
+    SUBCASE("upper-case hex loads and re-emits lower-case") {
+        int warnings = -1;
+        ScriptComponent got{};
+        load(R"({"script": "4410000000000000000000000000ABCD"})", warnings, got);
+        CHECK(warnings == 0);
+        CHECK(got.script == Guid{0x4410000000000000ULL, 0xABCDULL});
+        World world;
+        const Entity e = world.create();
+        world.add<ScriptComponent>(e, got);
+        const std::string text = saveWorldText(world);
+        CHECK(text.find("\"script\": \"4410000000000000000000000000abcd\"") != std::string::npos);
     }
 }

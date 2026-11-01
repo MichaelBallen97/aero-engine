@@ -46,10 +46,12 @@ add_executable(aero_tests
     script_bytecode_format_test.cpp # task 4.3.2 — the bytecode head, the rename, the headroom rule (BY1-BY7)
     script_bytecode_test.cpp  # task 4.3.2 — the bytecode cook and the loader's container branch (BY8-BY37)
     script_module_test.cpp    # task 4.1.2 — ES modules through the VFS: the grammar, the cache, the statuses (ML1-ML51)
-    script_binding_test.cpp   # task 4.2.1 — the binding runtime over a fixture table (BN1–BN5, BN7–BN36)
-    script_declarations_test.cpp # task 4.2.2 -- the declarations against a live VM (DT1-DT7)
+    script_binding_test.cpp   # task 4.2.1 — the binding runtime over a fixture table (BN1–BN5, BN7–BN36, BN53-BN55)
+    script_declarations_test.cpp # task 4.2.2 -- the declarations against a live VM (DT1-DT7, DT22-DT25)
     script_reload_test.cpp # task 4.3.3 -- script classes, instances and hot reload (HR1-HR32)
     script_source_map_test.cpp # task 4.3.4 -- source maps: the pure core and the VM's mapped errors (SR1-SR30)
+    script_attach_test.cpp # task 4.4.1 -- engine.Script and the instances the VM attaches to entities (VM66-VM81)
+    script_system_test.cpp # task 4.4.1 -- ScriptSystem: the lifecycle over one World (LC1-LC25, LC27, LC31-LC33)
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -70,6 +72,7 @@ add_executable(aero_tests
     light_test.cpp        # task 1.3.3 — engine::DirectionalLight + PointLight
     environment_test.cpp  # task E.2.1 — engine::Environment: layout, defaults, registration, selectors
     spot_light_test.cpp   # task E.2.2 — engine::SpotLight: layout, defaults, registration tenth, plain data
+    scene_script_component_test.cpp # task 4.4.1 — engine::ScriptComponent: layout, nil default, registration eleventh
     animation_player_test.cpp # task 3.5.2 — engine::AnimationPlayer: layout, defaults, the clock's six steps
     scene_render_test.cpp # task 1.4.1 — buildRenderView (tier-0) + gated SceneRenderer GPU draw-smoke
     asset_bindings_test.cpp # task 3.1.5 — AssetBindingTable: sorted-vector set/find/remove, nil refusal
@@ -881,6 +884,7 @@ if(AERO_REFLECT_TOOLS)
         components_engine_mesh_renderer   # task 1.4.1
         components_engine_environment     # task E.2.1
         components_engine_spot_light      # task E.2.2
+        components_engine_script_component  # task 4.4.1
         # task 2.2.2: field annotations (AERO_RANGE/AERO_COLOR) and the std::string category
         annotations_components annotations_meta annotations_malformed annotations_nonfinite
         annotations_misapplied annotations_unknown annotations_determinism
@@ -1387,7 +1391,7 @@ endfunction()
 # These two name no built-in component, so they run in the reflect-tools-OFF tree too; driver_e2e needs no Node at all.
 aero_add_typescript_case(prelude_only)
 aero_add_typescript_case(driver_e2e)
-# These two name the ten built-ins, which the tools-OFF artifact does not declare.
+# These two name built-in components, which the tools-OFF artifact does not declare.
 if(AERO_REFLECT_TOOLS)
     aero_add_typescript_case(clean)
     aero_add_typescript_case(broken)

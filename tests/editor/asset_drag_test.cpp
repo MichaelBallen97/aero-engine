@@ -59,11 +59,11 @@ namespace {
 
 constexpr Guid SAMPLE_GUID{0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
 
-// The five AssetKinds a payload can legally carry plus the four it cannot -- ALL SEVEN, spelled out,
+// The five AssetKinds a payload can legally carry plus the four it cannot -- ALL EIGHT, spelled out,
 // so a future inserted kind is a compile-visible edit here rather than a silently unrouted row.
-constexpr std::array<AssetKind, 7> ALL_KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+constexpr std::array<AssetKind, 8> ALL_KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
                                              AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
-                                             AssetKind::Unknown};
+                                             AssetKind::Script, AssetKind::Unknown};
 constexpr std::array<DropSurface, 5> ALL_SURFACES{DropSurface::HierarchyRow, DropSurface::HierarchyVoid,
                                                   DropSurface::Viewport, DropSurface::MaterialSlot,
                                                   DropSurface::AssetField};
@@ -277,7 +277,7 @@ TEST_CASE("asset_drag: classifyAssetDrop's whole 35-row matrix (DR7)") {
 }
 
 TEST_CASE("asset_drag: classifyAssetDrop is TOTAL over kind x surface x flag (DR8)") {
-    // Every one of the 70 combinations answers something; nothing is left to a default: arm, and the
+    // Every one of the 80 combinations answers something; nothing is left to a default: arm, and the
     // function never depends on an out-of-range value.
     std::size_t seen = 0;
     for (const AssetKind kind : ALL_KINDS) {
@@ -292,7 +292,7 @@ TEST_CASE("asset_drag: classifyAssetDrop is TOTAL over kind x surface x flag (DR
             }
         }
     }
-    CHECK(seen == 70);  // 7 kinds x 5 surfaces (task E.3.3 appended AssetField) x 2 flags
+    CHECK(seen == 80);  // 8 kinds (task 4.4.1 added Script) x 5 surfaces (task E.3.3 appended AssetField) x 2 flags
 }
 
 TEST_CASE("asset_drag: targetHasMeshRenderer is consulted ONLY on the two Material rows (DR9)") {
@@ -312,7 +312,7 @@ TEST_CASE("asset_drag: targetHasMeshRenderer is consulted ONLY on the two Materi
     }
 }
 
-TEST_CASE("asset_drag: assetKindIsDraggable answers all seven kinds individually (DR10)") {
+TEST_CASE("asset_drag: assetKindIsDraggable answers all eight kinds individually (DR10)") {
     // Asserted one by one, never through a helper, so a future INSERTED kind reddens here rather than
     // silently defaulting to "not draggable".
     CHECK_FALSE(assetKindIsDraggable(AssetKind::Folder));
@@ -321,13 +321,14 @@ TEST_CASE("asset_drag: assetKindIsDraggable answers all seven kinds individually
     CHECK(assetKindIsDraggable(AssetKind::Audio));  // task E.3.3: AudioSource::clip is a drop target
     CHECK_FALSE(assetKindIsDraggable(AssetKind::Text));
     CHECK(assetKindIsDraggable(AssetKind::Material));
+    CHECK(assetKindIsDraggable(AssetKind::Script));  // task 4.4.1: ScriptComponent::script is a drop target
     CHECK_FALSE(assetKindIsDraggable(AssetKind::Unknown));
 
     std::size_t draggable = 0;
     for (const AssetKind kind : engine::editor::ASSET_KIND_FILTER_OPTIONS) {
         draggable += assetKindIsDraggable(kind) ? 1U : 0U;
     }
-    CHECK(draggable == 4);  // task E.3.3: Texture, Model, Material, Audio
+    CHECK(draggable == 5);  // Texture, Model, Material, Audio (task E.3.3) and Script (task 4.4.1)
 }
 
 TEST_CASE("asset_drag: dropSurfaceLabel and dropActionLabel are total and INJECTIVE (DR11)") {
@@ -568,9 +569,9 @@ TEST_CASE("AR1: an AssetField accepts a draggable kind iff the field names it, o
         std::optional<AssetKind> fieldKind;
         DropAction expected;
     };
-    // The four DRAGGABLE payload kinds x {nullopt} u ALL_KINDS = 4 x 8 = 32 cells, spelled out
+    // The five DRAGGABLE payload kinds x {nullopt} u ALL_KINDS = 5 x 9 = 45 cells, spelled out
     // against literals rather than computed from the predicate under test.
-    constexpr std::array<Cell, 32> TABLE{{
+    constexpr std::array<Cell, 45> TABLE{{
         {AssetKind::Texture, std::nullopt, DropAction::AssignAssetReference},
         {AssetKind::Texture, AssetKind::Folder, DropAction::None},
         {AssetKind::Texture, AssetKind::Texture, DropAction::AssignAssetReference},
@@ -578,6 +579,7 @@ TEST_CASE("AR1: an AssetField accepts a draggable kind iff the field names it, o
         {AssetKind::Texture, AssetKind::Audio, DropAction::None},
         {AssetKind::Texture, AssetKind::Text, DropAction::None},
         {AssetKind::Texture, AssetKind::Material, DropAction::None},
+        {AssetKind::Texture, AssetKind::Script, DropAction::None},
         {AssetKind::Texture, AssetKind::Unknown, DropAction::None},
 
         {AssetKind::Model, std::nullopt, DropAction::AssignAssetReference},
@@ -587,6 +589,7 @@ TEST_CASE("AR1: an AssetField accepts a draggable kind iff the field names it, o
         {AssetKind::Model, AssetKind::Audio, DropAction::None},
         {AssetKind::Model, AssetKind::Text, DropAction::None},
         {AssetKind::Model, AssetKind::Material, DropAction::None},
+        {AssetKind::Model, AssetKind::Script, DropAction::None},
         {AssetKind::Model, AssetKind::Unknown, DropAction::None},
 
         {AssetKind::Audio, std::nullopt, DropAction::AssignAssetReference},
@@ -596,6 +599,7 @@ TEST_CASE("AR1: an AssetField accepts a draggable kind iff the field names it, o
         {AssetKind::Audio, AssetKind::Audio, DropAction::AssignAssetReference},
         {AssetKind::Audio, AssetKind::Text, DropAction::None},
         {AssetKind::Audio, AssetKind::Material, DropAction::None},
+        {AssetKind::Audio, AssetKind::Script, DropAction::None},
         {AssetKind::Audio, AssetKind::Unknown, DropAction::None},
 
         {AssetKind::Material, std::nullopt, DropAction::AssignAssetReference},
@@ -605,10 +609,21 @@ TEST_CASE("AR1: an AssetField accepts a draggable kind iff the field names it, o
         {AssetKind::Material, AssetKind::Audio, DropAction::None},
         {AssetKind::Material, AssetKind::Text, DropAction::None},
         {AssetKind::Material, AssetKind::Material, DropAction::AssignAssetReference},
+        {AssetKind::Material, AssetKind::Script, DropAction::None},
         {AssetKind::Material, AssetKind::Unknown, DropAction::None},
+
+        {AssetKind::Script, std::nullopt, DropAction::AssignAssetReference},
+        {AssetKind::Script, AssetKind::Folder, DropAction::None},
+        {AssetKind::Script, AssetKind::Texture, DropAction::None},
+        {AssetKind::Script, AssetKind::Model, DropAction::None},
+        {AssetKind::Script, AssetKind::Audio, DropAction::None},
+        {AssetKind::Script, AssetKind::Text, DropAction::None},
+        {AssetKind::Script, AssetKind::Material, DropAction::None},
+        {AssetKind::Script, AssetKind::Script, DropAction::AssignAssetReference},
+        {AssetKind::Script, AssetKind::Unknown, DropAction::None},
     }};
 
-    REQUIRE(TABLE.size() == 32);
+    REQUIRE(TABLE.size() == 45);
     std::size_t accepted = 0;
     for (const Cell& cell : TABLE) {
         CAPTURE(static_cast<int>(cell.payload));
@@ -618,9 +633,9 @@ TEST_CASE("AR1: an AssetField accepts a draggable kind iff the field names it, o
         CHECK((got == cell.expected));
         accepted += (got == DropAction::AssignAssetReference) ? 1U : 0U;
     }
-    // Eight acceptances: four unconstrained fields plus four matching ones. A row that silently
-    // stopped constraining would push this to 28.
-    CHECK(accepted == 8);
+    // Ten acceptances: five unconstrained fields plus five matching ones. A row that silently
+    // stopped constraining would push this to 25, every draggable payload on every field.
+    CHECK(accepted == 10);
 }
 
 TEST_CASE("AR2: a NON-draggable payload is refused on an asset field, even by a field naming it") {
@@ -701,7 +716,7 @@ TEST_CASE("AR5: the vocabulary IS the draggable set -- the derivation, in both d
             ++resolvable;
         }
     }
-    CHECK(resolvable == 4);
+    CHECK(resolvable == 5);
 }
 
 TEST_CASE("AR6: the fifth surface and the fifth action have their own labels") {
@@ -734,7 +749,7 @@ TEST_CASE("AR7: the PICKER's accept predicate is this matrix, stated at the DRAG
     }
     // ANTI-VACUITY: a predicate that always answered false would satisfy none of these.
     CHECK(slotAccepts == 1);
-    CHECK(fieldAccepts == 4);
+    CHECK(fieldAccepts == 5);
     CHECK(audioAccepts == 1);
 }
 
@@ -935,4 +950,39 @@ TEST_CASE("asset drag: the hardcoded isDirectory=false is GONE from the drag sou
     // And the block comment that DOES remain is the search-results one, whose `false` is correct:
     // searchAssets never matches a folder.
     CHECK(countOccurrences(body, "hit.relativePath.c_str(), /*isDirectory=*/false") == 1U);
+}
+
+TEST_CASE("AR8: the token script resolves through the derivation, and nothing near it does") {
+    using engine::editor::assetReferenceKindFromToken;
+    for (const std::string_view token : {"script", "Script", "SCRIPT"}) {
+        CAPTURE(token);
+        REQUIRE(assetReferenceKindFromToken(token).has_value());
+        CHECK((*assetReferenceKindFromToken(token) == AssetKind::Script));
+    }
+    for (const std::string_view token : {"scripts", "ts", "typescript", "script "}) {
+        CAPTURE(token);
+        CHECK_FALSE(assetReferenceKindFromToken(token).has_value());
+    }
+}
+
+TEST_CASE("asset_drag: a Script is refused on the four scene surfaces and accepted on an asset field (DR28)") {
+    for (const DropSurface surface :
+         {DropSurface::HierarchyRow, DropSurface::HierarchyVoid, DropSurface::Viewport, DropSurface::MaterialSlot}) {
+        CAPTURE(dropSurfaceLabel(surface));
+        for (const bool flag : {false, true}) {
+            CHECK((classifyAssetDrop(AssetKind::Script, surface, flag, std::nullopt) == DropAction::None));
+        }
+    }
+    CHECK((classifyAssetDrop(AssetKind::Script, DropSurface::AssetField, false, std::nullopt) ==
+           DropAction::AssignAssetReference));
+    CHECK((classifyAssetDrop(AssetKind::Script, DropSurface::AssetField, false, AssetKind::Script) ==
+           DropAction::AssignAssetReference));
+    for (const AssetKind other : ALL_KINDS) {
+        if (other == AssetKind::Script) {
+            continue;
+        }
+        CAPTURE(static_cast<int>(other));
+        CHECK((classifyAssetDrop(AssetKind::Script, DropSurface::AssetField, false, other) == DropAction::None));
+    }
+    CHECK(assetKindIsDraggable(AssetKind::Script));
 }

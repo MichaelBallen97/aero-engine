@@ -10,6 +10,7 @@
 #include <aero/core/guid.hpp>              // task 3.1.5: formatGuid, GuidGenerator
 #include <aero/core/log.hpp>               // task E.3.1, FD10: setLogCallback -- the seam's rejection records
 #include <aero/editor/asset_database.hpp>  // task 3.1.5: the Guid row resolves against a real scan
+#include <aero/editor/asset_drag.hpp>      // task 4.4.1 -- assetReferenceKindFromToken (IR23)
 #include <aero/editor/asset_view.hpp>      // task E.4.5 -- assetKindLabel, AssetKind (IR10)
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/inspector_model.hpp>
@@ -21,6 +22,7 @@
 #include <aero/scene/internal/world_access.hpp>  // registerComponent<T> -- the D18 proof fixture's seam
 #include <aero/scene/light.hpp>                  // task E.5.2 (IR19)
 #include <aero/scene/mesh_renderer.hpp>          // task E.5.2 (IR19, IR20, IR22)
+#include <aero/scene/script_component.hpp>       // task 4.4.1 (IR23)
 #include <aero/scene/transform.hpp>
 
 #include "inspector_probe.hpp"
@@ -137,7 +139,7 @@ TEST_CASE("inspector: model lists present components in registration order, fiel
     aero_reflect_register_all_aero_editor_inspector_test();
     const ComponentTypeId probeId = registerProbe(world);
     REQUIRE(probeId.valid());
-    CHECK(world.componentTypeCount() == 11);  // 10 built-ins (E.2.2) + InspectorProbe
+    CHECK(world.componentTypeCount() == 12);  // 11 built-ins (4.4.1) + InspectorProbe
 
     const Entity e = world.create();
     world.add<engine::Transform>(e, engine::Transform{});
@@ -557,7 +559,7 @@ TEST_CASE("inspector: AC-12 drift pin -- every registered built-in component has
     World world;
     const Entity e = world.create();
     const std::size_t count = world.componentTypeCount();
-    REQUIRE(count == 10);  // the 10 built-ins (E.2.2) -- no InspectorProbe registered on THIS World
+    REQUIRE(count == 11);  // the 11 built-ins (4.4.1) -- no InspectorProbe registered on THIS World
     for (std::size_t i = 0; i < count; ++i) {
         const ComponentTypeId id = world.componentTypeAt(i);
         world.addRaw(id, e, nullptr);
@@ -1762,7 +1764,7 @@ TEST_CASE("inspector: every reflected field of every built-in resolves a default
 
     World world;
     const std::size_t count = world.componentTypeCount();
-    REQUIRE(count == 10);  // the 10 built-ins (E.2.2) -- the AC-12 case's own shape
+    REQUIRE(count == 11);  // the 11 built-ins (4.4.1) -- the AC-12 case's own shape
 
     const Entity e = world.create();
     for (std::size_t i = 0; i < count; ++i) {
@@ -2547,7 +2549,7 @@ TEST_CASE(
     engine::editor::registerEditorReflection();
     World world;
     const std::size_t count = world.componentTypeCount();
-    REQUIRE(count == 10);  // the ten built-ins -- FD2's own shape
+    REQUIRE(count == 11);  // the eleven built-ins -- FD2's own shape
 
     const Entity e = world.create();
     for (std::size_t i = 0; i < count; ++i) {
@@ -2556,7 +2558,7 @@ TEST_CASE(
 
     InspectorModel model;
     buildInspectorModel(world, e, model);
-    REQUIRE(model.components.size() == 10);
+    REQUIRE(model.components.size() == 11);
 
     std::size_t walked = 0;
     std::vector<std::string> named;
@@ -2598,4 +2600,31 @@ TEST_CASE("inspector: a labelled field still clamps through the one write seam (
     REQUIRE(world.get<engine::MeshRenderer>(e)->primitive == 0U);
     CHECK(writeComponentField(world, e, id, "primitive", FieldValue{std::uint64_t{3}}));
     CHECK(world.get<engine::MeshRenderer>(e)->primitive == 2U);
+}
+
+TEST_CASE("inspector: ScriptComponent is one Guid row that names the script kind (task 4.4.1, IR23)") {
+    engine::editor::registerEditorReflection();
+    World world;
+    const Entity e = world.create();
+    REQUIRE(world.add<engine::ScriptComponent>(e) != nullptr);
+
+    InspectorModel model;
+    buildInspectorModel(world, e, model);
+    REQUIRE(model.components.size() == 1);
+    const engine::editor::ComponentEntry& entry = model.components.front();
+    CHECK(entry.name == "engine::ScriptComponent");
+    REQUIRE(entry.fields.size() == 1);
+
+    const engine::editor::FieldEntry& field = entry.fields.front();
+    CHECK(field.name == "script");
+    CHECK(field.kind == FieldKind::Guid);
+    CHECK_FALSE(field.hasRange);
+    CHECK_FALSE(field.color);
+    // The model carries the token as written; a misspelt one ("scripts") would leave the row unconstrained, so
+    // the vocabulary one layer up must resolve it to Script.
+    CHECK(field.assetKindToken == "script");
+    const std::optional<engine::editor::AssetKind> kind =
+        engine::editor::assetReferenceKindFromToken(field.assetKindToken);
+    REQUIRE(kind.has_value());
+    CHECK(*kind == engine::editor::AssetKind::Script);
 }

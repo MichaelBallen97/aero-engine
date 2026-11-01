@@ -104,11 +104,12 @@ constexpr AssetPickerRules TEXTURE_SLOT{DropSurface::MaterialSlot, std::nullopt}
 
 TEST_CASE("MP1: the filter options ARE the accepted kinds, in enum order") {
     CHECK(assetPickerFilterOptions(TEXTURE_SLOT) == std::vector<AssetKind>{AssetKind::Texture});
-    // ASSET_KIND_FILTER_OPTIONS' order is {Folder, Texture, Model, Audio, Text, Material, Unknown},
-    // so the draggable subset comes out Texture, Model, Audio, Material -- never alphabetical, never
-    // a list of the model's own.
-    CHECK(assetPickerFilterOptions(UNCONSTRAINED_FIELD) ==
-          std::vector<AssetKind>{AssetKind::Texture, AssetKind::Model, AssetKind::Audio, AssetKind::Material});
+    // ASSET_KIND_FILTER_OPTIONS' order is {Folder, Texture, Model, Audio, Text, Material, Script, Unknown},
+    // so the draggable subset comes out Texture, Model, Audio, Material, Script -- never alphabetical,
+    // never a list of the model's own.
+    CHECK(assetPickerFilterOptions(UNCONSTRAINED_FIELD) == std::vector<AssetKind>{AssetKind::Texture, AssetKind::Model,
+                                                                                  AssetKind::Audio, AssetKind::Material,
+                                                                                  AssetKind::Script});
     CHECK(assetPickerFilterOptions(AssetPickerRules{DropSurface::AssetField, AssetKind::Audio}) ==
           std::vector<AssetKind>{AssetKind::Audio});
     CHECK(assetPickerFilterOptions(AssetPickerRules{DropSurface::AssetField, AssetKind::Model}) ==
@@ -418,7 +419,7 @@ TEST_CASE("MP14: assetPickerAccepts IS classifyAssetDrop -- the composition, not
         }
         return rules;
     }();
-    REQUIRE(everyRules.size() == 16);
+    REQUIRE(everyRules.size() == 18);
 
     std::size_t accepted = 0;
     for (const AssetPickerRules& rules : everyRules) {
@@ -549,4 +550,25 @@ TEST_CASE("MP18: the layout is at least as tall as its parts, and always finite"
         CHECK(layout.popupSize.y > 0.0F);
         CHECK(layout.gridHeight > 0.0F);
     }
+}
+
+TEST_CASE("MP19: a Script field offers the .ts files only, headed Script") {
+    const AssetPickerRules scriptField{DropSurface::AssetField, AssetKind::Script};
+    CHECK(assetPickerFilterOptions(scriptField) == std::vector<AssetKind>{AssetKind::Script});
+    CHECK(assetPickerHeading(scriptField) == "Script");
+
+    GuidGenerator generator{0x441441441441441ULL};  // fixed seed -- NO entropy source anywhere
+    std::vector<AssetRecord> records;
+    for (const char* path : {"main.js", "mover.d.ts", "mover.ts", "wood.png"}) {
+        AssetRecord record;
+        record.relativePath = path;
+        record.state = engine::editor::AssetMetaState::Ok;
+        record.guid = generator.next();
+        record.contentHash = engine::ContentHash{.hi = 0x1122334455667788ULL, .lo = 0x99AABBCCDDEEFF00ULL};
+        record.change = engine::editor::ImportChange::UpToDate;
+        records.push_back(record);
+    }
+    AssetPickerCandidates candidates;
+    buildAssetPickerCandidates(records, scriptField, AssetFilter{}, 100, candidates);
+    CHECK(pathsOf(candidates, records) == std::vector<std::string>{"mover.ts"});
 }

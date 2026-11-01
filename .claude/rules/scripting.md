@@ -94,7 +94,10 @@ where the heap refuses depends on block sizes and on what ran first.
 `engine/script/src/script_api*.cpp`. Generated code is outside lint, so it never holds a backend call, and a new field
 kind is a new descriptor, not a new emitter branch. `aero_script` links `aero::scene` PUBLIC (its header names
 `Entity`); the quickjs token ban and the public-header scan still hold. With `AERO_REFLECT_TOOLS=OFF` the table is
-empty and the namespace holds `Vec3`, `Quat` and `Entity`: a test that names a built-in class checks the table first.
+empty and the namespace holds `Vec3`, `Quat`, `Entity` and `Script`: a test that names a built-in class checks the table
+first. `engine.Script` (4.4.1) is the base class of a script's class: a frozen native constructor made through
+`newNative`, with no class id, whose instance is built from `new.target`'s own prototype. The class rule exists once,
+`checkClass` in `script_api.cpp`, and the base and `takeScriptClass` both use it; `Script` is a reserved component name.
 
 **COMPONENT OBJECTS ARE LIVE AND RE-RESOLVE THEIR ENTITY ON EVERY ACCESS (4.2.1).** No C++ pointer is cached across a
 call. `Vec3` / `Quat` fields are live views (`t.position.x += dt` writes through); every field read makes a new view,
@@ -104,8 +107,9 @@ the probe), `add` on a present component resets it to the defaults like `World::
 entity throws the value's error first. Every `bindWorld` invalidates script-held entities, which 4.4.1 and 4.7.2 must
 account for.
 
-**THE `engine` NAMESPACE IS COUNTED AGAINST THE BUDGET (4.2.1).** An empty VM costs 164,969 B in Debug and 152,585 B
-in Release with the namespace bound (was 139,916 / 129,340 at step 4), and a fresh VM binds 773 atoms (652 empty). ML68
+**THE `engine` NAMESPACE IS COUNTED AGAINST THE BUDGET (4.2.1).** An empty VM costs 166,821 B in Debug and 154,357 B
+in Release with the namespace bound (eleven built-ins and `engine.Script`; 135,274 B Debug and 124,810 B Release with
+an empty table), and a fresh VM binds 778 atoms (653 empty). ML68
 derives its window from a scan, so it follows the atom count; ML76's `ATOM_PRELUDE` (272 names) is typed in and was
 re-measured at three steps, so a task that adds script-visible names re-measures it. BN50 sweeps 512 heap limits for the one that
 refuses the vector's opaque block (87 of 512 in Debug, 58 in Release on macOS), asserts only that at least two exist,
@@ -211,6 +215,29 @@ needed it and before that error's record: `script: <map path>: source map not us
 JavaScript`. The frame grammar anchors on the last ` (res://` and matches only names the VM gave a generation that has
 a map, because a split from the right breaks on a file named like `a (b).js`; one rewrite reads at most 64 lines.
 
+**AN ATTACHED INSTANCE HOLDS ITS ENTITY AS AN OWN, READ-ONLY, NON-ENUMERABLE, CONFIGURABLE `entity` (4.4.1).** The base
+class `engine.Script` defines it from the entity the VM holds pending around each engine-driven construction; a class
+that does not extend the base gets it after its constructor returns and before `onInit`. It is defined after
+construction and before a reload's carry, under the binding the instance was attached with, so 4.3.3's carry neither
+moves nor counts it and an instance that cannot hold it (frozen, sealed, a non-configurable own `entity`) is refused
+`NotAClass`, a reload refused whole. A `bindWorld` made after the attach turns it stale like any entity object.
+
+**ONE HOOK IS ONE CALL, AND AN INTERRUPTED CALL IS FOLLOWED BY ONE EMPTY EVALUATION (4.4.1).** `Vm::callHook` reads the
+hook from the instance inside its own call and runs it under its own time budget with its own status, so a runaway
+hook ends one call, not the frame. After any call that ended `Interrupted` the system makes one empty evaluation named
+with the script's path and ignores its status, so R34's reaction job answers for the script it came from instead of
+faulting whichever instance runs next (LC17 pins the shape). A budget that fires suspends the whole script in that
+system: one WARN, no hook of it runs again, `onDestroy` included, until `reloadScript` returns `Ok`.
+
+**`ScriptSystem` USES THE PUBLIC `Vm` API ONLY, AND A BIND OR A `loadScript` MADE AROUND IT CLEARS NOTHING (4.4.1).** The
+system is its VM's only binder while it lives (one system per Vm). A `bindWorld` made by anyone else turns every
+attached `entity` stale and each hook that touches one faults its instance after one ERROR (LC26); a `Vm::loadScript`
+made around it moves the instances and clears none of the failures the system remembers. Each update takes its
+snapshot of the World's ScriptComponents before any script runs, so a hook's World changes land at the next update
+(LC28-LC30); every hook still runs only while its entity is alive and still names its script. BN57 holds the heap and
+live-allocation figures flat after every update (Q7), so a per-update retention is a finding, never a flake; no case
+asserts a duration (4.1.1's trap).
+
 ## What Phase 4's next tasks inherit
 
 **Phase 4 is open; Epic 4.1 is closed (4.1.1, 4.1.2) and 4.2.1, quickjs binding emission, is merged (`docs/tasks/phase-4.md`).**
@@ -235,3 +262,9 @@ project root at `res://` gives `res://assets/...`, a `Library/Scripts` mount the
 between a publish's map write and its JavaScript write reads the next build's map with the previous JavaScript, so
 4.7.4 reloads on the provenance record, which 4.3.1 writes last. Its page hovers the Console's tooltip. R35 (quickjs's
 recorded positions) and R36 (nothing of a generation is freed before teardown) are in `docs/08`.
+
+**What 4.4.1 leaves for later tasks.** 4.7.4 calls `update`, `stop` and `reloadScript` and supplies the resolver (a
+script Guid to its `res://` path) and the VFS mount; nothing in the editor runs a script until then. 4.4.2 adds the
+entity API a hook calls beyond `get`, `has`, `add` and `remove`. A script that recurses past about 50 levels fails in
+Debug only (D8: Windows Debug's C stack is the lowest). The merge's record enters D8, the line-0 frame of a throwing
+field initializer beside R35, and D9, which closes the `bindWorld` handoff, in `docs/08-risks.md`.

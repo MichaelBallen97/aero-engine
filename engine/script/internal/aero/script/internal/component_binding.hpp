@@ -80,8 +80,8 @@ struct ComponentBinding {
 class ComponentBindingTable {
 public:
     // False, with one ERROR naming the script name and the rule and nothing appended, when the entry breaks a rule:
-    // a script name that is empty or not an identifier ([A-Za-z_$][A-Za-z0-9_$]*), or that is Vec3, Quat or Entity
-    // (the classes the namespace already holds); a name or a type already bound; an invalid type; the 128th
+    // a script name that is empty or not an identifier ([A-Za-z_$][A-Za-z0-9_$]*), or that is Vec3, Quat, Entity or
+    // Script (the classes the namespace already holds); a name or a type already bound; an invalid type; the 128th
     // component; more than MAX_BOUND_FIELDS fields; a field name that is empty, repeated or `constructor`; a field
     // with no address.
     bool add(ComponentBinding binding);
@@ -128,7 +128,7 @@ template <typename C, typename... Fields>
     return ComponentBinding{scriptName, componentTypeId<C>(), std::vector<FieldBinding>{fields.binding...}};
 }
 
-// The generated ten built-ins, or an empty table when reflect-gen is not built.
+// The generated built-ins, or an empty table when reflect-gen is not built.
 [[nodiscard]] const ComponentBindingTable& builtinComponentBindings();
 
 struct VmAccess {

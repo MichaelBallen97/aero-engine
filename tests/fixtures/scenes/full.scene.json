@@ -242,6 +242,9 @@
         },
         "engine::AudioListener": {
           "volume": 0.75
+        },
+        "engine::ScriptComponent": {
+          "script": "44100000000000000000000000000001"
         }
       }
     }

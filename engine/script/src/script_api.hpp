@@ -2,7 +2,8 @@
 // Aero Engine -- the script API's PRIVATE state and shared helpers (task 4.2.1). It includes <quickjs.h>, which is
 // why it lives under src/: the side of the boundary .github/scripts/check-script-boundary.sh permits.
 //
-// The API is `globalThis.engine`: one class per bound component (named by its descriptor), Vec3, Quat and Entity.
+// The API is `globalThis.engine`: one class per bound component (named by its descriptor), Vec3, Quat, Entity and
+// Script.
 // Every host function that implements it keeps these nine rules, in this order. Each answers a measurement or a rule
 // the tree already had, and a new host function inherits all of them.
 //
@@ -37,6 +38,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <new>
+#include <optional>
 #include <quickjs.h>
 #include <string>
 #include <string_view>
@@ -75,7 +77,23 @@ struct ScriptApi {
     JSClassID quatClass = 0;
     std::vector<JSClassID> componentClasses;     // parallel to table->components()
     std::vector<JSValue> componentConstructors;  // HELD, parallel: entity.get(C)'s identity test
+    JSValue scriptBase = JS_UNDEFINED;           // HELD: engine.Script, for the direct-new refusal; released by
+                                                 // releaseScriptApi before the context
+    std::optional<EntityRef> pendingEntity;      // set by the VM around ONE engine-driven construction; taken by the
+                                                 // first base construction inside it (C4)
 };
+
+enum class ClassCheck : std::uint8_t {
+    IsClass,
+    NotAClass,
+    Failed,  // an exception is pending: only a refused allocation can cause one
+};
+
+// The class rule, once: a non-Proxy constructor whose own `prototype` is a non-writable data property. An ordinary
+// function's `prototype` is writable, a bound function has none, and a class defines it read-only. A Proxy is refused
+// before any read, because a descriptor read would run its trap; JS_GetOwnProperty runs no getter. Runs no script
+// code. `prototype`, when given, receives the prototype value HELD by the caller (IsClass only).
+[[nodiscard]] ClassCheck checkClass(JSContext* ctx, JSValueConst value, JSValue* prototype = nullptr);
 
 // Builds `globalThis.engine` over api.table. False: an allocation failed (the heap limit only) and an exception is
 // pending; whatever was built is released by releaseScriptApi and the context.

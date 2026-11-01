@@ -198,3 +198,13 @@ static_assert(std::is_aggregate_v<engine::SpotLight>);
 // 12 (Vec3 colour) + 4 * 4 (four floats) = 28; every member 4-aligned, no padding.
 static_assert(sizeof(engine::SpotLight) == 28);
 static_assert(alignof(engine::SpotLight) == 4);
+
+// ---- task 4.4.1 ----------------------------------------------------------------------------------
+// The eleventh built-in, reached THROUGH <aero/scene/scene.hpp> on a link line that is still exactly
+// `aero::scene`: nothing about a VM, a class or a hook can have leaked into the component.
+static_assert(std::is_trivially_copyable_v<engine::ScriptComponent>);
+static_assert(std::is_standard_layout_v<engine::ScriptComponent>);
+static_assert(std::is_aggregate_v<engine::ScriptComponent>);
+// One Guid (two uint64): 16 bytes, 8-aligned, no padding.
+static_assert(sizeof(engine::ScriptComponent) == 16);
+static_assert(alignof(engine::ScriptComponent) == 8);
