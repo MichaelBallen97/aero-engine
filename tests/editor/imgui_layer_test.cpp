@@ -30296,3 +30296,47 @@ TEST_CASE("editor_app: the transpiler hook sits in the scan branch and logs at o
     CHECK(takeAt > drainDefAt);
     CHECK(takeAt < drainEndAt);
 }
+
+TEST_CASE("editor: a multi-line record draws one row and keeps its frames for the tooltip (task 4.3.4, I367)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "console detail i367", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    REQUIRE(console != nullptr);
+    e63Front(*app, "Console", "Assets");
+    // NO reduced arm, as I313: the Console needs neither shaders nor reflection.
+    AERO_LOG_ERROR("e434probe: first line\n    at f (res://assets/a.ts:1:2)\n    at g (res://assets/b.ts:3:4)");
+    const std::uint64_t before = console->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::ConsoleDrawRecord& r = console->drawRecord();
+    REQUIRE(r.framesRecorded > before);  // ANTI-VACUITY: these reads are this test's frames
+    const engine::editor::LogHistory& history = console->history();
+    REQUIRE(history.visibleCount() > 0U);
+    const engine::editor::LogEntry& newest = history.visibleAt(history.visibleCount() - 1U);
+    REQUIRE(newest.message == "e434probe: first line");  // nothing logged after it: the LAST row drawn is this one
+    CHECK(newest.detail == "    at f (res://assets/a.ts:1:2)\n    at g (res://assets/b.ts:3:4)");
+    CHECK(r.lastChannelDrawn == "e434probe");
+    CHECK(r.lastMessageDrawn == "first line");  // one line: the clipper's uniform row height holds
+
+    // SOURCE: the tooltip text comes from the tested pure function and goes through ImGui's "%s" path.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
+    REQUIRE(code.size() > 100U);
+    CHECK(countLinesContaining(code, "buildLogTooltip(entry)") == 1U);
+    CHECK(countLinesContaining(code, "SetTooltip(\"%s\", tooltip.c_str())") == 1U);
+    CHECK(countLinesContaining(code, "SetTooltip(\"%s:%u\"") == 0U);
+    CHECK(countLinesContaining(code, "SetTooltip(") == 2U);  // this one and the level combo's
+    CHECK(countLinesContaining(code, "entry.message") == 1U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

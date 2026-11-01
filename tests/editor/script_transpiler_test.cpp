@@ -23,10 +23,12 @@
 
 #include <aero/core/content_hash.hpp>
 #include <aero/core/guid.hpp>
+#include <aero/core/log.hpp>
 #include <aero/core/vfs.hpp>
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/blender_tool.hpp>
+#include <aero/editor/console_model.hpp>
 #include <aero/editor/esbuild_tool.hpp>
 #include <aero/editor/project.hpp>
 #include <aero/editor/text_file.hpp>
@@ -1747,4 +1749,144 @@ TEST_CASE("script_transpiler: an input the scan left unhashed is recorded withou
             CHECK_FALSE(input.hash.has_value());
         }
     }
+}
+
+// ST43-ST44 (task 4.3.4, step 4): a real esbuild bundle throws in the engine's VM, and the throw reaches a Console
+// entry naming the .ts file, under both of the mounts a published script can be loaded from.
+
+namespace {
+
+// The two sources of ST43 / ST44. util.ts opens with a comment, so its throw is on line 3; esbuild re-indents by two
+// spaces per level, so the generated columns equal the .ts ones (quickjs records the throw at `+ reason`'s operand
+// and a call at its callee).
+constexpr std::string_view THROWING_UTIL_TS =
+    "// util.ts\n"
+    "export function fail(reason: string): never {\n"
+    "  throw new Error(\"util failed: \" + reason);\n"
+    "}\n";
+constexpr std::string_view THROWING_PLAYER_TS =
+    "import { fail } from \"./util\";\n"
+    "\n"
+    "export default class Player {\n"
+    "  constructor() {\n"
+    "    fail(\"x\");\n"
+    "  }\n"
+    "}\n";
+
+// Logging at Trace with no console output, and the Console's sink installed over it. `session` is declared first, so
+// shutdownLogging() runs after the scope detaches.
+struct ConsoleCapture {
+    struct Session {
+        Session() { engine::initLogging(engine::LogConfig{.level = engine::LogLevel::Trace, .console = false}); }
+        ~Session() { engine::shutdownLogging(); }
+        Session(const Session&) = delete;
+        Session& operator=(const Session&) = delete;
+        Session(Session&&) = delete;
+        Session& operator=(Session&&) = delete;
+    };
+
+    Session session;
+    ed::LogSinkScope scope;
+};
+
+// A VM whose VFS holds one DirectoryBackend at `root`.
+struct MountedVm {
+    engine::VirtualFileSystem files;
+    sc::Vm vm;
+
+    explicit MountedVm(const std::string& root) {
+        files.mount(std::make_unique<engine::DirectoryBackend>(root));
+        sc::VmCreateResult created = sc::Vm::create(sc::VmConfig{}, files);
+        REQUIRE(created.status == sc::VmCreateStatus::Ok);
+        vm = std::move(created.vm);
+    }
+    MountedVm(const MountedVm&) = delete;
+    MountedVm& operator=(const MountedVm&) = delete;
+    MountedVm(MountedVm&&) = delete;
+    MountedVm& operator=(MountedVm&&) = delete;
+    ~MountedVm() = default;
+};
+
+struct ThrowOutcome {
+    sc::ScriptLoadResult load;
+    sc::ScriptInstanceResult instance;
+    ed::LogHistory history;
+};
+
+// Loads `modulePath`, creates one instance (the Player constructor throws) and moves every record the VM logged into
+// a Console history.
+[[nodiscard]] ThrowOutcome loadAndThrow(ConsoleCapture& capture, MountedVm& host, const std::string& path) {
+    ThrowOutcome outcome;
+    outcome.load = host.vm.loadScript(path);
+    if (outcome.load.status == sc::ScriptStatus::Ok) {
+        outcome.instance = host.vm.createInstance(path);
+    }
+    std::vector<ed::LogEntry> entries;
+    capture.scope.sink()->take(entries);
+    outcome.history.appendAll(entries);
+    return outcome;
+}
+
+// The one Error entry of `history`, after checking it holds exactly one and no Warn.
+[[nodiscard]] ed::LogEntry onlyErrorEntry(const ed::LogHistory& history) {
+    CHECK(history.levelCount(engine::LogLevel::Error) == 1U);
+    CHECK(history.levelCount(engine::LogLevel::Warn) == 0U);
+    for (std::size_t at = 0; at < history.visibleCount(); ++at) {
+        if (history.visibleAt(at).level == engine::LogLevel::Error) {
+            return history.visibleAt(at);
+        }
+    }
+    return {};
+}
+
+}  // namespace
+
+TEST_CASE("script_transpiler: a transpiled script's throw reaches a Console entry naming its .ts file (ST43)") {
+    ConsoleCapture capture;
+    ScriptFixture f;
+    f.write("assets/scripts/util.ts", THROWING_UTIL_TS);
+    f.write("assets/scripts/player.ts", THROWING_PLAYER_TS);
+    f.scan();
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+
+    const Guid guid = f.guidOf("scripts/player.ts");
+    MountedVm host(f.root);
+    const ThrowOutcome outcome = loadAndThrow(capture, host, "res://" + f.artifactPath(guid, ".js"));
+
+    REQUIRE(outcome.load.status == sc::ScriptStatus::Ok);
+    REQUIRE(outcome.instance.status == sc::ScriptStatus::Exception);
+    const std::string expectedStack =
+        "    at fail (res://assets/scripts/util.ts:3:37)\n    at Player (res://assets/scripts/player.ts:5:5)";
+    CHECK(outcome.instance.error.stack == expectedStack);
+
+    const ed::LogEntry entry = onlyErrorEntry(outcome.history);
+    CHECK(entry.message == "script: res://assets/scripts/util.ts:3:37: uncaught Error: util failed: x");
+    CHECK(entry.detail == outcome.instance.error.stack);
+    CHECK(entry.sourceFile == "vm_errors.cpp");
+    CHECK(ed::buildLogTooltip(entry) == entry.detail + "\n" + entry.sourceFile + ":" + std::to_string(entry.line));
+    pumpUntilIdle(transpiler, f.db);
+}
+
+TEST_CASE("script_transpiler: a script loaded from a Library/Scripts mount names the map's own spelling (ST44)") {
+    ConsoleCapture capture;
+    ScriptFixture f;
+    f.write("assets/scripts/util.ts", THROWING_UTIL_TS);
+    f.write("assets/scripts/player.ts", THROWING_PLAYER_TS);
+    f.scan();
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+
+    const Guid guid = f.guidOf("scripts/player.ts");
+    MountedVm host(f.root + "/Library/Scripts");
+    const ThrowOutcome outcome = loadAndThrow(capture, host, modulePath(guid));
+
+    REQUIRE(outcome.load.status == sc::ScriptStatus::Ok);
+    REQUIRE(outcome.instance.status == sc::ScriptStatus::Exception);
+    CHECK(outcome.instance.error.stack ==
+          "    at fail (../../assets/scripts/util.ts:3:37)\n    at Player (../../assets/scripts/player.ts:5:5)");
+
+    const ed::LogEntry entry = onlyErrorEntry(outcome.history);
+    CHECK(entry.message == "script: ../../assets/scripts/util.ts:3:37: uncaught Error: util failed: x");
+    pumpUntilIdle(transpiler, f.db);
 }

@@ -359,7 +359,7 @@ void Vm::Impl::noteInterrupt(EvalResult& result) {
     }
     const ScriptError error{"InternalError", "interrupted", {}};
     if (!interruptRecorded) {
-        logFailure(EvalStatus::Interrupted, error, /*isErrorObject=*/true, /*namesCause=*/false);
+        logFailure(EvalStatus::Interrupted, error, /*isErrorObject=*/true, /*namesCause=*/false, callFileName);
     }
     adopt(result, EvalResult{EvalStatus::Interrupted, error, {}});
 }
@@ -471,8 +471,8 @@ void Vm::Impl::reportUnhandledRejections() {
             continue;
         }
         const bool isErrorObject = JS_IsError(entry.reason);
-        const ScriptError reason = describe(entry.reason, isErrorObject);
-        logUnhandledRejection(reason, isErrorObject);
+        const DescribedError described = describe(entry.reason, isErrorObject);
+        logUnhandledRejection(described.error, isErrorObject, described.site);
         ++unhandledRejections;
         JS_FreeValue(ctx, entry.promise);
         JS_FreeValue(ctx, entry.reason);

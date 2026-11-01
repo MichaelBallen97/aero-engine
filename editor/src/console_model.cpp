@@ -137,6 +137,32 @@ std::string sanitizeLogMessage(std::string_view message) {
     return out;
 }
 
+std::string sanitizeLogDetail(std::string_view rest) {
+    std::size_t n = std::min(rest.size(), MAX_LOG_DETAIL_BYTES);
+    const bool cut = n < rest.size();
+    if (cut) {
+        // sanitizeLogMessage's rule: back off at most 3 continuation bytes so a multi-byte sequence
+        // straddling the cap is dropped WHOLE.
+        for (int attempts = 0; n > 0 && attempts < 3; ++attempts) {
+            if ((static_cast<unsigned char>(rest[n]) & 0xC0U) != 0x80U) {
+                break;
+            }
+            --n;
+        }
+    }
+    std::string out;
+    out.reserve(n + (cut ? TRUNCATION_MARKER.size() : 0U));
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto byte = static_cast<unsigned char>(rest[i]);
+        const bool control = (byte < 0x20U || byte == 0x7FU) && byte != static_cast<unsigned char>('\n');
+        out.push_back(control ? ' ' : rest[i]);
+    }
+    if (cut) {
+        out.append(TRUNCATION_MARKER);
+    }
+    return out;
+}
+
 std::string_view logSourceBasename(const char* file) noexcept {
     if (file == nullptr) {
         return {};  // log.cpp:144 proves a null `file` is a real, already-handled caller shape
@@ -178,7 +204,22 @@ bool matchesFilter(const LogEntry& entry, const LogFilter& filter) noexcept {
     if (entry.level < filter.minLevel) {
         return false;
     }
-    return containsAsciiCaseInsensitive(entry.message, filter.text);  // D12: MESSAGE only
+    // The message or its detail; never the source file (D12).
+    return containsAsciiCaseInsensitive(entry.message, filter.text) ||
+           containsAsciiCaseInsensitive(entry.detail, filter.text);
+}
+
+std::string buildLogTooltip(const LogEntry& entry) {
+    std::string out = entry.detail;
+    if (!entry.sourceFile.empty()) {
+        if (!out.empty()) {
+            out.push_back('\n');
+        }
+        out += entry.sourceFile;
+        out.push_back(':');
+        out += std::to_string(entry.line);
+    }
+    return out;
 }
 
 std::string buildClipboardText(const LogHistory& history) {
@@ -200,6 +241,10 @@ std::string buildClipboardText(const LogHistory& history) {
             out.push_back(')');
         }
         out.push_back('\n');
+        if (!entry.detail.empty()) {
+            out += entry.detail;
+            out.push_back('\n');
+        }
     }
     return out;
 }
@@ -216,7 +261,12 @@ void LogSink::push(LogLevel level, std::string_view message, const LogLocation& 
     entry.level = level;
     entry.elapsedMs = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - origin).count());
-    entry.message = sanitizeLogMessage(message);                       // D8 -- copies; F2 demands it
+    // Split BEFORE sanitising: sanitising turns '\n' into ' ', after which nothing would split.
+    const std::size_t newline = message.find('\n');
+    entry.message = sanitizeLogMessage(message.substr(0, newline));  // D8 -- copies; F2 demands it
+    if (newline != std::string_view::npos) {
+        entry.detail = sanitizeLogDetail(message.substr(newline + 1U));
+    }
     entry.sourceFile = std::string(logSourceBasename(location.file));  // D6 -- copies before the view dies
     entry.line = location.line;
 

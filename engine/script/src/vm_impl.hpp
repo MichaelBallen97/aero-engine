@@ -6,6 +6,7 @@
 #include <aero/core/slot_map.hpp>
 #include <aero/script/internal/heap_accounting.hpp>
 #include <aero/script/internal/module_graph.hpp>
+#include <aero/script/internal/source_map.hpp>
 #include <aero/script/vm.hpp>
 
 #include "script_api.hpp"
@@ -230,14 +231,22 @@ struct Vm::Impl {
     [[nodiscard]] EvalStatus classify(JSValueConst exception, Phase phase);
     [[nodiscard]] bool isOutOfMemoryError(JSValueConst exception);
     [[nodiscard]] bool isMessagelessInternalError(JSValueConst value);
-    [[nodiscard]] ScriptError describe(JSValueConst value, bool isErrorObject);
+    // What describe found: the error as the caller reads it (its stack mapped through the source maps, task 4.3.4) and
+    // the record's site: the stack's first positioned frame's original position when it mapped, else the call's file.
+    struct DescribedError {
+        ScriptError error;
+        std::string site;
+    };
+    [[nodiscard]] DescribedError describe(JSValueConst value, bool isErrorObject);
     [[nodiscard]] std::string stringify(JSValueConst value);
     [[nodiscard]] std::string readStringProperty(JSValueConst object, const char* key, bool nullishIsEmpty);
     void clearPendingException() noexcept;
     // namesCause: an OutOfMemory record also names the error the backend reported (a compile the heap limit starved).
-    void logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject, bool namesCause);
+    // site: the file or mapped position the record names (describe's), the call's file for a record with no stack.
+    void logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject, bool namesCause,
+                    std::string_view site);
     void logDrainStop();
-    void logUnhandledRejection(const ScriptError& reason, bool isErrorObject) const;
+    void logUnhandledRejection(const ScriptError& reason, bool isErrorObject, std::string_view site) const;
 
     [[nodiscard]] EvalResult trapValue(JSValueConst value, Phase phase);
 
@@ -275,6 +284,12 @@ struct Vm::Impl {
     // the read, the size again. nullopt: refused, or the deadline fired; the failure is pending.
     [[nodiscard]] AERO_SCRIPT_NOINLINE std::optional<std::string> readModuleSource(std::string_view key,
                                                                                    std::string_view importer);
+    // The map the module's last line names, read now or never (task 4.3.4): through the same VFS, kept under the name
+    // this generation is compiled under. A cooked read clears the name's slot and reads no map. A map that is missing
+    // changes nothing; one that exists and cannot be read is kept as unusable and warned about at the first error that
+    // needs it. Never a load failure. Its one caller is readModuleSource's tail, for every text: compileModule's
+    // frame, live across the nested compile at every import level, gains nothing (R33).
+    AERO_SCRIPT_NOINLINE void keepSourceMap(std::string_view key, const std::string& text);
     // Whether a module file is a cooked script: its first bytes are the container's magic, at any path.
     [[nodiscard]] AERO_SCRIPT_NOINLINE static bool isCookedScriptText(const std::string& text) noexcept;
     // The bytecode branch: a container judged, the deadline, the headroom guard, the read, the after-read checks.
@@ -364,6 +379,8 @@ struct Vm::Impl {
     // outlive the runtime.
     const VirtualFileSystem* modules = nullptr;  // borrowed; null = no module source
     internal::ModuleTable moduleTable;
+    // Each compiled generation's source map, by the name it was compiled under (task 4.3.4); plain C++ memory.
+    internal::SourceMapStore sourceMaps;
     LoadAttempt* attempt = nullptr;              // the attempt being served, or null between attempts
     std::optional<ScriptError> callLoadFailure;  // the call's own attempt's first refusal; reset by CallScope
     std::vector<ModuleWatch> moduleWatches;      // the current call's, then the carried ones (vm_modules.cpp)
