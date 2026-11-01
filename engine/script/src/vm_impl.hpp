@@ -62,6 +62,43 @@ private:
     JSValue value;
 };
 
+// An atom the wrapper owns; JS_ATOM_NULL frees as a no-op.
+class HeldAtom {
+public:
+    HeldAtom(JSContext* context, JSAtom held) noexcept : context(context), atom(held) {}
+    HeldAtom(const HeldAtom&) = delete;
+    HeldAtom& operator=(const HeldAtom&) = delete;
+    HeldAtom(HeldAtom&&) = delete;
+    HeldAtom& operator=(HeldAtom&&) = delete;
+    ~HeldAtom() { JS_FreeAtom(context, atom); }
+
+    [[nodiscard]] JSAtom get() const noexcept { return atom; }
+
+private:
+    JSContext* context;
+    JSAtom atom;
+};
+
+// The three values a property descriptor read may hand over; each is freed on every path.
+class HeldDescriptor {
+public:
+    explicit HeldDescriptor(JSContext* context) noexcept : context(context) {}
+    HeldDescriptor(const HeldDescriptor&) = delete;
+    HeldDescriptor& operator=(const HeldDescriptor&) = delete;
+    HeldDescriptor(HeldDescriptor&&) = delete;
+    HeldDescriptor& operator=(HeldDescriptor&&) = delete;
+    ~HeldDescriptor() {
+        JS_FreeValue(context, desc.value);
+        JS_FreeValue(context, desc.getter);
+        JS_FreeValue(context, desc.setter);
+    }
+
+    JSPropertyDescriptor desc{0, JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED};
+
+private:
+    JSContext* context;
+};
+
 // A C string converted from a value (JS_ToCStringLen); freed with JS_FreeCString. ok() is false when the
 // conversion threw -- the exception is then PENDING and the caller must discard it.
 class HeldCString {

@@ -94,7 +94,10 @@ where the heap refuses depends on block sizes and on what ran first.
 `engine/script/src/script_api*.cpp`. Generated code is outside lint, so it never holds a backend call, and a new field
 kind is a new descriptor, not a new emitter branch. `aero_script` links `aero::scene` PUBLIC (its header names
 `Entity`); the quickjs token ban and the public-header scan still hold. With `AERO_REFLECT_TOOLS=OFF` the table is
-empty and the namespace holds `Vec3`, `Quat` and `Entity`: a test that names a built-in class checks the table first.
+empty and the namespace holds `Vec3`, `Quat`, `Entity` and `Script`: a test that names a built-in class checks the table
+first. `engine.Script` (4.4.1) is the base class of a script's class: a frozen native constructor made through
+`newNative`, with no class id, whose instance is built from `new.target`'s own prototype. The class rule exists once,
+`checkClass` in `script_api.cpp`, and the base and `takeScriptClass` both use it; `Script` is a reserved component name.
 
 **COMPONENT OBJECTS ARE LIVE AND RE-RESOLVE THEIR ENTITY ON EVERY ACCESS (4.2.1).** No C++ pointer is cached across a
 call. `Vec3` / `Quat` fields are live views (`t.position.x += dt` writes through); every field read makes a new view,
@@ -104,8 +107,9 @@ the probe), `add` on a present component resets it to the defaults like `World::
 entity throws the value's error first. Every `bindWorld` invalidates script-held entities, which 4.4.1 and 4.7.2 must
 account for.
 
-**THE `engine` NAMESPACE IS COUNTED AGAINST THE BUDGET (4.2.1).** An empty VM costs 164,969 B in Debug and 152,585 B
-in Release with the namespace bound (was 139,916 / 129,340 at step 4), and a fresh VM binds 773 atoms (652 empty). ML68
+**THE `engine` NAMESPACE IS COUNTED AGAINST THE BUDGET (4.2.1).** An empty VM costs 166,821 B in Debug and 154,357 B
+in Release with the namespace bound (eleven built-ins and `engine.Script`; 135,274 B Debug and 124,810 B Release with
+an empty table), and a fresh VM binds 778 atoms (653 empty). ML68
 derives its window from a scan, so it follows the atom count; ML76's `ATOM_PRELUDE` (272 names) is typed in and was
 re-measured at three steps, so a task that adds script-visible names re-measures it. BN50 sweeps 512 heap limits for the one that
 refuses the vector's opaque block (87 of 512 in Debug, 58 in Release on macOS), asserts only that at least two exist,

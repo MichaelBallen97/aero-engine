@@ -73,7 +73,7 @@ if(AERO_REFLECT_TOOLS)
     target_compile_definitions(aero_script PRIVATE AERO_SCRIPT_COMPONENT_BINDINGS=1)
 else()
     message(STATUS "aero_script: no component bindings (AERO_REFLECT_TOOLS=OFF) -- "
-                   "engine holds Vec3, Quat and Entity only")
+                   "engine holds Vec3, Quat, Entity and Script only")
 endif()
 
 # task 4.2.2: aero_script_declarations owns <build>/engine/script/types/aero-engine.d.ts -- the TypeScript view of the

@@ -24,5 +24,10 @@ class Hack extends engine.Transform {} // expect TS2675
 declare const audio: engine.AudioSource;
 const listener: engine.AudioListener = audio; // expect TS2322
 const mustExist: engine.Transform = e.get(engine.Transform); // expect TS2322
+class WrongSig extends engine.Script { onUpdate(dt: string): void { void dt; } } // expect TS2416
+class Assign extends engine.Script { f(): void { this.entity = this.entity; } } // expect TS2540
+class NoBase { f(): void { void this.entity; } } // expect TS2339
+class Typo extends engine.Script { override onUpate(): void {} } // expect TS4117
+const direct = new engine.Script(); // expect TS2674
 const helper: Helper | undefined = undefined;
-export { pattern, helper, Hack, listener, mustExist };
+export { pattern, helper, Hack, listener, mustExist, WrongSig, Assign, NoBase, Typo, direct };

@@ -2,10 +2,11 @@
 // Aero Engine -- the JavaScript VM (task 4.1.1; ADR-007). One Vm = one quickjs-ng runtime + one context,
 // created together, used on ONE thread, torn down together. A VM offers the ECMAScript language, the backend's
 // core globals and, since task 4.2.1, one frozen global of the engine's own: `engine`, holding a class per bound
-// component plus Vec3, Quat and Entity. Nothing else is script-visible -- no file, process or timer access. Since
-// task 4.1.2 a VM given a VirtualFileSystem also loads ES modules through it (evaluateModule, and import() from
-// any code). Since task 4.3.3 a VM loads a script class (an ES module whose default export is a class) and holds its
-// instances behind handles, and a changed file re-creates every live instance from the new class.
+// component plus Vec3, Quat, Entity and Script (the base class a script's class extends). Nothing else is
+// script-visible -- no file, process or timer access. Since task 4.1.2 a VM given a VirtualFileSystem also loads ES
+// modules through it (evaluateModule, and import() from any code). Since task 4.3.3 a VM loads a script class (an ES
+// module whose default export is a class) and holds its instances behind handles, and a changed file re-creates every
+// live instance from the new class.
 //
 // The backend is an implementation detail of engine/script/src/ and never crosses this header (project
 // rule #3). .github/scripts/check-script-boundary.sh and tests/script_boundary_probe.cpp enforce that.
@@ -41,8 +42,8 @@ struct BytecodeCook;          // the cook (src/bytecode_cook.cpp): two VMs of it
 // The JavaScript heap: every byte the backend allocates, header included, is charged against it. There
 // is deliberately no "unlimited": 0 is refused rather than read as the backend's own "no limit".
 inline constexpr std::size_t DEFAULT_HEAP_LIMIT_BYTES = std::size_t{64} * 1024U * 1024U;  // 64 MiB
-// The smallest heap a VM may be given. An empty VM needs about 166 KB (153 790 B Release, 166 238 B Debug, with the
-// eleven built-in components bound; 134 667 B Debug with none -- the `engine` namespace is built in every VM). That
+// The smallest heap a VM may be given. An empty VM needs about 166 KB (154 357 B Release, 166 821 B Debug, with the
+// eleven built-in components bound; 135 274 B Debug with none -- the `engine` namespace is built in every VM). That
 // includes the three builtins the backend builds lazily on a first read, which create reads once so that no later
 // read can fail, so no create runs out of heap at or above this; below it the backend's context-creation
 // failure path is not safe to take, so such a limit is refused up front instead of being tried.

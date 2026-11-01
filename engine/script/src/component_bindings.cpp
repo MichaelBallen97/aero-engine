@@ -33,7 +33,8 @@ namespace {
     if (!isIdentifier(binding.scriptName)) {
         return "the script name must be a non-empty identifier";
     }
-    if (binding.scriptName == "Vec3" || binding.scriptName == "Quat" || binding.scriptName == "Entity") {
+    if (binding.scriptName == "Vec3" || binding.scriptName == "Quat" || binding.scriptName == "Entity" ||
+        binding.scriptName == "Script") {
         return "the script name is reserved for a class the namespace already holds";
     }
     if (!binding.type.valid()) {

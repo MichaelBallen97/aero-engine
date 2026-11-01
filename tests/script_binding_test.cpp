@@ -188,6 +188,7 @@ TEST_CASE("script: ComponentBindingTable::add refuses each invalid entry with on
     refusals.push_back({component("Vec3", fabricated(storage, 1)), "Vec3", "reserved"});
     refusals.push_back({component("Quat", fabricated(storage, 1)), "Quat", "reserved"});
     refusals.push_back({component("Entity", fabricated(storage, 1)), "Entity", "reserved"});
+    refusals.push_back({component("Script", fabricated(storage, 1)), "Script", "reserved"});
     refusals.push_back({component("Good", fabricated(storage, 1)), "Good", "name is already bound"});
     refusals.push_back({component("Other", fabricated(storage, 0)), "Other", "type is already bound"});
     refusals.push_back({component("Other", ComponentTypeId{}), "Other", "type is invalid"});
@@ -313,20 +314,21 @@ TEST_CASE("script: engine, its classes and their prototypes are frozen, and engi
         out.push(typeof engine.Vec3, Object.keys(engine).length, new engine.Vec3(1, 2, 3).x);
         return out.join();
     )js"));
-    CHECK(completion == "true,false,false,false,TypeError,TypeError,TypeError,TypeError,TypeError,function,5,1");
+    CHECK(completion == "true,false,false,false,TypeError,TypeError,TypeError,TypeError,TypeError,function,6,1");
     CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
     expectCleanShutdown(vm);
 }
 
-TEST_CASE("script: Object.keys(engine) is the table's script names, then Vec3, Quat and Entity (BN8)") {
+TEST_CASE("script: Object.keys(engine) is the table's script names, then Vec3, Quat, Entity and Script (BN8)") {
     const LogCapture log;
     {
         const auto table = probeTable();
         Vm vm = makeProbeVm(table);
-        CHECK(evalOk(vm, "Object.keys(engine).join()") == "ScriptProbe,ScriptTag,Vec3,Quat,Entity");
+        CHECK(evalOk(vm, "Object.keys(engine).join()") == "ScriptProbe,ScriptTag,Vec3,Quat,Entity,Script");
         // Nothing leaked onto the global object beside the namespace.
-        CHECK(evalOk(vm, "[typeof Vec3, typeof Quat, typeof Entity, typeof ScriptProbe, typeof ScriptTag].join()") ==
-              "undefined,undefined,undefined,undefined,undefined");
+        CHECK(evalOk(vm,
+                     "[typeof Vec3, typeof Quat, typeof Entity, typeof Script, typeof ScriptProbe, typeof "
+                     "ScriptTag].join()") == "undefined,undefined,undefined,undefined,undefined,undefined");
         expectCleanShutdown(vm);
     }
     std::string expected;
@@ -334,7 +336,7 @@ TEST_CASE("script: Object.keys(engine) is the table's script names, then Vec3, Q
          engine::script::internal::builtinComponentBindings().components()) {
         expected += std::string{binding.scriptName} + ",";
     }
-    expected += "Vec3,Quat,Entity";
+    expected += "Vec3,Quat,Entity,Script";
     Vm vm = makeBuiltinVm();
     CHECK(evalOk(vm, "Object.keys(engine).join()") == expected);
     CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
@@ -355,10 +357,10 @@ TEST_CASE("script: a VM created over a module source binds the built-in componen
     for (const ComponentBinding& binding : engine::script::internal::builtinComponentBindings().components()) {
         expected += std::string{binding.scriptName} + ",";
     }
-    expected += "Vec3,Quat,Entity";
+    expected += "Vec3,Quat,Entity,Script";
     CHECK(evalOk(vm, "Object.keys(engine).join()") == expected);
     // The table's size is not what is pinned: the ten built-ins are bound, named as a script reads them. With
-    // AERO_REFLECT_TOOLS=OFF the table is empty and the namespace holds Vec3, Quat and Entity only, which the
+    // AERO_REFLECT_TOOLS=OFF the table is empty and the namespace holds Vec3, Quat, Entity and Script only, which the
     // comparison above has already pinned.
     if (!engine::script::internal::builtinComponentBindings().components().empty()) {
         CHECK(evalOk(vm,
@@ -1490,5 +1492,69 @@ TEST_CASE("script: a call past its budget is refused at every binding call, a vi
     CHECK(std::isfinite(x));
     CHECK(x >= 1.0F);
     CHECK(completion(vm, "1 + 1") == "2");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: engine.Script is a frozen base class that refuses a direct new and a call (BN53)") {
+    const LogCapture log;
+    const auto table = probeTable();
+    Vm vm = makeProbeVm(table);
+    const std::string completion = evalOk(vm, iife(R"js(
+        const out = [];
+        out.push(typeof engine.Script, engine.Script.name, engine.Script.length);
+        out.push(Object.isFrozen(engine.Script), Object.isFrozen(engine.Script.prototype));
+        out.push(Object.getOwnPropertyNames(engine.Script.prototype).join('|'));
+        out.push(t(() => engine.Script()));
+        out.push(t(() => new engine.Script()));
+        out.push(typeof Script);
+        return out.join();
+    )js"));
+    CHECK(completion ==
+          "function,Script,0,true,true,constructor,TypeError: must be called with new,"
+          "TypeError: engine.Script is a base class: a script's class extends it,undefined");
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: engine.Script refuses a new.target that is not a class without reading it (BN54)") {
+    const LogCapture log;
+    const auto table = probeTable();
+    Vm vm = makeProbeVm(table);
+    const std::string completion = evalOk(vm, iife(R"js(
+        const out = [];
+        const refused = 'TypeError: engine.Script: new.target is not a class';
+        let reads = 0;
+        const handler = { get(target, key, receiver) { reads++; return Reflect.get(target, key, receiver); } };
+        const traps = new Proxy(class A {}, handler);
+        out.push(t(() => Reflect.construct(engine.Script, [], traps)) === refused, reads);
+        out.push(t(() => Reflect.construct(engine.Script, [], (function F() {}).bind(null))) === refused);
+        out.push(t(() => Reflect.construct(engine.Script, [], function G() {})) === refused);
+        out.push(t(() => Reflect.construct(engine.Script, [], () => 1)).includes('not a constructor'));
+        class B {}
+        const made = Reflect.construct(engine.Script, [], B);
+        out.push(Object.getPrototypeOf(made) === B.prototype);
+        return out.join();
+    )js"));
+    CHECK(completion == "true,0,true,true,true,true");
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a class extending engine.Script builds an ordinary instance with no entity of its own (BN55)") {
+    const LogCapture log;
+    const auto table = probeTable();
+    Vm vm = makeProbeVm(table);
+    const std::string completion = evalOk(vm, iife(R"js(
+        const out = [];
+        class X extends engine.Script { f = 1; }
+        const i = new X();
+        out.push(i instanceof engine.Script);
+        out.push(Object.getPrototypeOf(X.prototype) === engine.Script.prototype);
+        out.push(Object.getOwnPropertyNames(i).join('|'));
+        out.push('entity' in i);
+        return out.join();
+    )js"));
+    CHECK(completion == "true,true,f,false");
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
     expectCleanShutdown(vm);
 }

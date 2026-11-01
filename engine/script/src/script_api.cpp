@@ -87,6 +87,40 @@ JSValue entityConstructor(JSContext* ctx, JSValueConst /*newTarget*/, int /*argc
     return throwTypeError(ctx, "engine.Entity cannot be constructed by a script");
 }
 
+// `new engine.Script()` and, through `super()`, every script class's construction. The order is the contract: the
+// direct-new refusal first (the class rule alone would accept engine.Script itself), then the class rule, which
+// refuses a Proxy before any read, then the instance from new.target's own prototype, then the pending entity.
+JSValue scriptBaseConstructor(JSContext* ctx, JSValueConst newTarget, int /*argc*/, JSValueConst* /*argv*/,
+                              int /*magic*/) noexcept {
+    ScriptApi& api = scriptApiOf(ctx);
+    if (JS_IsStrictEqual(ctx, newTarget, api.scriptBase)) {
+        return throwTypeError(ctx, "engine.Script is a base class: a script's class extends it");
+    }
+    JSValue prototype = JS_UNDEFINED;
+    switch (checkClass(ctx, newTarget, &prototype)) {
+        case ClassCheck::NotAClass:
+            return throwTypeError(ctx, "engine.Script: new.target is not a class");
+        case ClassCheck::Failed:
+            return JS_EXCEPTION;
+        case ClassCheck::IsClass:
+            break;
+    }
+    const HeldValue proto{ctx, prototype};
+    HeldValue object{ctx, JS_NewObjectProto(ctx, proto.get())};
+    if (object.isException()) {
+        return JS_EXCEPTION;
+    }
+    if (api.pendingEntity.has_value()) {  // the first base construction of an engine-driven construction takes it
+        const EntityRef ref = *api.pendingEntity;
+        api.pendingEntity.reset();
+        if (JS_DefinePropertyValueStr(ctx, object.get(), "entity", newOpaqueObject(ctx, api.entityClass, ref),
+                                      JS_PROP_CONFIGURABLE) < 0) {
+            return JS_EXCEPTION;
+        }
+    }
+    return object.release();
+}
+
 struct AccessorSpec {
     std::string property;
     int magic = 0;
@@ -194,6 +228,25 @@ struct ClassSpec {
     return spec;
 }
 
+// engine.Script: a frozen plain-object prototype, a frozen constructor with no class id (a derived instance is an
+// ordinary object), defined on the namespace, and one more reference kept for the direct-new refusal.
+[[nodiscard]] bool installScriptBase(JSContext* ctx, JSValueConst ns, ScriptApi& api) {
+    const HeldValue proto{ctx, JS_NewObject(ctx)};
+    if (proto.isException()) {
+        return false;
+    }
+    const HeldValue constructor{ctx, newConstructor(ctx, "Script", &scriptBaseConstructor, 0, 0)};
+    if (constructor.isException() || JS_SetConstructor(ctx, constructor.get(), proto.get()) < 0 ||
+        JS_FreezeObject(ctx, proto.get()) < 0 || JS_FreezeObject(ctx, constructor.get()) < 0) {
+        return false;
+    }
+    if (JS_DefinePropertyValueStr(ctx, ns, "Script", JS_DupValue(ctx, constructor.get()), JS_PROP_ENUMERABLE) < 0) {
+        return false;
+    }
+    api.scriptBase = JS_DupValue(ctx, constructor.get());
+    return true;
+}
+
 }  // namespace
 
 bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
@@ -239,7 +292,7 @@ bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
         entity.methods.push_back(
             MethodSpec{std::string{ENTITY_METHODS[method]}, &entityMethod, 1, static_cast<int>(method)});
     }
-    if (!installClass(ctx, rt, ns.get(), entity, nullptr)) {
+    if (!installClass(ctx, rt, ns.get(), entity, nullptr) || !installScriptBase(ctx, ns.get(), api)) {
         return false;
     }
     // Frozen after the last class, and defined on the global object with flags 0: not writable, not enumerable, not
@@ -254,7 +307,32 @@ void releaseScriptApi(JSContext* ctx, ScriptApi& api) noexcept {
     }
     api.componentConstructors.clear();
     api.componentClasses.clear();
+    JS_FreeValue(ctx, api.scriptBase);
+    api.scriptBase = JS_UNDEFINED;
+    api.pendingEntity.reset();
     api.world = nullptr;
+}
+
+ClassCheck checkClass(JSContext* ctx, JSValueConst value, JSValue* prototype) {
+    if (!JS_IsObject(value) || JS_IsProxy(value) || !JS_IsConstructor(ctx, value)) {
+        return ClassCheck::NotAClass;
+    }
+    const HeldAtom name{ctx, JS_NewAtom(ctx, "prototype")};
+    if (name.get() == JS_ATOM_NULL) {
+        return ClassCheck::Failed;  // out of memory; nothing is pending, trap takes the sentinel
+    }
+    HeldDescriptor own{ctx};
+    const int has = JS_GetOwnProperty(ctx, &own.desc, value, name.get());
+    if (has < 0) {
+        return ClassCheck::Failed;
+    }
+    if (has == 0 || (own.desc.flags & (JS_PROP_GETSET | JS_PROP_WRITABLE)) != 0) {
+        return ClassCheck::NotAClass;
+    }
+    if (prototype != nullptr) {
+        *prototype = JS_DupValue(ctx, own.desc.value);
+    }
+    return ClassCheck::IsClass;
 }
 
 ScriptApi& scriptApiOf(JSContext* ctx) noexcept { return *static_cast<ScriptApi*>(JS_GetContextOpaque(ctx)); }

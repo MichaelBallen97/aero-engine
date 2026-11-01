@@ -34,43 +34,6 @@ namespace engine::script {
 
 namespace {
 
-// An atom the wrapper owns; JS_ATOM_NULL frees as a no-op.
-class HeldAtom {
-public:
-    HeldAtom(JSContext* context, JSAtom held) noexcept : context(context), atom(held) {}
-    HeldAtom(const HeldAtom&) = delete;
-    HeldAtom& operator=(const HeldAtom&) = delete;
-    HeldAtom(HeldAtom&&) = delete;
-    HeldAtom& operator=(HeldAtom&&) = delete;
-    ~HeldAtom() { JS_FreeAtom(context, atom); }
-
-    [[nodiscard]] JSAtom get() const noexcept { return atom; }
-
-private:
-    JSContext* context;
-    JSAtom atom;
-};
-
-// The three values a property descriptor read may hand over; each is freed on every path.
-class HeldDescriptor {
-public:
-    explicit HeldDescriptor(JSContext* context) noexcept : context(context) {}
-    HeldDescriptor(const HeldDescriptor&) = delete;
-    HeldDescriptor& operator=(const HeldDescriptor&) = delete;
-    HeldDescriptor(HeldDescriptor&&) = delete;
-    HeldDescriptor& operator=(HeldDescriptor&&) = delete;
-    ~HeldDescriptor() {
-        JS_FreeValue(context, desc.value);
-        JS_FreeValue(context, desc.getter);
-        JS_FreeValue(context, desc.setter);
-    }
-
-    JSPropertyDescriptor desc{0, JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED};
-
-private:
-    JSContext* context;
-};
-
 // The own property names of one object, freed on every path; JS_GetOwnPropertyNames leaves a null table on failure.
 class HeldPropertyEnum {
 public:
@@ -93,34 +56,6 @@ private:
     JSPropertyEnum* table = nullptr;
     std::uint32_t length = 0;
 };
-
-enum class ClassCheck : std::uint8_t {
-    IsClass,
-    NotAClass,
-    Failed,  // an exception is pending: only a refused allocation can cause one
-};
-
-// A class is a constructor whose own `prototype` is a non-writable data property. An ordinary function's `prototype`
-// is writable, a bound function has none, and a class defines it read-only (quickjs.c:17203-17210, 17292-17294).
-// JS_IsProxy comes first, because a Proxy's descriptor read would run its trap; JS_GetOwnProperty runs no getter.
-[[nodiscard]] ClassCheck checkClass(JSContext* ctx, JSValueConst value) {
-    if (!JS_IsObject(value) || JS_IsProxy(value) || !JS_IsConstructor(ctx, value)) {
-        return ClassCheck::NotAClass;
-    }
-    const HeldAtom prototype{ctx, JS_NewAtom(ctx, "prototype")};
-    if (prototype.get() == JS_ATOM_NULL) {
-        return ClassCheck::Failed;  // out of memory; nothing is pending, trap takes the sentinel
-    }
-    HeldDescriptor own{ctx};
-    const int has = JS_GetOwnProperty(ctx, &own.desc, value, prototype.get());
-    if (has < 0) {
-        return ClassCheck::Failed;
-    }
-    if (has == 0 || (own.desc.flags & (JS_PROP_GETSET | JS_PROP_WRITABLE)) != 0) {
-        return ClassCheck::NotAClass;
-    }
-    return ClassCheck::IsClass;
-}
 
 // The carry's kind of a value, by tag and then by class id: never by `typeof`, under which an array, a Vec3, a Quat,
 // an Entity and an object all read "object". No script code runs here.
