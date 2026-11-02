@@ -55,12 +55,13 @@ struct DeclaredClass {
 };
 struct Declarations {
     std::vector<DeclaredClass> classes;     // file order
+    std::vector<DeclaredClass> interfaces;  // a plain `interface Name {` that adds members to the class of that name
     std::vector<DeclaredMember> functions;  // the namespace's `function` lines, file order
     std::vector<std::string> componentMap;  // keys, file order
     std::string error;                      // non-empty: refused, "line N: <why>"
 };
 
-enum class Context : std::uint8_t { Top, Namespace, Map, TypeBody, Class };
+enum class Context : std::uint8_t { Top, Namespace, Map, TypeBody, Class, Interface };
 
 [[nodiscard]] bool startsWith(std::string_view text, std::string_view prefix) {
     return text.substr(0, prefix.size()) == prefix;
@@ -248,7 +249,14 @@ enum class Context : std::uint8_t { Top, Namespace, Map, TypeBody, Class };
                     context = Context::Map;
                     understood = true;
                 } else if (startsWith(line, "interface ") && !leadingIdent(line.substr(10)).empty()) {
+                    const std::string_view name = leadingIdent(line.substr(10));
                     if (endsWith(line, "{}")) {
+                        understood = true;
+                    } else if (line.substr(10 + name.size()) == " {") {  // plain: no generic parameters
+                        DeclaredClass declared;
+                        declared.name = std::string{name};
+                        result.interfaces.push_back(declared);
+                        context = Context::Interface;
                         understood = true;
                     } else if (endsWith(line, "{")) {
                         context = Context::TypeBody;
@@ -297,6 +305,18 @@ enum class Context : std::uint8_t { Top, Namespace, Map, TypeBody, Class };
                     understood = true;
                 } else if (endsWith(line, ";")) {
                     understood = true;
+                }
+                break;
+            case Context::Interface:
+                if (line == "}") {
+                    context = Context::Namespace;
+                    understood = true;
+                } else {
+                    DeclaredMember member;
+                    if (parseMember(line, member)) {
+                        result.interfaces.back().members.push_back(member);
+                        understood = true;
+                    }
                 }
                 break;
             case Context::Class: {
@@ -432,6 +452,20 @@ constexpr std::string_view RUNTIME_FUNCTIONS_SCRIPT =
     const auto it = std::find_if(declared.classes.begin(), declared.classes.end(),
                                  [&](const DeclaredClass& c) { return c.name == name; });
     return it == declared.classes.end() ? nullptr : &*it;
+}
+
+// A class's members as the runtime sees them: the class's own, then the members the same-name plain interface adds.
+[[nodiscard]] std::vector<DeclaredMember> declaredMembersOf(const Declarations& declared, std::string_view name) {
+    std::vector<DeclaredMember> members;
+    if (const DeclaredClass* const cls = findDeclared(declared, name); cls != nullptr) {
+        members = cls->members;
+    }
+    for (const DeclaredClass& added : declared.interfaces) {
+        if (added.name == name) {
+            members.insert(members.end(), added.members.begin(), added.members.end());
+        }
+    }
+    return members;
 }
 
 [[nodiscard]] const RuntimeClass* findRuntime(const std::vector<RuntimeClass>& classes, std::string_view name) {
@@ -679,9 +713,10 @@ TEST_CASE("declarations: each class declares exactly the public names its protot
         }
         // A base class's members do not live on its prototype: its non-optional members are instance properties and
         // its optional ones are hooks a script defines (DT23 pins the base class's own shape).
+        const std::vector<DeclaredMember> mirrored = declaredMembersOf(declared, cls.name);
         std::vector<std::string> declaredMembers;
-        declaredMembers.reserve(mirror->members.size());
-        for (const DeclaredMember& member : mirror->members) {
+        declaredMembers.reserve(mirrored.size());
+        for (const DeclaredMember& member : mirrored) {
             CHECK((!member.optional || mirror->base));
             if (!mirror->base) {
                 declaredMembers.push_back(member.name);
@@ -738,11 +773,12 @@ TEST_CASE("declarations: declared constructor and method arities equal the runti
         const DeclaredClass* const mirror = findDeclared(declared, cls.name);
         REQUIRE(mirror != nullptr);
         CHECK(mirror->constructorArity == cls.constructorLength);
+        const std::vector<DeclaredMember> mirrored = declaredMembersOf(declared, cls.name);
         for (const RuntimeMember& member : cls.members) {
             CAPTURE(member.name);
-            const auto it = std::find_if(mirror->members.begin(), mirror->members.end(),
+            const auto it = std::find_if(mirrored.begin(), mirrored.end(),
                                          [&](const DeclaredMember& m) { return m.name == member.name; });
-            REQUIRE(it != mirror->members.end());
+            REQUIRE(it != mirrored.end());
             CHECK((it->arity >= 0) == member.isMethod);
             if (member.isMethod) {
                 CHECK(it->arity == member.length);
@@ -989,4 +1025,80 @@ TEST_CASE("declarations: the namespace's function-valued keys are exactly the de
         // A rest parameter adds nothing to a fixed count: the runtime length is at least the declared fixed ones.
         CHECK((function.rest ? function.arity - 1 <= length : function.arity == length));
     }
+}
+
+TEST_CASE("declarations: the reader keeps a plain interface's members apart and refuses a bad line in one (DT28)") {
+    const std::string open = "declare namespace engine {\n";
+    const std::string classFoo = "    class Foo {\n        constructor();\n        x: number;\n    }\n";
+    const Declarations parsed = parseDeclarations(open +
+                                                  "    interface Foo {\n"
+                                                  "        /** One-line doc. */\n"
+                                                  "        go(a: number): this;\n"
+                                                  "        stop(): void;\n"
+                                                  "    }\n" +
+                                                  classFoo +
+                                                  "    interface Holder<T extends Foo> {\n"
+                                                  "        readonly prototype: T;\n"
+                                                  "    }\n"
+                                                  "}\n");
+    CHECK(parsed.error.empty());
+    REQUIRE(parsed.interfaces.size() == 1U);  // the generic interface stays unread
+    CHECK(parsed.interfaces[0].name == "Foo");
+    CHECK(parsed.interfaces[0].constructorArity == -1);
+    REQUIRE(parsed.interfaces[0].members.size() == 2U);
+    CHECK(parsed.interfaces[0].members[0].name == "go");
+    CHECK(parsed.interfaces[0].members[0].arity == 1);
+    CHECK(parsed.interfaces[0].members[1].name == "stop");
+    REQUIRE(parsed.classes.size() == 1U);
+    CHECK(parsed.classes[0].members.size() == 1U);  // the class keeps its own
+    CHECK(declaredMembersOf(parsed, "Foo").size() == 3U);
+    CHECK(declaredMembersOf(parsed, "Other").empty());
+
+    // A line the member grammar cannot read is refused at its line, and so is an unclosed interface.
+    CHECK(refusedAt(open + "    interface Foo {\n        go(;\n    }\n}\n", 3));
+    CHECK(refusedAt(open + "    interface Foo {\n        constructor();\n    }\n}\n", 3));
+    CHECK(refusedAt(open + "    interface Foo {\n        go(): void;\n", 3));
+
+    // On the built file: every plain interface names a declared class when the table is bound, and Transform's
+    // interface members are the live prototype's methods beyond the bound fields, with equal arities.
+    const Declarations declared = parseDeclarations(builtFile());
+    REQUIRE(declared.error.empty());
+    const auto components = engine::script::internal::builtinComponentBindings().components();
+    const auto added = std::find_if(declared.interfaces.begin(), declared.interfaces.end(),
+                                    [](const DeclaredClass& i) { return i.name == "Transform"; });
+    REQUIRE(added != declared.interfaces.end());
+    CHECK_FALSE(added->members.empty());
+    if (components.empty()) {
+        // The reflect tools are OFF: the interface is declared, and neither the class nor the live class exists.
+        CHECK(findDeclared(declared, "Transform") == nullptr);
+        CHECK(findRuntime(runtimeClasses(), "Transform") == nullptr);
+        return;
+    }
+    for (const DeclaredClass& plain : declared.interfaces) {
+        CAPTURE(plain.name);
+        CHECK(findDeclared(declared, plain.name) != nullptr);
+    }
+    const auto bound =
+        std::find_if(components.begin(), components.end(), [](const auto& c) { return c.scriptName == "Transform"; });
+    REQUIRE(bound != components.end());
+    const std::vector<RuntimeClass> runtime = runtimeClasses();
+    const RuntimeClass* const live = findRuntime(runtime, "Transform");
+    REQUIRE(live != nullptr);
+    std::vector<std::string> liveHelpers;
+    for (const RuntimeMember& member : live->members) {
+        const bool isField = std::any_of(bound->fields.begin(), bound->fields.end(),
+                                         [&](const auto& f) { return f.name == member.name; });
+        if (!isField) {
+            liveHelpers.push_back(member.name);
+            const auto it = std::find_if(added->members.begin(), added->members.end(),
+                                         [&](const DeclaredMember& m) { return m.name == member.name; });
+            REQUIRE(it != added->members.end());
+            CHECK(it->arity == member.length);
+        }
+    }
+    std::vector<std::string> interfaceNames;
+    for (const DeclaredMember& member : added->members) {
+        interfaceNames.push_back(member.name);
+    }
+    CHECK(sameSet(liveHelpers, interfaceNames, "Transform's helpers"));
 }

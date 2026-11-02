@@ -88,6 +88,10 @@ struct AttachKey {
     auto operator<=>(const AttachKey&) const = default;
 };
 
+// "No component": componentClassIndex's answer for a value that names none, and ScriptApi::transformComponent's
+// value while the table binds no Transform.
+inline constexpr std::size_t NO_COMPONENT = static_cast<std::size_t>(-1);
+
 struct ScriptApi {
     const internal::ComponentBindingTable* table = nullptr;  // borrowed
     World* world = nullptr;                                  // borrowed; null when none is bound
@@ -115,6 +119,9 @@ struct ScriptApi {
     // Impl is heap-pinned).
     std::map<AttachKey, ScriptInstance> attachedInstances;
     const SlotMap<InstanceSlot, ScriptInstanceTag>* instanceSlots = nullptr;
+    // The table index of the Transform binding, or NO_COMPONENT (the table is empty with the reflect tools OFF). The
+    // transform helpers are installed on that class only.
+    std::size_t transformComponent = NO_COMPONENT;
 };
 
 enum class ClassCheck : std::uint8_t {
@@ -182,6 +189,25 @@ inline constexpr std::size_t MAX_QUERY_CLASSES = 8;
 // world.add<Transform>(entity, {}) != nullptr: the Transform spawn gives a new entity.
 [[nodiscard]] bool addIdentityTransform(World& world, Entity entity);
 
+// The helpers engine.Transform carries beyond its bound fields (task 4.4.2). One dispatcher; its magic is the op. The
+// receiver is checked against the Transform class by its opaque, every argument's kind before any is read, every
+// argument read before the World is touched, and the entity's Transform last, so a refusal writes nothing.
+enum class TransformOp : std::uint8_t { WorldPosition, Forward, Right, Up, Translate, Rotate, LookAt };
+struct TransformHelper {
+    std::string_view name;
+    TransformOp op;
+    int length;
+};
+// In definition order on the prototype, after the fields.
+inline constexpr std::array<TransformHelper, 7> TRANSFORM_HELPERS{{{"worldPosition", TransformOp::WorldPosition, 0},
+                                                                   {"forward", TransformOp::Forward, 0},
+                                                                   {"right", TransformOp::Right, 0},
+                                                                   {"up", TransformOp::Up, 0},
+                                                                   {"translate", TransformOp::Translate, 1},
+                                                                   {"rotate", TransformOp::Rotate, 1},
+                                                                   {"lookAt", TransformOp::LookAt, 2}}};
+JSValue transformHelper(JSContext* ctx, JSValueConst thisValue, int argc, JSValueConst* argv, int magic) noexcept;
+
 // ---- shared by the API's files --------------------------------------------------------------------------------
 
 // Every API object is allocated first (charged to the VM's heap; on a refusal the backend's out-of-memory error is
@@ -242,7 +268,6 @@ struct Site {
 
 // Which bound component a class argument names, found by identity against the constructors the API holds: nothing of
 // the argument is read, so no getter, Proxy trap or conversion runs. NO_COMPONENT: it names none.
-inline constexpr std::size_t NO_COMPONENT = static_cast<std::size_t>(-1);
 [[nodiscard]] std::size_t componentClassIndex(JSContext* ctx, const ScriptApi& api, JSValueConst argument);
 
 // The host functions the class install attaches (magic: see the comment on each).

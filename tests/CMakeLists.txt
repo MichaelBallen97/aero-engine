@@ -120,9 +120,10 @@ target_compile_definitions(aero_tests PRIVATE
     AERO_SCRIPT_DECLARATION_SOURCES="${_aero_script_declaration_sources}")
 
 # task 4.2.1 -- the generated built-in table (BN6, BN37-BN49). Tools ON only: with them OFF aero_script binds no
-# component, which is the shape the configure's STATUS line announces.
+# component, which is the shape the configure's STATUS line announces. Task 4.4.2 -- script_transform_test.cpp
+# (XF1-XF9): the helpers live on the generated engine.Transform, so it joins the same gate.
 if(AERO_REFLECT_TOOLS)
-    target_sources(aero_tests PRIVATE script_component_test.cpp)
+    target_sources(aero_tests PRIVATE script_component_test.cpp script_transform_test.cpp)
 endif()
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional

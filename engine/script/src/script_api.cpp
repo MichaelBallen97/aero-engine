@@ -322,6 +322,13 @@ bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
             const internal::FieldBinding& field = components[i].fields[f];
             spec.accessors.push_back(AccessorSpec{std::string{field.name}, fieldMagic(i, f), false});
         }
+        if (components[i].type == transformTypeId()) {  // the helpers sit on the engine's Transform class alone
+            api.transformComponent = i;
+            for (const TransformHelper& helper : TRANSFORM_HELPERS) {
+                spec.methods.push_back(
+                    MethodSpec{std::string{helper.name}, &transformHelper, helper.length, static_cast<int>(helper.op)});
+            }
+        }
         if (!installClass(ctx, rt, ns.get(), spec, &api.componentConstructors)) {
             return false;
         }
@@ -363,6 +370,7 @@ void releaseScriptApi(JSContext* ctx, ScriptApi& api) noexcept {
     }
     api.componentConstructors.clear();
     api.componentClasses.clear();
+    api.transformComponent = NO_COMPONENT;
     JS_FreeValue(ctx, api.scriptBase);
     api.scriptBase = JS_UNDEFINED;
     api.pendingEntity.reset();

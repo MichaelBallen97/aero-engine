@@ -1,12 +1,14 @@
 // Aero Engine -- the hand-written half of aero-engine.d.ts (task 4.2.2): Vec3, Quat, Entity and Script (the base class
 // a script's class extends, task 4.4.1) as engine/script/src/script_api*.cpp installs them, the namespace functions
-// (task 4.4.2), and the component types each generated block merges into.
+// (task 4.4.2), the members an interface adds to a generated class (Transform's helpers), and the component types
+// each generated block merges into.
 // The build joins this file first, then one reflect-gen --emit-dts block per built-in component header.
 // A change to the script API changes this file in the same commit: DT3-DT7 compare it with a live VM.
 // Grammar (the drift reader refuses anything else): one declaration per line, doc comments on one line,
 // no at-sign anywhere. A class's constructor line is `constructor(...)`, `private constructor(...)` or, for a base
 // class a script extends, `protected constructor(...)`; a method may be optional (`name?(...): type;`), a field never.
-// A namespace function is `function name(...): type;`; its last parameter may be a rest parameter.
+// A namespace function is `function name(...): type;`; its last parameter may be a rest parameter. An interface named
+// like a class adds members to it.
 
 declare namespace engine {
     /** Every component class, keyed by its script name. Each generated block adds its own entries. */
@@ -132,6 +134,24 @@ declare namespace engine {
         onUpdate?(dt: number): void;
         /** Runs once, when the instance is detached or the session stops. */
         onDestroy?(): void;
+    }
+
+    /** The transform helpers every Transform component object carries; the generated block declares its fields. */
+    interface Transform {
+        /** The entity's position in world space, as a new Vec3. */
+        worldPosition(): Vec3;
+        /** The entity's -Z axis in world space as a unit vector (zero when its scale collapses it), as a new Vec3. */
+        forward(): Vec3;
+        /** The entity's +X axis in world space as a unit vector, as a new Vec3. */
+        right(): Vec3;
+        /** The entity's +Y axis in world space as a unit vector, as a new Vec3. */
+        up(): Vec3;
+        /** Moves the entity by v along its own axes and returns this Transform. */
+        translate(v: Vec3): this;
+        /** Turns the entity by q about its own axes and returns this Transform. */
+        rotate(q: Quat): this;
+        /** Turns the entity so its -Z axis faces target, a world-space point (up defaults to world +Y), and returns this Transform. */
+        lookAt(target: Vec3, up?: Vec3): this;
     }
 
     /** A new root entity holding an identity Transform and no name; it is alive at once, and its script attaches at the next update. */
