@@ -2,7 +2,8 @@
 // Aero Engine -- the JavaScript VM (task 4.1.1; ADR-007). One Vm = one quickjs-ng runtime + one context,
 // created together, used on ONE thread, torn down together. A VM offers the ECMAScript language, the backend's
 // core globals and, since task 4.2.1, one frozen global of the engine's own: `engine`, holding a class per bound
-// component plus Vec3, Quat, Entity and Script (the base class a script's class extends). Nothing else is
+// component plus Vec3, Quat, Entity and Script (the base class a script's class extends), and since task 4.4.2 the
+// functions spawn, destroy, find, findAll and query. Nothing else is
 // script-visible -- no file, process or timer access. Since task 4.1.2 a VM given a VirtualFileSystem also loads ES
 // modules through it (evaluateModule, and import() from any code). Since task 4.3.3 a VM loads a script class (an ES
 // module whose default export is a class) and holds its instances behind handles, and a changed file re-creates every
@@ -387,12 +388,13 @@ public:
     // something only to the World that minted it (entity.hpp). Refused with UnregisteredComponent and one ERROR,
     // the previous binding kept, when the World does not register every component this VM binds (a moved-from
     // World registers none). Success logs nothing. Never from inside a call. It also empties the VM's entity table
-    // (task 4.4.2): every lookup under the new binding makes a new object, and an object of the old binding reads dead.
+    // and destroy queue (task 4.4.2): every lookup under the new binding makes a new object, and an object of the old
+    // binding reads dead.
     BindStatus bindWorld(World& world);
     BindStatus bindWorld(World&& world) = delete;  // no temporary
 
     // Every later access through an entity object throws "no World is bound". It also empties the VM's entity table
-    // (task 4.4.2). Idempotent; an invalid VM or another thread is one ERROR and no change.
+    // and destroy queue (task 4.4.2). Idempotent; an invalid VM or another thread is one ERROR and no change.
     void unbindWorld() noexcept;
 
     // Defines globalThis[name] as an engine.Entity for `entity`: writable, configurable and enumerable, through a
@@ -401,6 +403,24 @@ public:
     // DeadEntity, then OutOfMemory (the object) or InvalidName (the define returned false: a non-configurable global
     // of that name, or a non-extensible global object).
     BindStatus defineEntityGlobal(std::string_view name, Entity entity);
+
+    // ---- engine.destroy's queue (task 4.4.2) ------------------------------------------------------------------
+    // engine.destroy(e) queues a live entity of the current binding once and changes nothing else: the entity stays
+    // alive and every script still reads it. The queue belongs to its binding (every bindWorld and unbindWorld empties
+    // it). ScriptSystem flushes it at the end of each update (script_system.hpp).
+    //
+    // The entities queued since the last take, in queue order; the queue is left empty. Each stays marked queued, so
+    // engine.destroy answers false for it, until destroyQueued(entity) or the binding ends. Runs no script code. An
+    // invalid Vm or another thread: one ERROR and an empty vector. Never from inside a call.
+    [[nodiscard]] std::vector<Entity> takeDestroyQueue();
+
+    // Destroys a queued entity and its whole subtree in the bound World (World::destroy), after dropping every entity
+    // object of the subtree from the VM's table and every mark in it, so a recreated handle gets a new object. True
+    // when it destroyed the entity. False, changing nothing, for an entity without a mark (never queued, already
+    // destroyed through here, or queued under an earlier binding); a marked entity that is no longer alive only loses
+    // its mark. Runs no script code: an instance attached in the subtree is the caller's to release first. An invalid
+    // Vm or another thread: one ERROR and false. Never from inside a call.
+    bool destroyQueued(Entity entity);  // not [[nodiscard]]: the World::destroy precedent
 
     // ---- script classes and instances (task 4.3.3) ------------------------------------------------------------
     // Loads the script at `virtualPath` (an ABSOLUTE res:// path): the first load and every reload are this one call,

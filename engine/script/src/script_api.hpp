@@ -40,10 +40,12 @@
 #include <new>
 #include <optional>
 #include <quickjs.h>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace engine {
@@ -88,8 +90,12 @@ struct ScriptApi {
     std::optional<EntityRef> pendingEntity;      // set by the VM around ONE engine-driven construction; taken by the
                                                  // first base construction inside it (C4)
     // Task 4.4.2: the one engine.Entity object of each entity of the current binding, HELD. Emptied by every bindWorld
-    // and unbindWorld and by releaseScriptApi.
+    // and unbindWorld and by releaseScriptApi, and an entry is evicted by Vm::destroyQueued.
     std::unordered_map<std::uint64_t, JSValue> entityObjects;
+    // engine.destroy's queue under the current binding, in queue order, and the mark of every entity queued and not yet
+    // destroyed through Vm::destroyQueued (a taken queue keeps its marks). Emptied with the table.
+    std::vector<Entity> destroyQueue;
+    std::unordered_set<std::uint64_t> destroyMarks;
 };
 
 enum class ClassCheck : std::uint8_t {
@@ -118,8 +124,8 @@ void releaseScriptApi(JSContext* ctx, ScriptApi& api) noexcept;
 // earlier binding, or no World) gets a new non-extensible object the table never holds. JS_EXCEPTION, with an exception
 // pending, when the heap limit refused it.
 [[nodiscard]] JSValue entityObjectFor(JSContext* ctx, ScriptApi& api, const EntityRef& ref);
-// Frees every held object and empties the table. noexcept: JS_FreeValue runs only the shared finalizer
-// (finalizeOpaque), never script code.
+// Frees every held object and empties the table, the destroy queue and the marks. noexcept: JS_FreeValue runs only the
+// shared finalizer (finalizeOpaque), never script code.
 void releaseEntityObjects(JSContext* ctx, ScriptApi& api) noexcept;
 // A new array holding the entity object of each of `entities`, in order, all of the current binding (the array rule: no
 // World access happens while objects are made). JS_EXCEPTION, with an exception pending, when the heap limit refused
@@ -128,6 +134,34 @@ void releaseEntityObjects(JSContext* ctx, ScriptApi& api) noexcept;
 // entityArray over the direct children of `parent`, in attach order. Its own function, in this file, so a noexcept host
 // function calls it without a vector's throwing paths being visible to clang-tidy's bugprone-exception-escape.
 [[nodiscard]] JSValue childrenArray(JSContext* ctx, ScriptApi& api, Entity parent);
+// engine.findAll's and engine.query's results (the World is bound; the checks were made by the caller). Their own
+// functions, in this file, for the reason childrenArray gives. Ascending entity index.
+[[nodiscard]] JSValue findAllArray(JSContext* ctx, ScriptApi& api, std::string_view name);
+[[nodiscard]] JSValue queryArray(JSContext* ctx, ScriptApi& api, std::span<const std::size_t> components);
+
+// ---- the namespace functions (script_api_world.cpp) -------------------------------------------------------------
+struct WorldFunction {
+    std::string_view name;
+    int length;
+};
+// In magic order. query's length is World::MAX_QUERY_TYPES (8), so argv always holds 8 values.
+inline constexpr std::array<WorldFunction, 5> WORLD_FUNCTIONS{
+    {{"spawn", 0}, {"destroy", 1}, {"find", 1}, {"findAll", 1}, {"query", 8}}};
+inline constexpr std::size_t MAX_QUERY_CLASSES = 8;
+// One handler per entry of WORLD_FUNCTIONS, each with its checks in the contract's order. They build strings and
+// vectors, so they are not noexcept: the host function that calls them (script_api.cpp) is, and keeps their throwing
+// paths out of its own translation unit, which clang-tidy's bugprone-exception-escape would otherwise report (the
+// reason childrenArray gives).
+[[nodiscard]] JSValue spawnEntity(JSContext* ctx, ScriptApi& api, int argc);
+[[nodiscard]] JSValue queueDestroy(JSContext* ctx, ScriptApi& api, JSValueConst value);
+[[nodiscard]] JSValue findEntity(JSContext* ctx, ScriptApi& api, JSValueConst value);
+[[nodiscard]] JSValue findAllEntities(JSContext* ctx, ScriptApi& api, JSValueConst value);
+[[nodiscard]] JSValue queryEntities(JSContext* ctx, ScriptApi& api, int argc, JSValueConst* argv);
+
+// ---- the one source that names the Transform component (script_api_transform.cpp) -------------------------------
+[[nodiscard]] ComponentTypeId transformTypeId() noexcept;
+// world.add<Transform>(entity, {}) != nullptr: the Transform spawn gives a new entity.
+[[nodiscard]] bool addIdentityTransform(World& world, Entity entity);
 
 // ---- shared by the API's files --------------------------------------------------------------------------------
 
@@ -186,6 +220,11 @@ struct Site {
 [[nodiscard]] bool resolveEntity(JSContext* ctx, const ScriptApi& api, const EntityRef& ref, const Site& site);
 [[nodiscard]] void* resolveStorage(JSContext* ctx, const ScriptApi& api, const EntityRef& ref, std::size_t component,
                                    const Site& site);
+
+// Which bound component a class argument names, found by identity against the constructors the API holds: nothing of
+// the argument is read, so no getter, Proxy trap or conversion runs. NO_COMPONENT: it names none.
+inline constexpr std::size_t NO_COMPONENT = static_cast<std::size_t>(-1);
+[[nodiscard]] std::size_t componentClassIndex(JSContext* ctx, const ScriptApi& api, JSValueConst argument);
 
 // The host functions the class install attaches (magic: see the comment on each).
 JSValue entityMethod(JSContext* ctx, JSValueConst thisValue, int argc, JSValueConst* argv, int method) noexcept;

@@ -189,6 +189,11 @@ TEST_CASE("script: ComponentBindingTable::add refuses each invalid entry with on
     refusals.push_back({component("Quat", fabricated(storage, 1)), "Quat", "reserved"});
     refusals.push_back({component("Entity", fabricated(storage, 1)), "Entity", "reserved"});
     refusals.push_back({component("Script", fabricated(storage, 1)), "Script", "reserved"});
+    refusals.push_back({component("spawn", fabricated(storage, 1)), "spawn", "reserved"});
+    refusals.push_back({component("destroy", fabricated(storage, 1)), "destroy", "reserved"});
+    refusals.push_back({component("find", fabricated(storage, 1)), "find", "reserved"});
+    refusals.push_back({component("findAll", fabricated(storage, 1)), "findAll", "reserved"});
+    refusals.push_back({component("query", fabricated(storage, 1)), "query", "reserved"});
     refusals.push_back({component("Good", fabricated(storage, 1)), "Good", "name is already bound"});
     refusals.push_back({component("Other", fabricated(storage, 0)), "Other", "type is already bound"});
     refusals.push_back({component("Other", ComponentTypeId{}), "Other", "type is invalid"});
@@ -314,17 +319,20 @@ TEST_CASE("script: engine, its classes and their prototypes are frozen, and engi
         out.push(typeof engine.Vec3, Object.keys(engine).length, new engine.Vec3(1, 2, 3).x);
         return out.join();
     )js"));
-    CHECK(completion == "true,false,false,false,TypeError,TypeError,TypeError,TypeError,TypeError,function,6,1");
+    CHECK(completion == "true,false,false,false,TypeError,TypeError,TypeError,TypeError,TypeError,function,11,1");
     CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
     expectCleanShutdown(vm);
 }
 
-TEST_CASE("script: Object.keys(engine) is the table's script names, then Vec3, Quat, Entity and Script (BN8)") {
+TEST_CASE(
+    "script: Object.keys(engine) is the table's script names, then Vec3, Quat, Entity, Script and the five functions "
+    "(BN8)") {
     const LogCapture log;
     {
         const auto table = probeTable();
         Vm vm = makeProbeVm(table);
-        CHECK(evalOk(vm, "Object.keys(engine).join()") == "ScriptProbe,ScriptTag,Vec3,Quat,Entity,Script");
+        CHECK(evalOk(vm, "Object.keys(engine).join()") ==
+              "ScriptProbe,ScriptTag,Vec3,Quat,Entity,Script,spawn,destroy,find,findAll,query");
         // Nothing leaked onto the global object beside the namespace.
         CHECK(evalOk(vm,
                      "[typeof Vec3, typeof Quat, typeof Entity, typeof Script, typeof ScriptProbe, typeof "
@@ -336,7 +344,7 @@ TEST_CASE("script: Object.keys(engine) is the table's script names, then Vec3, Q
          engine::script::internal::builtinComponentBindings().components()) {
         expected += std::string{binding.scriptName} + ",";
     }
-    expected += "Vec3,Quat,Entity,Script";
+    expected += "Vec3,Quat,Entity,Script,spawn,destroy,find,findAll,query";
     Vm vm = makeBuiltinVm();
     CHECK(evalOk(vm, "Object.keys(engine).join()") == expected);
     CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
@@ -357,7 +365,7 @@ TEST_CASE("script: a VM created over a module source binds the built-in componen
     for (const ComponentBinding& binding : engine::script::internal::builtinComponentBindings().components()) {
         expected += std::string{binding.scriptName} + ",";
     }
-    expected += "Vec3,Quat,Entity,Script";
+    expected += "Vec3,Quat,Entity,Script,spawn,destroy,find,findAll,query";
     CHECK(evalOk(vm, "Object.keys(engine).join()") == expected);
     // The table's size is not what is pinned: the ten built-ins are bound, named as a script reads them. With
     // AERO_REFLECT_TOOLS=OFF the table is empty and the namespace holds Vec3, Quat, Entity and Script only, which the
@@ -1261,7 +1269,8 @@ TEST_CASE("script: no hand-written script source names a built-in component (BN3
     bool sawApiHeader = false;
     bool sawPublicHeader = false;    // include/
     bool sawInternalHeader = false;  // internal/
-    bool sawLifecycleName = false;   // the one exception below
+    bool sawLifecycleName = false;   // the exceptions below
+    bool sawSpawnTransform = false;
     for (const fs::path& file : files) {
         const std::string text = strippedSource(file);
         INFO("file: " << file.filename().string());
@@ -1278,12 +1287,19 @@ TEST_CASE("script: no hand-written script source names a built-in component (BN3
                 sawLifecycleName = sawLifecycleName || holdsIdentifier(text, name);
                 continue;
             }
+            // The other (task 4.4.2): spawn gives a new entity the engine's identity Transform, and that file names no
+            // other component.
+            if (file.filename() == "script_api_transform.cpp" && name == "Transform") {
+                sawSpawnTransform = sawSpawnTransform || holdsIdentifier(text, name);
+                continue;
+            }
             CHECK_FALSE(holdsIdentifier(text, name));
         }
     }
     // Anti-vacuity: the scan reached all three roots (src, include, internal), and the same scan finds a real
     // identifier in each.
     CHECK(sawLifecycleName);
+    CHECK(sawSpawnTransform);
     CHECK(sawApiSource);
     CHECK(sawApiHeader);
     CHECK(sawPublicHeader);

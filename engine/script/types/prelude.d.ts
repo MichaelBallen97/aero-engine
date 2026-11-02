@@ -1,11 +1,12 @@
 // Aero Engine -- the hand-written half of aero-engine.d.ts (task 4.2.2): Vec3, Quat, Entity and Script (the base class
-// a script's class extends, task 4.4.1) as engine/script/src/script_api*.cpp installs them, and the component types
-// each generated block merges into.
+// a script's class extends, task 4.4.1) as engine/script/src/script_api*.cpp installs them, the namespace functions
+// (task 4.4.2), and the component types each generated block merges into.
 // The build joins this file first, then one reflect-gen --emit-dts block per built-in component header.
 // A change to the script API changes this file in the same commit: DT3-DT7 compare it with a live VM.
 // Grammar (the drift reader refuses anything else): one declaration per line, doc comments on one line,
 // no at-sign anywhere. A class's constructor line is `constructor(...)`, `private constructor(...)` or, for a base
 // class a script extends, `protected constructor(...)`; a method may be optional (`name?(...): type;`), a field never.
+// A namespace function is `function name(...): type;`; its last parameter may be a rest parameter.
 
 declare namespace engine {
     /** Every component class, keyed by its script name. Each generated block adds its own entries. */
@@ -82,4 +83,15 @@ declare namespace engine {
         /** Runs once, when the instance is detached or the session stops. */
         onDestroy?(): void;
     }
+
+    /** A new root entity holding an identity Transform and no name; it is alive at once, and its script attaches at the next update. */
+    function spawn(): Entity;
+    /** Queues the entity for destruction with its subtree at the end of the update; false when it is already queued or not alive. */
+    function destroy(entity: Entity): boolean;
+    /** The live entity with exactly this name and the lowest entity index, or null. */
+    function find(name: string): Entity | null;
+    /** Every live entity with exactly this name, in ascending entity index. */
+    function findAll(name: string): Entity[];
+    /** Every live entity holding all of 1 to 8 component classes, in ascending entity index. */
+    function query(...types: ComponentClass<Component>[]): Entity[];
 }

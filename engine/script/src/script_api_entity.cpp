@@ -23,8 +23,6 @@
 namespace engine::script {
 namespace {
 
-constexpr std::size_t NO_COMPONENT = static_cast<std::size_t>(-1);
-
 [[nodiscard]] bool isGlobalName(std::string_view name) noexcept {
     const auto head = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$'; };
     const auto tail = [&](char c) { return head(c) || (c >= '0' && c <= '9'); };
@@ -47,20 +45,6 @@ JSValue throwAt(JSContext* ctx, const Site& site, std::string_view reason) {
 [[nodiscard]] JSValue newComponentObject(JSContext* ctx, const ScriptApi& api, const EntityRef& ref,
                                          std::size_t component) {
     return newOpaqueObject(ctx, api.componentClasses[component], ref);
-}
-
-// Which bound component a class argument names, found by identity against the constructors the API holds: nothing of
-// the argument is read, so no getter, Proxy trap or conversion runs. NO_COMPONENT: it names none.
-[[nodiscard]] std::size_t findComponentClass(JSContext* ctx, const ScriptApi& api, JSValueConst argument) {
-    if (!JS_IsObject(argument)) {
-        return NO_COMPONENT;
-    }
-    for (std::size_t i = 0; i < api.componentConstructors.size(); ++i) {
-        if (JS_IsStrictEqual(ctx, argument, api.componentConstructors[i])) {
-            return i;
-        }
-    }
-    return NO_COMPONENT;
 }
 
 [[nodiscard]] const EntityRef* entityOf(const ScriptApi& api, JSValueConst value) noexcept {
@@ -95,10 +79,24 @@ std::string_view bindStatusLabel(BindStatus status) noexcept {
     return "Unknown";
 }
 
+std::size_t componentClassIndex(JSContext* ctx, const ScriptApi& api, JSValueConst argument) {
+    if (!JS_IsObject(argument)) {
+        return NO_COMPONENT;
+    }
+    for (std::size_t i = 0; i < api.componentConstructors.size(); ++i) {
+        if (JS_IsStrictEqual(ctx, argument, api.componentConstructors[i])) {
+            return i;
+        }
+    }
+    return NO_COMPONENT;
+}
+
 std::string describeSite(const Site& site) {
     std::string text = "engine.";
-    text += site.type;
-    text += '.';
+    if (!site.type.empty()) {  // a namespace function: engine.spawn
+        text += site.type;
+        text += '.';
+    }
     text += site.member;
     if (!site.axis.empty()) {
         text += '.';
@@ -147,7 +145,7 @@ JSValue entityMethod(JSContext* ctx, JSValueConst thisValue, int /*argc*/, JSVal
         return foreignEntity(ctx, site);
     }
     // The method was made with length 1, so argv[0] exists (undefined when the script passed nothing).
-    const std::size_t component = findComponentClass(ctx, api, argv[0]);
+    const std::size_t component = componentClassIndex(ctx, api, argv[0]);
     if (component == NO_COMPONENT) {
         return throwTypeError(
             ctx, describeSite(site) + ": expected an engine component class, got " + describeValue(ctx, argv[0], api));

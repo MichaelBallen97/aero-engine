@@ -12,6 +12,7 @@
 #include "vm_impl.hpp"
 
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <span>
 #include <string>
@@ -251,6 +252,39 @@ struct ClassSpec {
     return true;
 }
 
+// The one host function of the five namespace functions (magic = index into WORLD_FUNCTIONS); the handlers are in
+// script_api_world.cpp.
+JSValue worldFunction(JSContext* ctx, JSValueConst /*thisValue*/, int argc, JSValueConst* argv, int magic) noexcept {
+    ScriptApi& api = scriptApiOf(ctx);
+    assert(magic >= 0 && static_cast<std::size_t>(magic) < WORLD_FUNCTIONS.size());
+    switch (magic) {
+        case 0:
+            return spawnEntity(ctx, api, argc);
+        case 1:
+            return queueDestroy(ctx, api, argv[0]);  // length 1: argv[0] exists
+        case 2:
+            return findEntity(ctx, api, argv[0]);
+        case 3:
+            return findAllEntities(ctx, api, argv[0]);
+        default:
+            return queryEntities(ctx, api, argc, argv);
+    }
+}
+
+// The namespace functions (spawn, destroy, find, findAll, query): each a frozen native, defined on the namespace after
+// Script. A native function has no `prototype`, so a frozen function is the whole of its shape.
+[[nodiscard]] bool installWorldFunctions(JSContext* ctx, JSValueConst ns) {
+    for (std::size_t i = 0; i < WORLD_FUNCTIONS.size(); ++i) {
+        const std::string name{WORLD_FUNCTIONS[i].name};
+        HeldValue function{ctx, newMethod(ctx, name, &worldFunction, WORLD_FUNCTIONS[i].length, static_cast<int>(i))};
+        if (function.isException() || JS_FreezeObject(ctx, function.get()) < 0 ||
+            JS_DefinePropertyValueStr(ctx, ns, name.c_str(), function.release(), JS_PROP_ENUMERABLE) < 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
@@ -301,7 +335,8 @@ bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
             MethodSpec{std::string{ENTITY_METHODS[method]}, &entityMethod, 1, static_cast<int>(method)});
     }
     entity.methods.push_back(MethodSpec{"children", &entityChildren, 0, 0});
-    if (!installClass(ctx, rt, ns.get(), entity, nullptr) || !installScriptBase(ctx, ns.get(), api)) {
+    if (!installClass(ctx, rt, ns.get(), entity, nullptr) || !installScriptBase(ctx, ns.get(), api) ||
+        !installWorldFunctions(ctx, ns.get())) {
         return false;
     }
     // Frozen after the last class, and defined on the global object with flags 0: not writable, not enumerable, not

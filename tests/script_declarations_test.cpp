@@ -1,4 +1,5 @@
-// Aero Engine -- the TypeScript declarations against a live VM (task 4.2.2; DT1-DT7, and since 4.4.1 DT22-DT25).
+// Aero Engine -- the TypeScript declarations against a live VM (task 4.2.2; DT1-DT7, since 4.4.1 DT22-DT25, and since
+// 4.4.2 DT26-DT27).
 //
 // The build joins engine/script/types/prelude.d.ts with one reflect-gen --emit-dts block per built-in component header
 // into aero-engine.d.ts. These cases read that file from disk with a deliberately strict reader (the line grammar in
@@ -44,6 +45,7 @@ struct DeclaredMember {
     std::string type;       // a field's type text, trimmed; empty for a method
     int arity = -1;         // a method's parameter count; -1 for a field
     bool optional = false;  // `name?(...)`: a method a script may define, never a property of the prototype
+    bool rest = false;      // the last parameter is a rest parameter (`...types: T[]`); arity still counts it
 };
 struct DeclaredClass {
     std::string name;
@@ -53,6 +55,7 @@ struct DeclaredClass {
 };
 struct Declarations {
     std::vector<DeclaredClass> classes;     // file order
+    std::vector<DeclaredMember> functions;  // the namespace's `function` lines, file order
     std::vector<std::string> componentMap;  // keys, file order
     std::string error;                      // non-empty: refused, "line N: <why>"
 };
@@ -135,6 +138,23 @@ enum class Context : std::uint8_t { Top, Namespace, Map, TypeBody, Class };
     return arity;
 }
 
+// Whether the last parameter of `(...)` starts with `...`: the text after the last comma at depth 0.
+[[nodiscard]] bool endsInRest(std::string_view parenthesised) {
+    const std::string_view inside = trimBoth(parenthesised.substr(1, parenthesised.size() - 2));
+    std::size_t lastStart = 0;
+    int depth = 0;
+    for (std::size_t i = 0; i < inside.size(); ++i) {
+        if (isOpener(inside[i])) {
+            ++depth;
+        } else if (isCloser(inside[i])) {
+            --depth;
+        } else if (inside[i] == ',' && depth == 0) {
+            lastStart = i + 1;
+        }
+    }
+    return startsWith(trimBoth(inside.substr(lastStart)), "...");
+}
+
 // A class-body member line (no leading spaces, not a constructor, not private). False when it is neither a field nor
 // a method in the grammar.
 [[nodiscard]] bool parseMember(std::string_view line, DeclaredMember& member) {
@@ -182,6 +202,7 @@ enum class Context : std::uint8_t { Top, Namespace, Map, TypeBody, Class };
     }
     member.type.clear();
     member.arity = arityOf(parameters);
+    member.rest = endsInRest(parameters);
     return true;
 }
 
@@ -235,6 +256,12 @@ enum class Context : std::uint8_t { Top, Namespace, Map, TypeBody, Class };
                     }
                 } else if (startsWith(line, "type ") && !leadingIdent(line.substr(5)).empty() && endsWith(line, ";")) {
                     understood = true;
+                } else if (startsWith(line, "function ")) {  // a method form only: a field after `function` is refused
+                    DeclaredMember function;
+                    if (parseMember(line.substr(9), function) && function.arity >= 0 && !function.optional) {
+                        result.functions.push_back(function);
+                        understood = true;
+                    }
                 } else if (startsWith(line, "class ") && endsWith(line, " {")) {
                     const std::string_view name = leadingIdent(line.substr(6));
                     if (!name.empty() && line.substr(6 + name.size()) == " {") {
@@ -357,8 +384,9 @@ struct RuntimeClass {
 
 // One script reads the namespace through property DESCRIPTORS: `p[n]` would run an accessor with the prototype as its
 // receiver, which throws "the receiver is not an engine.X"; a descriptor read runs nothing.
+// Only the keys whose value has an own `prototype` are classes; a native function (engine.spawn) has none.
 constexpr std::string_view RUNTIME_SHAPE_SCRIPT =
-    "Object.getOwnPropertyNames(engine).map((c) => {\n"
+    "Object.getOwnPropertyNames(engine).filter((c) => Object.hasOwn(engine[c], 'prototype')).map((c) => {\n"
     "    const p = engine[c].prototype;\n"
     "    const members = Object.getOwnPropertyNames(p).filter((n) => n !== 'constructor').map((n) => {\n"
     "        const d = Object.getOwnPropertyDescriptor(p, n);\n"
@@ -366,6 +394,11 @@ constexpr std::string_view RUNTIME_SHAPE_SCRIPT =
     "    });\n"
     "    return c + '/' + engine[c].length + ':' + members.join(',');\n"
     "}).join(';')";
+
+// The namespace's functions: the keys without an own `prototype`, as name/length.
+constexpr std::string_view RUNTIME_FUNCTIONS_SCRIPT =
+    "Object.getOwnPropertyNames(engine).filter((c) => !Object.hasOwn(engine[c], 'prototype'))"
+    ".map((c) => c + '/' + engine[c].length).join(',')";
 
 [[nodiscard]] std::vector<RuntimeClass> runtimeClasses() {
     engine::script::Vm vm = makeBuiltinVm();
@@ -887,5 +920,73 @@ TEST_CASE("declarations: a base class's optional methods are exactly the hooks t
             CAPTURE(member.name);
             CHECK((member.optional ? cls.base : true));  // no class but a base declares an optional member
         }
+    }
+}
+
+TEST_CASE("declarations: the reader returns a sample's function lines and refuses the forms beside them (DT26)") {
+    const std::string open = "declare namespace engine {\n";
+    const Declarations parsed = parseDeclarations(open +
+                                                  "    /** One-line doc. */\n"
+                                                  "    function none(): Thing;\n"
+                                                  "    function one(a: number): boolean;\n"
+                                                  "    function two(a: [number, number], b?: Thing): Thing | null;\n"
+                                                  "    function many(...types: Holder<Thing>[]): Thing[];\n"
+                                                  "    function mixed(first: string, ...rest: number[]): void;\n"
+                                                  "}\n");
+    CHECK(parsed.error.empty());
+    REQUIRE(parsed.functions.size() == 5U);
+    CHECK(parsed.functions[0].name == "none");
+    CHECK(parsed.functions[0].arity == 0);
+    CHECK_FALSE(parsed.functions[0].rest);
+    CHECK(parsed.functions[1].name == "one");
+    CHECK(parsed.functions[1].arity == 1);
+    CHECK(parsed.functions[2].name == "two");
+    CHECK(parsed.functions[2].arity == 2);
+    CHECK_FALSE(parsed.functions[2].rest);
+    CHECK(parsed.functions[3].name == "many");
+    CHECK(parsed.functions[3].arity == 1);
+    CHECK(parsed.functions[3].rest);
+    CHECK(parsed.functions[4].name == "mixed");
+    CHECK(parsed.functions[4].arity == 2);
+    CHECK(parsed.functions[4].rest);
+    CHECK(parsed.classes.empty());
+
+    // Each refusal names its line: a field after `function`, no return type, an optional function, no name.
+    CHECK(refusedAt(open + "    function x: number;\n}\n", 2));
+    CHECK(refusedAt(open + "    function f()\n}\n", 2));
+    CHECK(refusedAt(open + "    function f();\n}\n", 2));
+    CHECK(refusedAt(open + "    function f?(): void;\n}\n", 2));
+    CHECK(refusedAt(open + "    function (): void;\n}\n", 2));
+}
+
+TEST_CASE("declarations: the namespace's function-valued keys are exactly the declared functions (DT27)") {
+    const Declarations declared = parseDeclarations(builtFile());
+    REQUIRE(declared.error.empty());
+    engine::script::Vm vm = makeBuiltinVm();
+    const std::string live = completion(vm, RUNTIME_FUNCTIONS_SCRIPT);
+    expectCleanShutdown(vm);
+
+    std::vector<std::string> runtimeNames;
+    std::vector<int> lengths;
+    for (const std::string& entry : splitOn(live, ',')) {
+        const std::size_t slash = entry.find('/');
+        REQUIRE(slash != std::string::npos);
+        runtimeNames.push_back(entry.substr(0, slash));
+        lengths.push_back(std::stoi(entry.substr(slash + 1)));
+    }
+    std::vector<std::string> declaredFunctions;
+    declaredFunctions.reserve(declared.functions.size());
+    for (const DeclaredMember& function : declared.functions) {
+        declaredFunctions.push_back(function.name);
+    }
+    CHECK(sameSet(runtimeNames, declaredFunctions, "functions"));
+    CHECK_FALSE(runtimeNames.empty());
+    for (const DeclaredMember& function : declared.functions) {
+        CAPTURE(function.name);
+        const auto it = std::find(runtimeNames.begin(), runtimeNames.end(), function.name);
+        REQUIRE(it != runtimeNames.end());
+        const int length = lengths[static_cast<std::size_t>(it - runtimeNames.begin())];
+        // A rest parameter adds nothing to a fixed count: the runtime length is at least the declared fixed ones.
+        CHECK((function.rest ? function.arity - 1 <= length : function.arity == length));
     }
 }
