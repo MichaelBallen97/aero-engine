@@ -952,6 +952,7 @@ TEST_CASE("world: findAll of the empty string is an empty array while unnamed en
     const script_test::LogCapture log;
     WorldScene scene;
     std::vector<Entity> made;
+    made.reserve(5);
     for (int i = 0; i < 5; ++i) {
         made.push_back(scene.world.create());
     }
