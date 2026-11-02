@@ -51,7 +51,7 @@ add_executable(aero_tests
     script_reload_test.cpp # task 4.3.3 -- script classes, instances and hot reload (HR1-HR32)
     script_source_map_test.cpp # task 4.3.4 -- source maps: the pure core and the VM's mapped errors (SR1-SR30)
     script_attach_test.cpp # task 4.4.1 -- engine.Script and the instances the VM attaches to entities (VM66-VM81)
-    script_system_test.cpp # task 4.4.1 -- ScriptSystem: the lifecycle over one World (LC1-LC25, LC27, LC31-LC33)
+    script_system_test.cpp # task 4.4.1 -- ScriptSystem: the lifecycle over one World (LC1-LC25, LC27, LC31-LC38, LC40-LC48)
     script_world_test.cpp # task 4.4.2 -- the entity table, the world functions and the destroy queue (WA1-WA28)
     platform_test.cpp
     platform_event_test.cpp

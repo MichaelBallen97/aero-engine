@@ -17,7 +17,10 @@
 //   3. attach, in ascending entity index: each Guid is resolved once and each path loaded once; a refused load or
 //      attach is remembered, never retried, and logged once by the Vm;
 //   4. init: onInit of every instance that has not run it, in attach order;
-//   5. update: onUpdate(dt) of every initialised instance, in attach order.
+//   5. update: onUpdate(dt) of every initialised instance, in attach order;
+//   6. flush: every entity engine.destroy queued, with its subtree: onDestroy of each attached instance in it (only
+//      when its onInit succeeded and its script is not suspended), in run order, its entity still alive; then the
+//      subtree is destroyed. A hook here that queues more extends the flush.
 // Each hook runs only while its entity is alive and still names its script. A failed hook faults its instance after
 // the Vm's one record. dt reaches scripts as given when it is finite and non-negative, else as 0.
 //
@@ -69,9 +72,10 @@ enum class ScriptEntityState : std::uint8_t {
 struct ScriptSystemReport {
     bool bound = false;                // false: inert or stopped, and nothing ran
     std::size_t attached = 0;          // this call: instances created
-    std::size_t detached = 0;          // this call: instances destroyed (detach, or stop)
+    std::size_t detached = 0;          // this call: instances destroyed (detach, flush, or stop)
     std::size_t initialised = 0;       // this call: instances that reached Running (onInit Ok, or absent)
     std::size_t updated = 0;           // this call: onUpdate calls made (the hook present or absent)
+    std::size_t destroyed = 0;         // this call: queued entities (engine.destroy) destroyed, with subtrees
     std::size_t faulted = 0;           // this call: instances that became Faulted
     std::size_t running = 0;           // after it: instances Running
     std::size_t unresolved = 0;        // after it: snapshot entities whose script the resolver does not know
@@ -100,8 +104,9 @@ public:
     // One frame of the lifecycle above. An inert or stopped system does nothing and reports bound == false.
     ScriptSystemReport update(double dt);
 
-    // onDestroy once per initialised instance, in attach order, then every instance destroyed, the memos cleared and
-    // the World unbound from the Vm. The system is stopped for good: a later update() or stop() does nothing.
+    // onDestroy once per initialised instance, in attach order, then every instance destroyed, then every entity
+    // still queued destroyed (with no hook left to run), the memos cleared and the World unbound from the Vm.
+    // The system is stopped for good: a later update() or stop() does nothing.
     ScriptSystemReport stop();
 
     // Reloads the script the Guid names, the call a reload trigger makes. NotLoaded, with no Vm call, for a Guid no

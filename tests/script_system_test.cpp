@@ -1,8 +1,8 @@
-// tests/script_system_test.cpp -- task 4.4.1: engine::script::ScriptSystem over one World (LC1-LC25, LC27, LC31-LC38).
-// The system is written against the Vm's public API, so every case drives it through a VM over the built-in table, a
-// World, and a resolver from a script Guid to a res:// path. Scripts observe through `globalThis.log`, instance fields
-// and `this.entity.alive`, so none of these cases needs a bound component and all of them run with the reflect tools
-// OFF. A TU of aero_tests, which supplies main() from test_main.cpp.
+// tests/script_system_test.cpp -- task 4.4.1: engine::script::ScriptSystem over one World (LC1-LC25, LC27, LC31-LC38)
+// and task 4.4.2's flush (LC40-LC48). The system is written against the Vm's public API, so every case drives it
+// through a VM over the built-in table, a World, and a resolver from a script Guid to a res:// path. Scripts observe
+// through `globalThis.log`, instance fields and `this.entity.alive`, so none of these cases needs a bound component and
+// all of them run with the reflect tools OFF. A TU of aero_tests, which supplies main() from test_main.cpp.
 #include <aero/core/guid.hpp>
 #include <aero/core/log.hpp>
 #include <aero/core/vfs.hpp>
@@ -16,6 +16,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -1326,5 +1327,330 @@ TEST_CASE("system: a module load past its budget is settled under the script's p
     static_cast<void>(fx.tick());
     CHECK(capture.countAtLeast(LogLevel::Warn) == 2U);
     CHECK(fx.log() == "b:init:0|b:update:0:0.5|b:update:0:0.5");
+    fx.finish();
+}
+
+// ---- LC40-LC48: the sixth phase, the flush of engine.destroy's queue (task 4.4.2) -----------------------------------
+
+namespace {
+
+// A script whose onUpdate runs `body`; it has no other hook.
+[[nodiscard]] std::string updateSource(std::string_view body) {
+    return classSource(std::format("  onUpdate() {{ {} }}", body));
+}
+
+// A script whose onDestroy logs its entity's name, liveness and parent's name; it has no other hook.
+[[nodiscard]] std::string destroyLogSource() {
+    return classSource(
+        "  onDestroy() {\n"
+        "    log.push('destroy:' + this.entity.name + ':' + this.entity.alive + ':' +\n"
+        "             (this.entity.parent ? this.entity.parent.name : '-'));\n"
+        "  }");
+}
+
+[[nodiscard]] Entity namedEntity(SystemFixture& fx, std::string_view name) {
+    const Entity entity = fx.world.create();
+    REQUIRE(fx.world.setName(entity, name));
+    return entity;
+}
+
+void defineGlobal(SystemFixture& fx, std::string_view name, Entity entity) {
+    REQUIRE(fx.vm.defineEntityGlobal(name, entity) == engine::script::BindStatus::Ok);
+}
+
+}  // namespace
+
+TEST_CASE("system: engine.destroy leaves the entity alive for every script until the update ends (LC40)") {
+    const script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "b.js", updateSource("engine.destroy(globalThis.target);"));
+    fx.publish(guidOf(2), "c.js",
+               updateSource("log.push([target.alive, target.name, engine.find(target.name) === target].join());"));
+    const Entity target = namedEntity(fx, "victim");
+    defineGlobal(fx, "target", target);
+    const Entity b = fx.attachScript(guidOf(1));
+    const Entity c = fx.attachScript(guidOf(2));
+    REQUIRE(b.index < c.index);
+
+    const ScriptSystemReport report = fx.tick();
+    CHECK(fx.log() == "true,victim,true");
+    CHECK(report.destroyed == 1U);
+    CHECK_FALSE(fx.world.alive(target));
+    CHECK(fx.world.alive(b));
+    CHECK(fx.world.alive(c));
+    CHECK(script_test::completion(fx.vm, "String(target.alive)") == "false");
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+    fx.finish();
+}
+
+TEST_CASE("system: a queued subtree's onDestroy hooks run in run order, every entity alive and parented (LC41)") {
+    const script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "d.js", updateSource("engine.destroy(globalThis.R);"));
+    fx.publish(guidOf(2), "n.js", destroyLogSource());
+    const Entity killer = fx.attachScript(guidOf(1));
+    const Entity root = namedEntity(fx, "R");
+    const Entity k1 = namedEntity(fx, "K1");
+    const Entity k2 = namedEntity(fx, "K2");
+    const Entity grand = namedEntity(fx, "G");
+    REQUIRE(fx.world.setParent(k1, root));
+    REQUIRE(fx.world.setParent(k2, root));
+    REQUIRE(fx.world.setParent(grand, k1));
+    defineGlobal(fx, "R", root);
+    for (const Entity entity : {root, k1, k2, grand}) {
+        REQUIRE(fx.world.add<ScriptComponent>(entity, ScriptComponent{guidOf(2)}) != nullptr);
+    }
+
+    const ScriptSystemReport first = fx.tick();
+    CHECK(first.attached == 5U);
+    CHECK(first.detached == 4U);
+    CHECK(first.destroyed == 1U);
+    CHECK(fx.log() == "destroy:R:true:-|destroy:K1:true:R|destroy:K2:true:R|destroy:G:true:K1");
+    for (const Entity entity : {root, k1, k2, grand}) {
+        CHECK_FALSE(fx.world.alive(entity));
+    }
+    CHECK(fx.world.alive(killer));
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+    fx.finish();
+}
+
+TEST_CASE(
+    "system: the flush gives onDestroy to an instance whose onUpdate threw, not to one whose onInit threw (LC42)") {
+    const script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "f.js",
+               classSource("  n = globalThis.serial++;\n"
+                           "  onInit() { if (this.n === 0) throw new Error('init'); }\n"
+                           "  onUpdate() { if (this.n === 1) throw new Error('update'); }\n"
+                           "  onDestroy() { log.push('destroy:' + this.n); }"));
+    fx.publish(guidOf(2), "k.js", updateSource("if (globalThis.kill) { engine.destroy(a); engine.destroy(b); }"));
+    const Entity a = fx.attachScript(guidOf(1));
+    const Entity b = fx.attachScript(guidOf(1));
+    const Entity killer = fx.attachScript(guidOf(2));
+    defineGlobal(fx, "a", a);
+    defineGlobal(fx, "b", b);
+
+    const ScriptSystemReport first = fx.tick();
+    CHECK(first.faulted == 2U);
+    CHECK(first.destroyed == 0U);
+    CHECK(label(fx.system->stateOf(a)) == "Faulted");
+    CHECK(label(fx.system->stateOf(b)) == "Faulted");
+    fx.run("globalThis.kill = true;");
+    const ScriptSystemReport second = fx.tick();
+    CHECK(second.detached == 2U);
+    CHECK(second.destroyed == 2U);
+    CHECK(fx.log() == "destroy:1");
+    CHECK_FALSE(fx.world.alive(a));
+    CHECK_FALSE(fx.world.alive(b));
+    CHECK(fx.world.alive(killer));
+    fx.finish();
+}
+
+TEST_CASE(
+    "system: an onDestroy in the flush may queue another entity, and the flush takes it in the same update (LC43)") {
+    const script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "k.js", updateSource("engine.destroy(globalThis.X);"));
+    fx.publish(guidOf(2), "x.js",
+               classSource("  onDestroy() { log.push('X:' + engine.destroy(globalThis.Y) + ',' +\n"
+                           "                         engine.destroy(this.entity)); }"));
+    fx.publish(guidOf(3), "y.js", classSource("  onDestroy() { log.push('Ydestroy'); }"));
+    const Entity killer = fx.attachScript(guidOf(1));
+    const Entity x = fx.attachScript(guidOf(2));
+    const Entity y = fx.attachScript(guidOf(3));
+    defineGlobal(fx, "X", x);
+    defineGlobal(fx, "Y", y);
+
+    const ScriptSystemReport report = fx.tick();
+    CHECK(fx.log() == "X:true,false|Ydestroy");
+    CHECK(report.destroyed == 2U);
+    CHECK(report.detached == 2U);
+    CHECK_FALSE(fx.world.alive(x));
+    CHECK_FALSE(fx.world.alive(y));
+    CHECK(fx.world.alive(killer));
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+    fx.finish();
+}
+
+TEST_CASE("system: an entity spawned and destroyed in one call leaves no entry for the next update to release (LC44)") {
+    const script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "s.js", updateSource("globalThis.made = engine.spawn(); engine.destroy(made);"));
+    const Entity spawner = fx.attachScript(guidOf(1));
+    REQUIRE(fx.world.entityCount() == 1U);
+
+    const ScriptSystemReport first = fx.tick();
+    CHECK(first.destroyed == 1U);
+    CHECK(first.detached == 0U);
+    CHECK(fx.world.entityCount() == 1U);
+    CHECK(fx.world.alive(spawner));
+    CHECK(script_test::completion(fx.vm, "String(made.alive)") == "false");
+    const ScriptSystemReport second = fx.tick();
+    CHECK(second.attached == 0U);
+    CHECK(second.detached == 0U);
+    CHECK(second.destroyed == 1U);
+    CHECK(fx.world.entityCount() == 1U);
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+    fx.finish();
+}
+
+TEST_CASE("system: an onDestroy that moves entities in or out changes the subtree the flush destroys (LC45)") {
+    const script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "d.js",
+               updateSource("if (!globalThis.done) { globalThis.done = true; engine.destroy(globalThis.R); }"));
+    fx.publish(guidOf(2), "r.js",
+               classSource("  onDestroy() { log.push('Rdestroy'); X.parent = R; K.parent = null; }"));
+    fx.publish(guidOf(3), "k.js",
+               classSource("  onUpdate() { log.push('Kupdate'); }\n  onDestroy() { log.push('Kdestroy'); }"));
+    fx.publish(guidOf(4), "x.js", classSource("  onDestroy() { log.push('Xdestroy'); }"));
+    const Entity killer = fx.attachScript(guidOf(1));
+    const Entity r = fx.attachScript(guidOf(2));
+    const Entity k = fx.attachScript(guidOf(3));
+    const Entity x = fx.attachScript(guidOf(4));
+    REQUIRE(fx.world.setParent(k, r));
+    defineGlobal(fx, "R", r);
+    defineGlobal(fx, "K", k);
+    defineGlobal(fx, "X", x);
+
+    const ScriptSystemReport first = fx.tick();
+    CHECK(fx.log() == "Kupdate|Rdestroy|Xdestroy");
+    CHECK(first.detached == 2U);
+    CHECK(first.destroyed == 1U);
+    CHECK_FALSE(fx.world.alive(r));
+    CHECK_FALSE(fx.world.alive(x));
+    REQUIRE(fx.world.alive(k));
+    CHECK_FALSE(fx.world.parent(k).valid());
+    CHECK(label(fx.system->stateOf(k)) == "Running");
+    CHECK(fx.system->instanceOf(k).valid());
+    CHECK(fx.world.alive(killer));
+
+    fx.clearLog();
+    const ScriptSystemReport second = fx.tick();
+    CHECK(fx.log() == "Kupdate");
+    CHECK(second.updated == 2U);
+    CHECK(second.detached == 0U);
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+    fx.finish();
+}
+
+TEST_CASE("system: stop() runs every onDestroy, then destroys what is still queued, then unbinds (LC46)") {
+    const script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "h.js", classSource("  onDestroy() { log.push('destroy:' + target.alive); }"));
+    const Entity target = namedEntity(fx, "victim");
+    defineGlobal(fx, "target", target);
+    const Entity holder = fx.attachScript(guidOf(1));
+    static_cast<void>(fx.tick());
+    fx.run("engine.destroy(globalThis.target);");
+    CHECK(fx.world.alive(target));
+
+    const ScriptSystemReport stopped = fx.system->stop();
+    CHECK(stopped.detached == 1U);
+    CHECK(stopped.destroyed == 1U);
+    CHECK(fx.log() == "destroy:true");
+    CHECK_FALSE(fx.world.alive(target));
+    CHECK(fx.world.alive(holder));
+    CHECK(fx.vm.takeDestroyQueue().empty());
+    CHECK(script_test::completion(
+              fx.vm, "try { engine.destroy(globalThis.target); 'none'; } catch (x) { x.name + ': ' + x.message; }") ==
+          "TypeError: engine.destroy: no World is bound");
+    fx.finish();
+}
+
+TEST_CASE(
+    "system: an onDestroy past its budget in the flush leaves the rest of the subtree destroyed unhooked (LC47)") {
+    script_test::LogCapture capture;
+    SystemFixture fx{briefBudget()};
+    fx.run("globalThis.ctorP = 0; globalThis.spinP = 0;");
+    fx.publish(guidOf(1), "d.js", updateSource("engine.destroy(globalThis.R);"));
+    fx.publish(guidOf(2), "p.js", destroySpinSource("P"));
+    const Entity killer = fx.attachScript(guidOf(1));
+    const Entity root = fx.attachScript(guidOf(2));
+    const Entity k1 = fx.attachScript(guidOf(2));
+    const Entity k2 = fx.attachScript(guidOf(2));
+    REQUIRE(fx.world.setParent(k1, root));
+    REQUIRE(fx.world.setParent(k2, root));
+    defineGlobal(fx, "R", root);
+    capture.clear();
+
+    const ScriptSystemReport report = fx.tick();
+    const std::vector<script_test::CapturedRecord> loud = capture.atLeast(LogLevel::Warn);
+    REQUIRE(loud.size() == 2U);
+    CHECK(loud[0].level == LogLevel::Error);
+    CHECK(loud[0].message.find("interrupted after exceeding") != std::string::npos);
+    CHECK(loud[1].level == LogLevel::Warn);
+    CHECK(loud[1].message ==
+          "script: res://s/p.js: suspended: a hook ran past its 100 ms time budget; its 3 instances run no hook "
+          "until the script reloads");
+    CHECK(report.detached == 3U);
+    CHECK(report.destroyed == 1U);
+    CHECK(report.suspendedScripts == 1U);
+    CHECK(fx.log() == "Pupdate:0|Pupdate:1|Pupdate:2|Pdestroy:0");
+    CHECK_FALSE(fx.world.alive(root));
+    CHECK_FALSE(fx.world.alive(k1));
+    CHECK_FALSE(fx.world.alive(k2));
+    CHECK(fx.world.alive(killer));
+    fx.finish();
+}
+
+TEST_CASE("system: spawning and destroying a thousand entities per update leaves the heap and the World flat (LC48)") {
+    const script_test::LogCapture capture;
+    constexpr int PER_UPDATE = 1000;
+    constexpr int UPDATE_COUNT = 50;
+    constexpr int SETTLED = 3;  // the first update that has a predecessor to destroy, and the allocator's warm-up
+    SystemFixture fx;
+    fx.publish(guidOf(1), "churn.js",
+               classSource("  prev = [];\n"
+                           "  onUpdate() {\n"
+                           "    for (const old of this.prev) engine.destroy(old);\n"
+                           "    const next = [];\n"
+                           "    for (let i = 0; i < 1000; ++i) {\n"
+                           "      const e = engine.spawn();\n"
+                           "      e.name = 'n' + i;\n"
+                           "      next.push(e);\n"
+                           "    }\n"
+                           "    this.prev = next;\n"
+                           "  }"));
+    static_cast<void>(fx.attachScript(guidOf(1)));
+
+    std::vector<double> millis;
+    millis.reserve(UPDATE_COUNT);
+    std::size_t settledHeap = 0;
+    std::size_t settledAllocations = 0;
+    std::size_t settledEntities = 0;
+    std::size_t heapDrift = 0;
+    std::size_t allocationDrift = 0;
+    std::size_t entityDrift = 0;
+    std::size_t destroyedTotal = 0;
+    for (int update = 1; update <= UPDATE_COUNT; ++update) {
+        const auto start = std::chrono::steady_clock::now();
+        const ScriptSystemReport report = fx.tick();
+        const auto stop = std::chrono::steady_clock::now();
+        millis.push_back(std::chrono::duration<double, std::milli>(stop - start).count());
+        destroyedTotal += report.destroyed;
+        const engine::script::VmStats stats = fx.vm.stats();
+        if (update == SETTLED) {
+            settledHeap = stats.heapBytesInUse;
+            settledAllocations = stats.liveAllocations;
+            settledEntities = fx.world.entityCount();
+        } else if (update > SETTLED) {
+            heapDrift += stats.heapBytesInUse == settledHeap ? 0U : 1U;
+            allocationDrift += stats.liveAllocations == settledAllocations ? 0U : 1U;
+            entityDrift += fx.world.entityCount() == settledEntities ? 0U : 1U;
+        }
+    }
+    std::sort(millis.begin(), millis.end());
+    MESSAGE("LC48: update spawning and destroying ", PER_UPDATE, " entities, median = ", millis[millis.size() / 2],
+            " ms, p95 = ", millis[(millis.size() * 95U) / 100U], " ms");
+
+    CHECK(settledHeap > 0U);  // anti-vacuity: the figures are measurements
+    CHECK(settledAllocations > 0U);
+    CHECK(settledEntities == static_cast<std::size_t>(PER_UPDATE) + 1U);
+    CHECK(destroyedTotal == static_cast<std::size_t>(PER_UPDATE) * (UPDATE_COUNT - 1));
+    CHECK(heapDrift == 0U);
+    CHECK(allocationDrift == 0U);
+    CHECK(entityDrift == 0U);
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
     fx.finish();
 }

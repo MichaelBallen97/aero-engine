@@ -1,12 +1,14 @@
 // Aero Engine -- engine::script::ScriptSystem (task 4.4.1): the script lifecycle over one World. The contract is
 // script_system.hpp's. This file is quickjs-free: it drives the Vm through its public API alone.
 //
-// update() is five phases, in this order, each its own function:
+// update() is six phases, in this order, each its own function:
 //   1. the snapshot of the World's ScriptComponents, sorted by entity index, taken before any script runs;
 //   2. detach: onDestroy (when onInit succeeded) and destroy, for an instance whose entity left or was renamed;
 //   3. attach: resolve each Guid once, load each path once, create one instance per new entity;
 //   4. init: onInit of every instance that has not run it, in attach order;
-//   5. update: onUpdate(dt) of every initialised instance, in attach order.
+//   5. update: onUpdate(dt) of every initialised instance, in attach order;
+//   6. flush: every entity engine.destroy queued, with its subtree: onDestroy of each attached instance in it, in run
+//      order and with its entity alive, then the Vm destroys the subtree (task 4.4.2).
 // The entity key is ONE function (entityKey), used by every lookup; there is no per-entity linear search.
 // A failed call is remembered, not retried (script_system.hpp holds the policy); an Interrupted one suspends its script
 // and is followed by settle(), one empty evaluation named with the script's path.
@@ -27,6 +29,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -303,6 +306,79 @@ struct ScriptSystem::Impl {
         }
     }
 
+    // Every entity key of the subtree below `root`, `root` included. An explicit stack: the walk is not recursive.
+    [[nodiscard]] std::set<std::uint64_t> subtreeKeys(Entity root) const {
+        std::set<std::uint64_t> keys;
+        std::vector<Entity> pending{root};
+        while (!pending.empty()) {
+            const Entity next = pending.back();
+            pending.pop_back();
+            keys.insert(entityKey(next));
+            world.eachChild(next, [&pending](Entity child) { pending.push_back(child); });
+        }
+        return keys;
+    }
+
+    // True when `root` is `entity` or one of its ancestors, read from the World as it stands now.
+    [[nodiscard]] bool isUnder(Entity entity, Entity root) const {
+        for (Entity at = entity; at.valid(); at = world.parent(at)) {
+            if (at == root) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Erases the entries `released` marks, in run order, then rebuilds the index when any went.
+    void compactReleased(const std::vector<bool>& released) {
+        const std::size_t before = runOrder.size();
+        std::size_t kept = 0;
+        for (std::size_t i = 0; i < runOrder.size(); ++i) {
+            if (!released[i]) {
+                if (kept != i) {
+                    runOrder[kept] = std::move(runOrder[i]);
+                }
+                ++kept;
+            }
+        }
+        runOrder.erase(runOrder.begin() + static_cast<std::ptrdiff_t>(kept), runOrder.end());
+        if (runOrder.size() != before) {
+            reindex();
+        }
+    }
+
+    // Phase 6. Each pass takes the Vm's queue. For each queued entity still alive, every attached instance in its
+    // subtree is released (onDestroy under the release rule, then destroyed) in run order, with its entity alive; the
+    // walk repeats until it releases nothing, because an onDestroy may move an entity into or out of the subtree (an
+    // entity that left is spared, so membership is read again from the World before each release). Then the Vm destroys
+    // the subtree. A hook that queues more makes another pass. It ends: each instance is released at most once and
+    // nothing attaches in this phase.
+    void flushDestroys(ScriptSystemReport& report) {
+        for (std::vector<Entity> queue = vm.takeDestroyQueue(); !queue.empty(); queue = vm.takeDestroyQueue()) {
+            std::vector<bool> released(runOrder.size(), false);
+            for (const Entity root : queue) {
+                if (world.alive(root)) {
+                    for (bool releasedAny = true; releasedAny;) {
+                        releasedAny = false;
+                        const std::set<std::uint64_t> members = subtreeKeys(root);
+                        for (std::size_t i = 0; i < runOrder.size(); ++i) {
+                            if (!released[i] && members.contains(entityKey(runOrder[i].entity)) &&
+                                isUnder(runOrder[i].entity, root)) {
+                                released[i] = true;
+                                release(runOrder[i], report);
+                                releasedAny = true;
+                            }
+                        }
+                    }
+                }
+                if (vm.destroyQueued(root)) {  // a dead root only loses its mark
+                    ++report.destroyed;
+                }
+            }
+            compactReleased(released);
+        }
+    }
+
     // The "after it" figures of a report.
     void tally(const std::vector<Snapshot>& rows, ScriptSystemReport& report) const {
         for (const Attached& attached : runOrder) {
@@ -354,6 +430,7 @@ ScriptSystemReport ScriptSystem::update(double dt) {
     impl->attachNew(rows, report);
     impl->runInits(report);
     impl->runUpdates(step, report);
+    impl->flushDestroys(report);
     impl->tally(rows, report);
     return report;
 }
@@ -366,6 +443,10 @@ ScriptSystemReport ScriptSystem::stop() {
     report.bound = true;
     for (Impl::Attached& attached : impl->runOrder) {
         impl->release(attached, report);
+    }
+    // Every instance is released, and destroyQueued runs no script code, so one take is the whole queue.
+    for (const Entity root : impl->vm.takeDestroyQueue()) {
+        report.destroyed += impl->vm.destroyQueued(root) ? 1U : 0U;
     }
     impl->runOrder.clear();
     impl->attachedAt.clear();
