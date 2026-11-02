@@ -318,4 +318,73 @@ JSValue vectorSetAxis(JSContext* ctx, JSValueConst thisValue, JSValueConst value
 JSValue vectorSet(JSContext* ctx, JSValueConst thisValue, int argc, JSValueConst* argv, int dimension) noexcept;
 JSValue vectorCopy(JSContext* ctx, JSValueConst thisValue, int argc, JSValueConst* argv, int dimension) noexcept;
 
+// The in-place helpers (task 4.4.2). One dispatcher; its magic carries the class as well as the operation, so a Quat
+// helper lifted onto a Vec3 refuses it as the axis accessors do.
+enum class VectorOp : std::uint8_t {
+    Add,
+    Sub,
+    Scale,
+    AddScaled,
+    Negate,
+    Normalize,
+    Lerp,
+    Cross,
+    ApplyQuat,
+    Clone,
+    Dot,
+    Length,
+    LengthSquared,
+    DistanceTo,
+    Multiply,
+    Premultiply,
+    Invert,
+    Slerp,
+    SetFromAxisAngle,
+    SetFromEuler,
+    ToEuler,
+};
+struct VectorHelper {
+    std::string_view name;
+    VectorOp op;
+    int length;
+};
+[[nodiscard]] constexpr int vectorHelperMagic(int dimension, VectorOp op) noexcept {
+    return dimension * 32 + static_cast<int>(op);  // 21 ops < 32
+}
+// In definition order on the prototype, after set and copy.
+inline constexpr std::array<VectorHelper, 14> VEC3_HELPERS{{{"add", VectorOp::Add, 1},
+                                                            {"sub", VectorOp::Sub, 1},
+                                                            {"scale", VectorOp::Scale, 1},
+                                                            {"addScaled", VectorOp::AddScaled, 2},
+                                                            {"negate", VectorOp::Negate, 0},
+                                                            {"normalize", VectorOp::Normalize, 0},
+                                                            {"lerp", VectorOp::Lerp, 2},
+                                                            {"cross", VectorOp::Cross, 1},
+                                                            {"applyQuat", VectorOp::ApplyQuat, 1},
+                                                            {"clone", VectorOp::Clone, 0},
+                                                            {"dot", VectorOp::Dot, 1},
+                                                            {"length", VectorOp::Length, 0},
+                                                            {"lengthSquared", VectorOp::LengthSquared, 0},
+                                                            {"distanceTo", VectorOp::DistanceTo, 1}}};
+inline constexpr std::array<VectorHelper, 10> QUAT_HELPERS{{{"multiply", VectorOp::Multiply, 1},
+                                                            {"premultiply", VectorOp::Premultiply, 1},
+                                                            {"invert", VectorOp::Invert, 0},
+                                                            {"normalize", VectorOp::Normalize, 0},
+                                                            {"slerp", VectorOp::Slerp, 2},
+                                                            {"setFromAxisAngle", VectorOp::SetFromAxisAngle, 2},
+                                                            {"setFromEuler", VectorOp::SetFromEuler, 3},
+                                                            {"clone", VectorOp::Clone, 0},
+                                                            {"toEuler", VectorOp::ToEuler, 0},
+                                                            {"dot", VectorOp::Dot, 1}}};
+JSValue vectorHelper(JSContext* ctx, JSValueConst thisValue, int argc, JSValueConst* argv, int magic) noexcept;
+
+// Shared with the transform helpers. `where` is the site text ("engine.Transform.translate"). An instance of the
+// dimension's class read out whole (a view resolves its entity now); false: a TypeError is pending
+// ("<where>: expected an engine.Vec3, got ...") or the view's own resolve error.
+[[nodiscard]] bool readVectorArgument(JSContext* ctx, const ScriptApi& api, JSValueConst value, int dimension,
+                                      const std::string& where, std::array<float, 4>& out);
+// A new detached engine.Vec3 / engine.Quat holding `values`. JS_EXCEPTION with an exception pending on a refusal.
+[[nodiscard]] JSValue newDetachedVector(JSContext* ctx, const ScriptApi& api, int dimension,
+                                        const std::array<float, 4>& values) noexcept;
+
 }  // namespace engine::script

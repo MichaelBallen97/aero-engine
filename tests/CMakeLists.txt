@@ -53,6 +53,7 @@ add_executable(aero_tests
     script_attach_test.cpp # task 4.4.1 -- engine.Script and the instances the VM attaches to entities (VM66-VM87)
     script_system_test.cpp # task 4.4.1 -- ScriptSystem: the lifecycle over one World (LC1-LC25, LC27, LC31-LC38, LC40-LC49)
     script_world_test.cpp # task 4.4.2 -- the entity table, the world functions and the destroy queue (WA1-WA28)
+    script_math_test.cpp # task 4.4.2 -- the Vec3 and Quat helpers (VX1-VX15)
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)

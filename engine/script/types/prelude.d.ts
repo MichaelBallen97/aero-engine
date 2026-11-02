@@ -32,6 +32,34 @@ declare namespace engine {
         set(x: number, y: number, z: number): this;
         /** Copies another Vec3 into this one and returns this vector. */
         copy(v: Vec3): this;
+        /** Adds v to this vector and returns it. */
+        add(v: Vec3): this;
+        /** Subtracts v from this vector and returns it. */
+        sub(v: Vec3): this;
+        /** Multiplies this vector by s and returns it. */
+        scale(s: number): this;
+        /** Adds v times s to this vector and returns it. */
+        addScaled(v: Vec3, s: number): this;
+        /** Negates this vector and returns it. */
+        negate(): this;
+        /** Scales this vector to unit length (a zero vector stays zero) and returns it. */
+        normalize(): this;
+        /** Moves this vector the fraction t of the way to v (t is not clamped) and returns it. */
+        lerp(v: Vec3, t: number): this;
+        /** Sets this vector to the cross product this x v and returns it. */
+        cross(v: Vec3): this;
+        /** Rotates this vector by q (normalized first) and returns it. */
+        applyQuat(q: Quat): this;
+        /** A new detached Vec3 holding this vector's values. */
+        clone(): Vec3;
+        /** The dot product with v. */
+        dot(v: Vec3): number;
+        /** The length. */
+        length(): number;
+        /** The squared length. */
+        lengthSquared(): number;
+        /** The distance to v. */
+        distanceTo(v: Vec3): number;
     }
 
     /** A rotation quaternion. A component's Quat field reads as a live view. */
@@ -47,6 +75,26 @@ declare namespace engine {
         set(x: number, y: number, z: number, w: number): this;
         /** Copies another Quat into this one and returns this quaternion. */
         copy(q: Quat): this;
+        /** Sets this quaternion to this * q (q applied first) and returns it. */
+        multiply(q: Quat): this;
+        /** Sets this quaternion to q * this (q applied last) and returns it. */
+        premultiply(q: Quat): this;
+        /** Inverts this quaternion (a zero quaternion becomes the identity) and returns it. */
+        invert(): this;
+        /** Scales this quaternion to unit length (a zero quaternion becomes the identity) and returns it. */
+        normalize(): this;
+        /** Moves this rotation the fraction t of the way to q along the shorter arc and returns it. */
+        slerp(q: Quat, t: number): this;
+        /** Sets this quaternion to a rotation of radians about axis (normalized first; a zero axis gives the identity) and returns it. */
+        setFromAxisAngle(axis: Vec3, radians: number): this;
+        /** Sets this quaternion from Euler angles in radians, the Inspector's order, and returns it. */
+        setFromEuler(x: number, y: number, z: number): this;
+        /** A new detached Quat holding this quaternion's values. */
+        clone(): Quat;
+        /** The Euler angles in radians, the Inspector's order, as a new Vec3. */
+        toEuler(): Vec3;
+        /** The dot product with q. */
+        dot(q: Quat): number;
     }
 
     /** An entity of the World the VM is bound to. A script cannot construct one. */

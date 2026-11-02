@@ -19,7 +19,7 @@ e.alive = false; // expect TS2540
 console.log("x"); // expect TS2584
 setTimeout(() => {}, 1); // expect TS2304
 const pattern = /\p{L}/v; // expect TS1501
-t.position = { x: 1, y: 2, z: 3, set() { return this; }, copy() { return this; } }; // expect TS2741
+t.position = { x: 1, y: 2, z: 3, set() { return this; }, copy() { return this; } }; // expect TS2740
 class Hack extends engine.Transform {} // expect TS2675
 declare const audio: engine.AudioSource;
 const listener: engine.AudioListener = audio; // expect TS2322

@@ -266,6 +266,298 @@ JSValue vectorCopy(JSContext* ctx, JSValueConst thisValue, int /*argc*/, JSValue
     return JS_DupValue(ctx, thisValue);
 }
 
+// ---- the in-place helpers (task 4.4.2) --------------------------------------------------------------------------
+// One dispatcher for every Vec3 and Quat helper. The order is the one the rules fix: the receiver, then the kind of
+// every argument, then every vector argument read out whole, then the receiver read, then the arithmetic, then one
+// write for a mutator. So `v.cross(v)` and `t.position.add(t.position)` read before they write, and a stale view
+// argument throws before the receiver changes. Every result comes from the engine's own float math, and each core
+// function that asserts on an input a script can supply (a zero or NaN quaternion, a non-unit axis) is guarded here.
+
+namespace {
+
+// How many arguments a helper takes and of which kind: at most one vector first (its class: 3 for a Vec3, 4 for a
+// Quat, 0 for none), then `numbers` numbers.
+struct HelperShape {
+    int vectorClassDimension = 0;
+    int numbers = 0;
+};
+
+[[nodiscard]] HelperShape shapeOf(int dimension, VectorOp op) noexcept {
+    switch (op) {
+        case VectorOp::Add:
+        case VectorOp::Sub:
+        case VectorOp::Cross:
+        case VectorOp::DistanceTo:
+            return {3, 0};
+        case VectorOp::Scale:
+            return {0, 1};
+        case VectorOp::AddScaled:
+        case VectorOp::Lerp:
+        case VectorOp::SetFromAxisAngle:
+            return {3, 1};
+        case VectorOp::Negate:
+        case VectorOp::Normalize:
+        case VectorOp::Clone:
+        case VectorOp::Length:
+        case VectorOp::LengthSquared:
+        case VectorOp::Invert:
+        case VectorOp::ToEuler:
+            return {0, 0};
+        case VectorOp::ApplyQuat:
+        case VectorOp::Multiply:
+        case VectorOp::Premultiply:
+            return {4, 0};
+        case VectorOp::Slerp:
+            return {4, 1};
+        case VectorOp::Dot:
+            return {dimension, 0};
+        case VectorOp::SetFromEuler:
+            return {0, 3};
+    }
+    return {};
+}
+
+// "engine.<Class>.<helper>": built only when something is thrown.
+[[nodiscard]] std::string helperWhere(int dimension, VectorOp op) {
+    const auto named = [&](const auto& helpers) {
+        for (const VectorHelper& helper : helpers) {
+            if (helper.op == op) {
+                return className(dimension) + "." + std::string{helper.name};
+            }
+        }
+        return className(dimension);
+    };
+    return dimension == 3 ? named(VEC3_HELPERS) : named(QUAT_HELPERS);
+}
+
+[[nodiscard]] Vec3 vec3Of(const std::array<float, 4>& values) noexcept { return Vec3{values[0], values[1], values[2]}; }
+[[nodiscard]] Quat quatValueOf(const std::array<float, 4>& values) noexcept {
+    return Quat{values[0], values[1], values[2], values[3]};
+}
+
+struct HelperInput {
+    std::array<float, 4> receiver{};
+    std::array<float, 4> vector{};  // the vector argument, when the helper takes one
+    std::array<float, 3> numbers{};
+};
+
+// What a helper produces: new values for the receiver, a number, or a new detached vector (of `dimension`).
+struct HelperResult {
+    enum class Kind : std::uint8_t { Store, Number, Detached, Unsupported };
+    Kind kind = Kind::Unsupported;
+    std::array<float, 4> values{};
+    float number = 0.0F;
+    int dimension = 3;
+};
+
+[[nodiscard]] HelperResult storing(Vec3 v) noexcept {
+    return {HelperResult::Kind::Store, {v.x, v.y, v.z, 0.0F}, 0.0F, 3};
+}
+[[nodiscard]] HelperResult storing(Quat q) noexcept {
+    return {HelperResult::Kind::Store, {q.x, q.y, q.z, q.w}, 0.0F, 4};
+}
+[[nodiscard]] HelperResult numeric(float number) noexcept { return {HelperResult::Kind::Number, {}, number, 3}; }
+[[nodiscard]] HelperResult detached(Vec3 v) noexcept {
+    return {HelperResult::Kind::Detached, {v.x, v.y, v.z, 0.0F}, 0.0F, 3};
+}
+[[nodiscard]] HelperResult detached(Quat q) noexcept {
+    return {HelperResult::Kind::Detached, {q.x, q.y, q.z, q.w}, 0.0F, 4};
+}
+
+// invert(): NaN gives NaN in every component (inverse() asserts lenSq > 0, which NaN fails, so the NaN test comes
+// first), a length within EPSILON of zero gives the identity, anything else is inverse().
+[[nodiscard]] Quat invertTotal(Quat q) noexcept {
+    const float lenSq = lengthSquared(q);
+    if (std::isnan(lenSq)) {
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        return Quat{nan, nan, nan, nan};
+    }
+    if (lenSq <= EPSILON * EPSILON) {
+        return Quat::identity();
+    }
+    return inverse(q);
+}
+
+// setFromAxisAngle(): fromAxisAngle() asserts a unit axis, which a zero, NaN or infinite axis is not even after
+// normalizeOrZero. Zero gives the identity; any other non-unit result (NaN, from a NaN or infinite axis) stores NaN.
+[[nodiscard]] Quat axisAngleTotal(Vec3 axis, float radians) noexcept {
+    const Vec3 unit = normalizeOrZero(axis);
+    const float unitSq = lengthSquared(unit);
+    if (unitSq == 0.0F) {
+        return Quat::identity();
+    }
+    if (!approxEquals(unitSq, 1.0F)) {
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        return Quat{nan, nan, nan, nan};
+    }
+    return fromAxisAngle(unit, radians);
+}
+
+// An op the class does not install is unreachable (the magic names the class), and answers Unsupported.
+[[nodiscard]] HelperResult vec3Helper(VectorOp op, const HelperInput& in) noexcept {
+    const Vec3 a = vec3Of(in.receiver);
+    const Vec3 v = vec3Of(in.vector);
+    const float s = in.numbers[0];
+    switch (op) {
+        case VectorOp::Add:
+            return storing(a + v);
+        case VectorOp::Sub:
+            return storing(a - v);
+        case VectorOp::Scale:
+            return storing(a * s);
+        case VectorOp::AddScaled:
+            return storing(a + v * s);
+        case VectorOp::Negate:
+            return storing(-a);
+        case VectorOp::Normalize:
+            return storing(normalizeOrZero(a));
+        case VectorOp::Lerp:
+            return storing(lerp(a, v, s));
+        case VectorOp::Cross:
+            return storing(cross(a, v));
+        case VectorOp::ApplyQuat:
+            return storing(normalizeOrIdentity(quatValueOf(in.vector)) * a);
+        case VectorOp::Clone:
+            return detached(a);
+        case VectorOp::Dot:
+            return numeric(dot(a, v));
+        case VectorOp::Length:
+            return numeric(length(a));
+        case VectorOp::LengthSquared:
+            return numeric(lengthSquared(a));
+        case VectorOp::DistanceTo:
+            return numeric(distance(a, v));
+        case VectorOp::Multiply:
+        case VectorOp::Premultiply:
+        case VectorOp::Invert:
+        case VectorOp::Slerp:
+        case VectorOp::SetFromAxisAngle:
+        case VectorOp::SetFromEuler:
+        case VectorOp::ToEuler:
+            return {};
+    }
+    return {};
+}
+
+[[nodiscard]] HelperResult quatHelper(VectorOp op, const HelperInput& in) noexcept {
+    const Quat a = quatValueOf(in.receiver);
+    const Quat q = quatValueOf(in.vector);
+    switch (op) {
+        case VectorOp::Multiply:
+            return storing(a * q);
+        case VectorOp::Premultiply:
+            return storing(q * a);
+        case VectorOp::Invert:
+            return storing(invertTotal(a));
+        case VectorOp::Normalize:
+            return storing(normalizeOrIdentity(a));
+        case VectorOp::Slerp:
+            return storing(slerp(a, q, in.numbers[0]));
+        case VectorOp::SetFromAxisAngle:
+            return storing(axisAngleTotal(vec3Of(in.vector), in.numbers[0]));
+        case VectorOp::SetFromEuler:
+            return storing(normalizeOrIdentity(fromEulerAngles(Vec3{in.numbers[0], in.numbers[1], in.numbers[2]})));
+        case VectorOp::Clone:
+            return detached(a);
+        case VectorOp::ToEuler:
+            return detached(eulerAngles(a));
+        case VectorOp::Dot:
+            return numeric(dot(a, q));
+        case VectorOp::Add:
+        case VectorOp::Sub:
+        case VectorOp::Scale:
+        case VectorOp::AddScaled:
+        case VectorOp::Negate:
+        case VectorOp::Lerp:
+        case VectorOp::Cross:
+        case VectorOp::ApplyQuat:
+        case VectorOp::Length:
+        case VectorOp::LengthSquared:
+        case VectorOp::DistanceTo:
+            return {};
+    }
+    return {};
+}
+
+// "<where>: expected an engine.Vec3, got <actual>"
+[[nodiscard]] JSValue notAVector(JSContext* ctx, JSValueConst value, int dimension, const std::string& where) {
+    return throwTypeError(
+        ctx, where + ": expected an " + className(dimension) + ", got " + describeValue(ctx, value, scriptApiOf(ctx)));
+}
+
+}  // namespace
+
+JSValue vectorHelper(JSContext* ctx, JSValueConst thisValue, int /*argc*/, JSValueConst* argv, int magic) noexcept {
+    const int dimension = magic / 32;
+    const auto op = static_cast<VectorOp>(magic % 32);
+    const ScriptApi& api = scriptApiOf(ctx);
+    VectorCell* const cell = findCell(ctx, thisValue, dimension);
+    if (cell == nullptr) {
+        return foreignReceiver(ctx, dimension, helperWhere(dimension, op));
+    }
+    // The kind of every argument first, by opaque or by tag: nothing a script could observe runs. The helper was made
+    // with its length, so argv holds that many values (undefined where the script passed fewer).
+    const HelperShape shape = shapeOf(dimension, op);
+    HelperInput input;
+    const VectorCell* argument = nullptr;
+    int next = 0;
+    if (shape.vectorClassDimension != 0) {
+        argument = static_cast<const VectorCell*>(JS_GetOpaque(argv[0], vectorClass(api, shape.vectorClassDimension)));
+        if (argument == nullptr) {
+            return notAVector(ctx, argv[0], shape.vectorClassDimension, helperWhere(dimension, op));
+        }
+        next = 1;
+    }
+    for (int i = 0; i < shape.numbers; ++i) {
+        const JSValueConst number = argv[next + i];
+        switch (readFloat(ctx, number, input.numbers[static_cast<std::size_t>(i)])) {
+            case NumberRead::Ok:
+                break;
+            case NumberRead::NotANumber:
+                return notANumber(ctx, number, helperWhere(dimension, op));
+            case NumberRead::Failed:
+                return JS_EXCEPTION;
+        }
+    }
+    // Then the vector argument out whole, then the receiver: both before anything is written.
+    if ((argument != nullptr && !readVector(ctx, api, *argument, shape.vectorClassDimension, input.vector)) ||
+        !readVector(ctx, api, *cell, dimension, input.receiver)) {
+        return JS_EXCEPTION;
+    }
+    const HelperResult result = dimension == 3 ? vec3Helper(op, input) : quatHelper(op, input);
+    switch (result.kind) {
+        case HelperResult::Kind::Store:
+            if (!writeVector(ctx, api, *cell, dimension, result.values, {})) {
+                return JS_EXCEPTION;
+            }
+            return JS_DupValue(ctx, thisValue);
+        case HelperResult::Kind::Number:
+            return JS_NewFloat64(ctx, static_cast<double>(result.number));
+        case HelperResult::Kind::Detached:
+            return newDetachedVector(ctx, api, result.dimension, result.values);
+        case HelperResult::Kind::Unsupported:
+            break;
+    }
+    return foreignReceiver(ctx, dimension, helperWhere(dimension, op));
+}
+
+bool readVectorArgument(JSContext* ctx, const ScriptApi& api, JSValueConst value, int dimension,
+                        const std::string& where, std::array<float, 4>& out) {
+    const auto* const cell = static_cast<const VectorCell*>(JS_GetOpaque(value, vectorClass(api, dimension)));
+    if (cell == nullptr) {
+        static_cast<void>(notAVector(ctx, value, dimension, where));
+        return false;
+    }
+    return readVector(ctx, api, *cell, dimension, out);
+}
+
+JSValue newDetachedVector(JSContext* ctx, const ScriptApi& api, int dimension,
+                          const std::array<float, 4>& values) noexcept {
+    VectorCell cell;
+    cell.values = values;
+    return newOpaqueObject(ctx, vectorClass(api, dimension), cell);
+}
+
 }  // namespace engine::script
 
 // ---- a component field's value ----------------------------------------------------------------------------------

@@ -230,6 +230,17 @@ struct ClassSpec {
     }
     spec.methods.push_back(MethodSpec{"set", &vectorSet, dimension, dimension});
     spec.methods.push_back(MethodSpec{"copy", &vectorCopy, 1, dimension});
+    const auto addHelpers = [&](const auto& helpers) {
+        for (const VectorHelper& helper : helpers) {
+            spec.methods.push_back(MethodSpec{std::string{helper.name}, &vectorHelper, helper.length,
+                                              vectorHelperMagic(dimension, helper.op)});
+        }
+    };
+    if (dimension == 3) {
+        addHelpers(VEC3_HELPERS);
+    } else {
+        addHelpers(QUAT_HELPERS);
+    }
     return spec;
 }
 

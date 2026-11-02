@@ -489,7 +489,8 @@ TEST_CASE("script: set and copy write whole vectors or nothing, and refuse a for
          "TypeError: engine.Vec3.set: the receiver is not an engine.Vec3|"
          "TypeError: engine.Quat.copy: the receiver is not an engine.Quat"},
         {"return Object.keys(Object.getOwnPropertyDescriptors(engine.Vec3.prototype)).join();",
-         "x,y,z,set,copy,constructor"},
+         "x,y,z,set,copy,add,sub,scale,addScaled,negate,normalize,lerp,cross,applyQuat,clone,dot,length,"
+         "lengthSquared,distanceTo,constructor"},
     }};
     for (const ScriptRow& row : rows) {
         INFO("script: " << row.script);
