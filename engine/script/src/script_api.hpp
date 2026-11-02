@@ -121,6 +121,13 @@ void releaseScriptApi(JSContext* ctx, ScriptApi& api) noexcept;
 // Frees every held object and empties the table. noexcept: JS_FreeValue runs only the shared finalizer
 // (finalizeOpaque), never script code.
 void releaseEntityObjects(JSContext* ctx, ScriptApi& api) noexcept;
+// A new array holding the entity object of each of `entities`, in order, all of the current binding (the array rule: no
+// World access happens while objects are made). JS_EXCEPTION, with an exception pending, when the heap limit refused
+// one; whatever was made is freed then.
+[[nodiscard]] JSValue entityArray(JSContext* ctx, ScriptApi& api, const std::vector<Entity>& entities);
+// entityArray over the direct children of `parent`, in attach order. Its own function, in this file, so a noexcept host
+// function calls it without a vector's throwing paths being visible to clang-tidy's bugprone-exception-escape.
+[[nodiscard]] JSValue childrenArray(JSContext* ctx, ScriptApi& api, Entity parent);
 
 // ---- shared by the API's files --------------------------------------------------------------------------------
 
@@ -182,13 +189,23 @@ struct Site {
 
 // The host functions the class install attaches (magic: see the comment on each).
 JSValue entityMethod(JSContext* ctx, JSValueConst thisValue, int argc, JSValueConst* argv, int method) noexcept;
-JSValue entityAlive(JSContext* ctx, JSValueConst thisValue, int magic) noexcept;
+// engine.Entity's accessors (magic = index into ENTITY_PROPERTIES) and children().
+JSValue entityGet(JSContext* ctx, JSValueConst thisValue, int magic) noexcept;
+JSValue entitySet(JSContext* ctx, JSValueConst thisValue, JSValueConst value, int magic) noexcept;
+JSValue entityChildren(JSContext* ctx, JSValueConst thisValue, int argc, JSValueConst* argv, int magic) noexcept;
 // A component field's accessor pair; magic = component << 8 | field.
 JSValue fieldGet(JSContext* ctx, JSValueConst thisValue, int magic) noexcept;
 JSValue fieldSet(JSContext* ctx, JSValueConst thisValue, JSValueConst value, int magic) noexcept;
 
 // The methods of engine.Entity, in magic order.
 inline constexpr std::array<std::string_view, 4> ENTITY_METHODS{"has", "get", "add", "remove"};
+
+// The accessors of engine.Entity, in magic order.
+struct EntityProperty {
+    std::string_view name;
+    bool readOnly;
+};
+inline constexpr std::array<EntityProperty, 3> ENTITY_PROPERTIES{{{"alive", true}, {"name", false}, {"parent", false}}};
 
 [[nodiscard]] constexpr int fieldMagic(std::size_t component, std::size_t field) noexcept {
     return static_cast<int>((component << 8U) | field);

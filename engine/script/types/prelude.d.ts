@@ -62,6 +62,12 @@ declare namespace engine {
         add<T extends Component>(type: ComponentClass<T>): T;
         /** Removes the component; false when the entity had none. */
         remove<T extends Component>(type: ComponentClass<T>): boolean;
+        /** The entity's name; "" when it has none, and assigning "" clears it. Names are never unique. */
+        name: string;
+        /** The parent entity, or null for a root. Assigning keeps the local Transform, so the world position follows the new parent; a cycle throws. */
+        parent: Entity | null;
+        /** The direct children, in the order they were attached. */
+        children(): Entity[];
     }
 
     /** The base class of a script: a script module's default export extends it, and the engine makes one instance per entity whose ScriptComponent names the script. */

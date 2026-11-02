@@ -174,14 +174,103 @@ JSValue entityMethod(JSContext* ctx, JSValueConst thisValue, int /*argc*/, JSVal
     }
 }
 
-JSValue entityAlive(JSContext* ctx, JSValueConst thisValue, int /*magic*/) noexcept {
-    const ScriptApi& api = scriptApiOf(ctx);
+JSValue entityGet(JSContext* ctx, JSValueConst thisValue, int magic) noexcept {
+    ScriptApi& api = scriptApiOf(ctx);
+    assert(magic >= 0 && static_cast<std::size_t>(magic) < ENTITY_PROPERTIES.size());
+    const Site site{"Entity", ENTITY_PROPERTIES[static_cast<std::size_t>(magic)].name, {}};
     const EntityRef* const ref = entityOf(api, thisValue);
     if (ref == nullptr) {
-        return foreignEntity(ctx, Site{"Entity", "alive", {}});
+        return foreignEntity(ctx, site);
     }
-    // Never throws for an entity object: no World, an earlier binding and a dead entity all read false.
-    return JS_NewBool(ctx, api.world != nullptr && ref->binding == api.binding && api.world->alive(ref->entity));
+    switch (magic) {
+        case 0:  // alive: never throws for an entity object (no World, an earlier binding and a dead entity read false)
+            return JS_NewBool(ctx,
+                              api.world != nullptr && ref->binding == api.binding && api.world->alive(ref->entity));
+        case 1: {  // name
+            if (!resolveEntity(ctx, api, *ref, site)) {
+                return JS_EXCEPTION;
+            }
+            const std::string_view name = api.world->name(ref->entity);  // copied by the call below, at once
+            return JS_NewStringLen(ctx, name.empty() ? "" : name.data(), name.size());
+        }
+        default: {  // parent
+            if (!resolveEntity(ctx, api, *ref, site)) {
+                return JS_EXCEPTION;
+            }
+            const Entity parent = api.world->parent(ref->entity);
+            return parent.valid() ? entityObjectFor(ctx, api, EntityRef{parent, api.binding}) : JS_NULL;
+        }
+    }
+}
+
+JSValue entitySet(JSContext* ctx, JSValueConst thisValue, JSValueConst value, int magic) noexcept {
+    ScriptApi& api = scriptApiOf(ctx);
+    assert(magic >= 1 && static_cast<std::size_t>(magic) < ENTITY_PROPERTIES.size());  // alive has no setter
+    const Site site{"Entity", ENTITY_PROPERTIES[static_cast<std::size_t>(magic)].name, {}};
+    const EntityRef* const ref = entityOf(api, thisValue);
+    if (ref == nullptr) {
+        return foreignEntity(ctx, site);
+    }
+    // Receiver, then the value, then the World, then the write (rule 9): a wrong value on a dead entity names the
+    // value.
+    if (magic == 1) {  // name
+        if (!JS_IsString(value)) {
+            return throwAt(ctx, site, "expected a string, got " + describeValue(ctx, value, api));
+        }
+        const HeldCString text{ctx, value};  // the length comes from the backend: an embedded U+0000 is kept
+        if (!text.ok()) {
+            return JS_EXCEPTION;
+        }
+        if (!resolveEntity(ctx, api, *ref, site)) {
+            return JS_EXCEPTION;
+        }
+        static_cast<void>(api.world->setName(ref->entity, text.view()));  // "" clears; a live entity cannot refuse
+        return JS_UNDEFINED;
+    }
+    // parent
+    const EntityRef* const target = entityOf(api, value);
+    if (!JS_IsNull(value) && target == nullptr) {
+        return throwAt(ctx, site, "expected an engine.Entity or null, got " + describeValue(ctx, value, api));
+    }
+    if (!resolveEntity(ctx, api, *ref, site)) {
+        return JS_EXCEPTION;
+    }
+    World& world = *api.world;
+    Entity parent{};
+    if (target != nullptr) {
+        if (target->binding != api.binding) {
+            return throwAt(ctx, site, "the new parent belongs to an earlier World binding");
+        }
+        if (!world.alive(target->entity)) {
+            return throwAt(ctx, site, "the new parent is not alive");
+        }
+        if (target->entity == ref->entity) {
+            return throwAt(ctx, site, "the new parent is the entity itself");
+        }
+        for (Entity ancestor = world.parent(target->entity); ancestor.valid(); ancestor = world.parent(ancestor)) {
+            if (ancestor == ref->entity) {
+                return throwAt(ctx, site, "the new parent is in the entity's subtree");
+            }
+        }
+        parent = target->entity;
+    }
+    // Every refusal was decided above, so this cannot log. The local Transform is not touched.
+    static_cast<void>(world.setParent(ref->entity, parent));
+    return JS_UNDEFINED;
+}
+
+JSValue entityChildren(JSContext* ctx, JSValueConst thisValue, int /*argc*/, JSValueConst* /*argv*/,
+                       int /*magic*/) noexcept {
+    ScriptApi& api = scriptApiOf(ctx);
+    const Site site{"Entity", "children", {}};
+    const EntityRef* const ref = entityOf(api, thisValue);
+    if (ref == nullptr) {
+        return foreignEntity(ctx, site);
+    }
+    if (!resolveEntity(ctx, api, *ref, site)) {
+        return JS_EXCEPTION;
+    }
+    return childrenArray(ctx, api, ref->entity);
 }
 
 JSValue fieldGet(JSContext* ctx, JSValueConst thisValue, int magic) noexcept {

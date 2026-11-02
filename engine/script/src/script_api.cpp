@@ -290,12 +290,17 @@ bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
     entity.classId = &api.entityClass;
     entity.constructor = &entityConstructor;
     entity.throwing = true;
-    entity.getter = &entityAlive;
-    entity.accessors.push_back(AccessorSpec{"alive", 0, true});
+    entity.getter = &entityGet;
+    entity.setter = &entitySet;
+    for (std::size_t property = 0; property < ENTITY_PROPERTIES.size(); ++property) {
+        entity.accessors.push_back(AccessorSpec{std::string{ENTITY_PROPERTIES[property].name},
+                                                static_cast<int>(property), ENTITY_PROPERTIES[property].readOnly});
+    }
     for (std::size_t method = 0; method < ENTITY_METHODS.size(); ++method) {
         entity.methods.push_back(
             MethodSpec{std::string{ENTITY_METHODS[method]}, &entityMethod, 1, static_cast<int>(method)});
     }
+    entity.methods.push_back(MethodSpec{"children", &entityChildren, 0, 0});
     if (!installClass(ctx, rt, ns.get(), entity, nullptr) || !installScriptBase(ctx, ns.get(), api)) {
         return false;
     }
