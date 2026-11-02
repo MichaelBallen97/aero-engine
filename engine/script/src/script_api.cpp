@@ -113,8 +113,12 @@ JSValue scriptBaseConstructor(JSContext* ctx, JSValueConst newTarget, int /*argc
     if (api.pendingEntity.has_value()) {  // the first base construction of an engine-driven construction takes it
         const EntityRef ref = *api.pendingEntity;
         api.pendingEntity.reset();
-        if (JS_DefinePropertyValueStr(ctx, object.get(), "entity", newOpaqueObject(ctx, api.entityClass, ref),
-                                      JS_PROP_CONFIGURABLE) < 0) {
+        HeldValue entityObject{ctx, entityObjectFor(ctx, api, ref)};
+        if (entityObject.isException()) {
+            return JS_EXCEPTION;
+        }
+        // The define consumes the value on every path.
+        if (JS_DefinePropertyValueStr(ctx, object.get(), "entity", entityObject.release(), JS_PROP_CONFIGURABLE) < 0) {
             return JS_EXCEPTION;
         }
     }
@@ -302,6 +306,7 @@ bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
 }
 
 void releaseScriptApi(JSContext* ctx, ScriptApi& api) noexcept {
+    releaseEntityObjects(ctx, api);
     for (const JSValue constructor : api.componentConstructors) {
         JS_FreeValue(ctx, constructor);
     }

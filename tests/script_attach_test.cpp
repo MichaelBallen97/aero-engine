@@ -440,7 +440,7 @@ TEST_CASE("vm: only the first base construction inside an attach takes the entit
     expose(fx.vm, b, "i");
     CHECK(script_test::completion(fx.vm, std::format("{0}(i).join() + '/' + {0}(inner).join()", names)) ==
           "entity/entity");
-    CHECK(script_test::completion(fx.vm, "[i.entity.alive, inner.entity.alive, i.entity !== inner.entity].join()") ==
+    CHECK(script_test::completion(fx.vm, "[i.entity.alive, inner.entity.alive, i.entity === inner.entity].join()") ==
           "true,true,true");
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     script_test::expectCleanShutdown(fx.vm);

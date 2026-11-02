@@ -43,6 +43,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 namespace engine {
@@ -66,6 +67,11 @@ struct VectorCell {
     bool view = false;
 };
 
+// The one key every per-entity map of the script layer uses (the 3.7.2 rule: one comparator, one place).
+[[nodiscard]] constexpr std::uint64_t entityKeyOf(Entity entity) noexcept {
+    return (std::uint64_t{entity.index} << 32U) | entity.generation;
+}
+
 struct ScriptApi {
     const internal::ComponentBindingTable* table = nullptr;  // borrowed
     World* world = nullptr;                                  // borrowed; null when none is bound
@@ -81,6 +87,9 @@ struct ScriptApi {
                                                  // releaseScriptApi before the context
     std::optional<EntityRef> pendingEntity;      // set by the VM around ONE engine-driven construction; taken by the
                                                  // first base construction inside it (C4)
+    // Task 4.4.2: the one engine.Entity object of each entity of the current binding, HELD. Emptied by every bindWorld
+    // and unbindWorld and by releaseScriptApi.
+    std::unordered_map<std::uint64_t, JSValue> entityObjects;
 };
 
 enum class ClassCheck : std::uint8_t {
@@ -102,9 +111,16 @@ enum class ClassCheck : std::uint8_t {
 void releaseScriptApi(JSContext* ctx, ScriptApi& api) noexcept;
 // The API a host function belongs to: the context opaque, set at create.
 [[nodiscard]] ScriptApi& scriptApiOf(JSContext* ctx) noexcept;
-// A new engine.Entity object for `entity`, stamped with the current binding. JS_EXCEPTION, with an exception pending,
-// when the heap limit refused it.
-[[nodiscard]] JSValue newEntityObject(JSContext* ctx, const ScriptApi& api, Entity entity);
+
+// ---- the entity table (script_api_world.cpp) --------------------------------------------------------------------
+// The one engine.Entity object of `ref` while `ref` is of the current binding and a World is bound: made once,
+// non-extensible, held until the binding ends, and returned with a new reference on every call. Any other ref (an
+// earlier binding, or no World) gets a new non-extensible object the table never holds. JS_EXCEPTION, with an exception
+// pending, when the heap limit refused it.
+[[nodiscard]] JSValue entityObjectFor(JSContext* ctx, ScriptApi& api, const EntityRef& ref);
+// Frees every held object and empties the table. noexcept: JS_FreeValue runs only the shared finalizer
+// (finalizeOpaque), never script code.
+void releaseEntityObjects(JSContext* ctx, ScriptApi& api) noexcept;
 
 // ---- shared by the API's files --------------------------------------------------------------------------------
 

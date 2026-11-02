@@ -493,6 +493,15 @@ VmCreateResult internal::VmAccess::create(const VmConfig& config, const Componen
     return Vm::createWith(config, nullptr, components);
 }
 
+std::size_t internal::VmAccess::atomCount(const Vm& vm) {
+    if (vm.impl == nullptr || !vm.impl->onVmThread() || vm.impl->rt == nullptr) {
+        return 0;
+    }
+    JSMemoryUsage usage{};
+    JS_ComputeMemoryUsage(vm.impl->rt, &usage);
+    return static_cast<std::size_t>(usage.atom_count);
+}
+
 VmCreateResult Vm::createWith(const VmConfig& config, const VirtualFileSystem* modules,
                               const internal::ComponentBindingTable& components) {
     if (const VmCreateStatus refusal = validate(config); refusal != VmCreateStatus::Ok) {

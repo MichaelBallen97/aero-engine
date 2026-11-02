@@ -456,7 +456,7 @@ bool Vm::Impl::holdEntity(JSValueConst object, const EntityRef& ref, EvalResult&
             }
         }
     }
-    HeldValue entityObject{ctx, newOpaqueObject(ctx, scriptApi.entityClass, ref)};
+    HeldValue entityObject{ctx, entityObjectFor(ctx, scriptApi, ref)};
     if (entityObject.isException()) {
         adopt(evaluation, trap(Phase::Run));
         return false;

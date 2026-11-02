@@ -107,10 +107,6 @@ std::string describeSite(const Site& site) {
     return text;
 }
 
-JSValue newEntityObject(JSContext* ctx, const ScriptApi& api, Entity entity) {
-    return newOpaqueObject(ctx, api.entityClass, EntityRef{entity, api.binding});
-}
-
 bool resolveEntity(JSContext* ctx, const ScriptApi& api, const EntityRef& ref, const Site& site) {
     if (api.world == nullptr) {
         static_cast<void>(throwAt(ctx, site, "no World is bound"));
@@ -254,6 +250,7 @@ BindStatus Vm::bindWorld(World& world) {
     }
     ++api.binding;  // every call starts a new binding, the same World included
     api.world = &world;
+    releaseEntityObjects(impl->ctx, api);  // every lookup under the new binding makes a new object
     return BindStatus::Ok;
 }
 
@@ -268,6 +265,7 @@ void Vm::unbindWorld() noexcept {
     }
     assert(!impl->inCall);
     impl->scriptApi.world = nullptr;
+    releaseEntityObjects(impl->ctx, impl->scriptApi);
 }
 
 BindStatus Vm::defineEntityGlobal(std::string_view name, Entity entity) {
@@ -285,7 +283,7 @@ BindStatus Vm::defineEntityGlobal(std::string_view name, Entity entity) {
                        name.size());
         return BindStatus::InvalidName;
     }
-    const ScriptApi& api = impl->scriptApi;
+    ScriptApi& api = impl->scriptApi;
     if (api.world == nullptr) {
         AERO_LOG_ERROR("script: defineEntityGlobal refused: no World is bound");
         return BindStatus::NoWorld;
@@ -295,7 +293,7 @@ BindStatus Vm::defineEntityGlobal(std::string_view name, Entity entity) {
         return BindStatus::DeadEntity;
     }
     JSContext* const ctx = impl->ctx;
-    HeldValue object{ctx, newEntityObject(ctx, api, entity)};
+    HeldValue object{ctx, entityObjectFor(ctx, api, EntityRef{entity, api.binding})};
     if (object.isException()) {
         impl->clearPendingException();
         AERO_LOG_ERROR("script: defineEntityGlobal '{}' failed: out of memory (heap limit {} bytes)", name,

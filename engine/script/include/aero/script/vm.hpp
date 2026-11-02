@@ -386,12 +386,13 @@ public:
     // entity object a script made under an earlier binding throws on every access, because an Entity means
     // something only to the World that minted it (entity.hpp). Refused with UnregisteredComponent and one ERROR,
     // the previous binding kept, when the World does not register every component this VM binds (a moved-from
-    // World registers none). Success logs nothing. Never from inside a call.
+    // World registers none). Success logs nothing. Never from inside a call. It also empties the VM's entity table
+    // (task 4.4.2): every lookup under the new binding makes a new object, and an object of the old binding reads dead.
     BindStatus bindWorld(World& world);
     BindStatus bindWorld(World&& world) = delete;  // no temporary
 
-    // Every later access through an entity object throws "no World is bound". Idempotent; an invalid VM or another
-    // thread is one ERROR and no change.
+    // Every later access through an entity object throws "no World is bound". It also empties the VM's entity table
+    // (task 4.4.2). Idempotent; an invalid VM or another thread is one ERROR and no change.
     void unbindWorld() noexcept;
 
     // Defines globalThis[name] as an engine.Entity for `entity`: writable, configurable and enumerable, through a
