@@ -1,6 +1,7 @@
 // tests/script_system_test.cpp -- task 4.4.1: engine::script::ScriptSystem over one World (LC1-LC25, LC27, LC31-LC38)
-// and task 4.4.2's flush and entity.script (LC40-LC49). The system is written against the Vm's public API, so every
-// case drives it through a VM over the built-in table, a World, and a resolver from a script Guid to a res:// path.
+// and task 4.4.2's flush and entity.script (LC40-LC49, LC51-LC53). The system is written against the Vm's public API,
+// so every case drives it through a VM over the built-in table, a World, and a resolver from a script Guid to a
+// res:// path.
 // Scripts observe through `globalThis.log`, instance fields and `this.entity.alive`, so none of these cases needs a
 // bound component and all of them run with the reflect tools OFF. A TU of aero_tests, which supplies main() from
 // test_main.cpp.
@@ -1705,5 +1706,60 @@ TEST_CASE("system: an entity whose attach failed and which the same update destr
     CHECK_FALSE(fx.world.alive(doomed));
     CHECK(label(fx.system->stateOf(doomed)) == "None");
     CHECK(fx.tick().failedAttaches == 0U);
+    fx.finish();
+}
+
+TEST_CASE("system: a destroyed subtree takes the attach failure of a child with it, not only the root's (LC52)") {
+    const script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "r.js",
+               classSource("  onUpdate() { engine.destroy(this.entity); }\n"
+                           "  onDestroy() { log.push('Rdestroy'); }"));
+    fx.publish(guidOf(2), "boom.js", classSource("  constructor() {\n    super();\n    throw new Error('boom');\n  }"));
+    const Entity root = fx.attachScript(guidOf(1));
+    const Entity child = fx.attachScript(guidOf(2));
+    REQUIRE(fx.world.setParent(child, root));
+
+    const ScriptSystemReport report = fx.tick();
+    CHECK(recordsNaming(capture, "boom") >= 1U);  // the child's attach did fail, in this same update
+    CHECK(report.attached == 1U);
+    CHECK(report.detached == 1U);
+    CHECK(report.destroyed == 1U);
+    CHECK(fx.log() == "Rdestroy");
+    CHECK(report.failedAttaches == 0U);  // the child went with its parent before the report was taken
+    CHECK_FALSE(fx.world.alive(root));
+    CHECK_FALSE(fx.world.alive(child));
+    CHECK(label(fx.system->stateOf(child)) == "None");
+    CHECK(fx.tick().failedAttaches == 0U);
+    fx.finish();
+}
+
+TEST_CASE("system: an entity an onDestroy moves out of a destroyed subtree keeps its attach failure (LC53)") {
+    script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "r.js",
+               classSource("  onUpdate() { engine.destroy(this.entity); }\n"
+                           "  onDestroy() { log.push('Rdestroy'); F.parent = null; }"));
+    fx.publish(guidOf(2), "boom.js", classSource("  constructor() {\n    super();\n    throw new Error('boom');\n  }"));
+    const Entity root = fx.attachScript(guidOf(1));
+    const Entity freed = fx.attachScript(guidOf(2));
+    REQUIRE(fx.world.setParent(freed, root));
+    defineGlobal(fx, "F", freed);
+
+    const ScriptSystemReport report = fx.tick();
+    CHECK(recordsNaming(capture, "boom") >= 1U);  // the attach did fail, in this same update
+    CHECK(report.destroyed == 1U);
+    CHECK(fx.log() == "Rdestroy");
+    CHECK_FALSE(fx.world.alive(root));
+    REQUIRE(fx.world.alive(freed));
+    CHECK_FALSE(fx.world.parent(freed).valid());
+    CHECK(report.failedAttaches == 1U);  // the moved entity still exists, and so does its failure
+    CHECK(label(fx.system->stateOf(freed)) == "AttachFailed");
+
+    capture.clear();
+    const ScriptSystemReport next = fx.tick();
+    CHECK(next.failedAttaches == 1U);
+    CHECK(recordsNaming(capture, "boom") == 0U);  // a kept failure is not attached, and so not logged, again
+    CHECK(label(fx.system->stateOf(freed)) == "AttachFailed");
     fx.finish();
 }
