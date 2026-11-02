@@ -1,5 +1,6 @@
 // Aero Engine -- the generated built-in binding table (task 4.2.1; BN6, and from the later steps BN37-BN52), and the
-// script lifecycle end to end over it (task 4.4.1; BN56, BN57, LC26, LC28-LC30, LC39).
+// script lifecycle end to end over it (task 4.4.1; BN56, BN57, LC26, LC28-LC30, LC39), and the world API end to end
+// over two committed bundles (task 4.4.2; LC50).
 //
 // Compiled into aero_tests only when AERO_REFLECT_TOOLS is ON: with the tools OFF the table is empty by design and
 // there is nothing generated to check.
@@ -1014,6 +1015,98 @@ TEST_CASE("script: a thousand entities on the committed bundle take two hundred 
         wrongX += scene.x(entity) == 200.0F ? 0U : 1U;
     }
     CHECK(wrongX == 0U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    scene.finish();
+}
+
+namespace {
+
+constexpr std::string_view PLAYER_PATH = "res://world/player.js";
+constexpr std::string_view ENEMY_PATH = "res://world/enemy.js";
+
+// The live entities named `name`, in ascending entity index.
+[[nodiscard]] std::vector<Entity> entitiesNamed(const World& world, std::string_view name) {
+    std::vector<Entity> found;
+    world.eachEntity([&](Entity entity) {
+        if (world.name(entity) == name) {
+            found.push_back(entity);
+        }
+    });
+    std::sort(found.begin(), found.end(), [](Entity a, Entity b) { return a.index < b.index; });
+    return found;
+}
+
+// Whether every Transform in `entities` sits at the positions in `expected`, exactly, in order; false on a size
+// mismatch.
+[[nodiscard]] bool positionsAre(const World& world, const std::vector<Entity>& entities,
+                                const std::vector<engine::Vec3>& expected) {
+    if (entities.size() != expected.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < entities.size(); ++i) {
+        const auto* const held = world.get<Transform>(entities[i]);
+        if (held == nullptr || !(held->position == expected[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+TEST_CASE("script: two committed bundles spawn, find, move and destroy entities across three updates (LC50)") {
+    namespace fs = std::filesystem;
+    REQUIRE(fs::is_regular_file(fs::path{AERO_SCRIPT_FIXTURES_DIR} / "world" / "player.js"));  // never a skip
+    REQUIRE(fs::is_regular_file(fs::path{AERO_SCRIPT_FIXTURES_DIR} / "world" / "enemy.js"));
+    const LogCapture log;
+    LifecycleScene scene{fixtureDirectory()};
+    scene.publish(scriptGuid(2), PLAYER_PATH);
+    scene.publish(scriptGuid(3), ENEMY_PATH);
+    const Entity player = scene.spawn(scriptGuid(2));
+    const Entity enemy = scene.spawn(scriptGuid(3));
+    const Entity turret = scene.spawn(scriptGuid(3));
+    REQUIRE(scene.world.setName(player, "Player"));
+    REQUIRE(scene.world.setName(enemy, "Enemy"));
+    REQUIRE(scene.world.setName(turret, "Turret"));
+    REQUIRE(scene.world.setParent(turret, enemy));
+    scene.world.get<Transform>(enemy)->position = engine::Vec3{0.0F, 0.0F, -10.0F};
+    scene.world.get<Transform>(turret)->position = engine::Vec3{0.0F, 1.0F, 0.0F};
+
+    const ScriptSystemReport first = scene.system->update(0.5);
+    CHECK(first.attached == 3U);
+    CHECK(first.faulted == 0U);
+    CHECK(entitiesNamed(scene.world, "Bullet").size() == 3U);
+    CHECK(positionsAre(scene.world, entitiesNamed(scene.world, "Bullet"),
+                       {{0.0F, 0.0F, -1.5F}, {0.0F, 0.0F, -2.5F}, {0.0F, 0.0F, -3.5F}}));
+    const ScriptInstance playerInstance = scene.system->instanceOf(player);
+    REQUIRE(playerInstance.valid());
+    REQUIRE(VmAccess::defineInstanceGlobal(scene.vm, playerInstance, "p"));
+    CHECK(completion(scene.vm, "p.foundSelf") == "true");
+    CHECK(completion(scene.vm, "p.sawBullets") == "3");
+    CHECK(completion(scene.vm, "p.queried") == "3");
+
+    const ScriptSystemReport second = scene.system->update(0.5);
+    CHECK(second.destroyed == 1U);
+    CHECK(second.detached == 2U);
+    CHECK_FALSE(scene.world.alive(enemy));
+    CHECK_FALSE(scene.world.alive(turret));
+    CHECK(positionsAre(scene.world, entitiesNamed(scene.world, "Wreck"), {{0.0F, 0.0F, -10.0F}, {0.0F, 1.0F, -10.0F}}));
+    CHECK(completion(scene.vm, "p.queuedAlive") == "true");  // the entity was alive when hit() answered
+
+    const ScriptSystemReport third = scene.system->update(0.5);
+    CHECK(third.updated == 1U);
+    CHECK(positionsAre(scene.world, entitiesNamed(scene.world, "Bullet"),
+                       {{0.0F, 0.0F, -2.5F}, {0.0F, 0.0F, -3.5F}, {0.0F, 0.0F, -4.5F}}));
+    engine::Quat expected{};
+    for (int turn = 0; turn < 3; ++turn) {
+        expected = engine::normalizeOrIdentity(expected * engine::fromAxisAngle(engine::Vec3{0.0F, 1.0F, 0.0F}, 0.5F));
+    }
+    const auto* const turned = scene.world.get<Transform>(player);
+    REQUIRE(turned != nullptr);
+    CHECK(engine::approxEquals(turned->rotation, expected, 1e-6F));
+
+    const ScriptSystemReport stopped = scene.system->stop();
+    CHECK(stopped.detached == 1U);
     CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
     scene.finish();
 }

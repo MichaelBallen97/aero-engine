@@ -67,7 +67,7 @@ struct TransformScene {
     }
 
     [[nodiscard]] Transform& transformOf(Entity entity) {
-        Transform* const found = world.get<Transform>(entity);
+        auto* const found = world.get<Transform>(entity);
         REQUIRE(found != nullptr);
         return *found;
     }

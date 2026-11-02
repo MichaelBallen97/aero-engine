@@ -1657,7 +1657,7 @@ TEST_CASE("system: spawning and destroying a thousand entities per update leaves
 }
 
 TEST_CASE("system: entity.script is answered from the VM's attaches, not from the system's states (LC49)") {
-    script_test::LogCapture capture;
+    const script_test::LogCapture capture;
     SystemFixture fx;
     // `a` reads the script of an entity attached in the same update, before that entity's own onInit has run.
     fx.publish(guidOf(1), "a.js",
