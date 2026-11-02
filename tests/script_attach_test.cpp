@@ -886,9 +886,10 @@ TEST_CASE("vm: script is a read-only accessor that throws for a dead entity and 
     entityGlobal(fx, "e1", e1);
     entityGlobal(fx, "doomed", doomed);
 
-    // The backend refuses an assignment to a getter-only accessor in sloppy code as well as in strict code.
-    CHECK(caught(fx, "(function () { e1.script = null; return 'assigned'; })()") ==
-          "TypeError: no setter for property");
+    // Sloppy code ignores an assignment to a getter-only accessor (evaluateScript compiles strict, so the sloppy
+    // function is made by Function); strict code throws.
+    CHECK(caught(fx, "new Function(\"e1.script = null; return 'assigned'\")()") == "assigned");
+    CHECK(script_test::completion(fx.vm, "String(e1.script === a)") == "true");
     CHECK(caught(fx, "(function () { 'use strict'; e1.script = null; return 'assigned'; })()") ==
           "TypeError: no setter for property");
     CHECK(script_test::completion(fx.vm, "String(e1.script === a)") == "true");

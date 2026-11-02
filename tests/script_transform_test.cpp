@@ -40,7 +40,6 @@ using script_test::LogCapture;
 constexpr float HALF_SQRT2_F = static_cast<float>(0.7071067811865476);
 constexpr Quat TURN_Y{0.0F, HALF_SQRT2_F, 0.0F, HALF_SQRT2_F};  // a quarter turn about +Y
 constexpr Quat TURN_X{HALF_SQRT2_F, 0.0F, 0.0F, HALF_SQRT2_F};  // a quarter turn about +X
-constexpr Quat HALF_TURN_Y{0.0F, 1.0F, 0.0F, 0.0F};
 
 // A World (every built-in registered by its constructor) and a VM over the generated table bound to it. The VM is
 // declared after the World, so it is destroyed first.
@@ -244,13 +243,21 @@ TEST_CASE("transform: lookAt faces -Z at the target, with the given or the world
 TEST_CASE("transform: lookAt under a turned parent stores the local rotation, not the world one (XF6)") {
     const LogCapture log;
     TransformScene scene;
-    const Entity parent = scene.make("p", transformAt(Vec3{0.0F, 0.0F, 10.0F}, HALF_TURN_Y));
+    // The parent turns about +X and the aim has yaw and pitch, so the parent's turn and the world rotation do not
+    // commute: undoing the parent on the right instead of the left aims the child elsewhere.
+    const Entity parent = scene.make("p", transformAt(Vec3{0.0F, 0.0F, 10.0F}, TURN_X));
     const Entity child = scene.make("c", transformAt(Vec3{0.0F, 0.0F, 1.0F}), parent);
+    REQUIRE(near(worldPositionOf(scene.world, child), Vec3{0.0F, -1.0F, 10.0F}, 1e-5F));
 
     completion(scene.vm, "c.get(engine.Transform).lookAt(new engine.Vec3(3, 0, 4)); 0");
-    const Vec3 eye = worldPositionOf(scene.world, child);
-    const Vec3 expected = engine::normalize(Vec3{3.0F, 0.0F, 4.0F} - eye);
-    CHECK(near(worldAxisOf(scene.world, child, Vec3{0, 0, -1}), expected, 1e-5F));
+    // From the eye (0, -1, 10) the target lies along (3, 1, -6). The up is +Y with its part along that direction
+    // removed: (0, 1, 0) - (3, 1, -6) / 46 = (-3, 45, 6) / 46.
+    const Vec3 expectedForward = engine::normalize(Vec3{3.0F, 1.0F, -6.0F});
+    const Vec3 expectedUp = engine::normalize(Vec3{-3.0F, 45.0F, 6.0F});
+    CHECK(near(worldAxisOf(scene.world, child, Vec3{0, 0, -1}), expectedForward, 1e-5F));
+    CHECK(near(worldAxisOf(scene.world, child, Vec3{0, 1, 0}), expectedUp, 1e-5F));
+    CHECK(near(scene.vec3("c.get(engine.Transform).forward()"), expectedForward, 1e-5F));
+    CHECK(near(scene.vec3("c.get(engine.Transform).up()"), expectedUp, 1e-5F));
 
     engine::Trs world;
     REQUIRE(engine::decompose(engine::worldMatrix(scene.world, child), world));
