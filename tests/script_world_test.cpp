@@ -1,6 +1,7 @@
 // tests/script_world_test.cpp -- task 4.4.2: the World side of the script API. WA1-WA6 are the entity table (one
 // engine.Entity object per entity per binding); WA7-WA14 are the entity's name, parent and children; WA15-WA28 are
-// spawn, destroy, find, findAll and query and the Vm's destroy queue. A TU of aero_tests, which supplies main() from
+// spawn, destroy, find, findAll and query and the Vm's destroy queue; WA29-WA34 close the orderings and the
+// flushed subtree's leftovers the sabotage matrix found open. A TU of aero_tests, which supplies main() from
 // test_main.cpp. Nothing here needs a reflected component (the cases that name a component class use the fixture
 // table), so the reflect-tools-OFF tree runs every case.
 #include <aero/core/log.hpp>
@@ -923,4 +924,141 @@ TEST_CASE(
     CHECK(invalid[0].message == "script: takeDestroyQueue on an invalid Vm (a failed create or a moved-from Vm)");
     CHECK(invalid[1].message == "script: destroyQueued on an invalid Vm (a failed create or a moved-from Vm)");
     script_test::expectCleanShutdown(moved);
+}
+
+// ---- WA29-WA34: orderings and ghosts the matrix found open ---------------------------------------------------------
+
+TEST_CASE("world: with no World bound find and findAll name a wrong value, not the missing World (WA29)") {
+    const script_test::LogCapture log;
+    script_test::ProbeScene scene;
+    REQUIRE(script_test::completion(scene.vm, std::string{THROWN_HELPER} + " 'ok'") == "ok");
+    scene.vm.unbindWorld();
+    CHECK(script_test::completion(scene.vm, "thrown(() => engine.find(5))") ==
+          "TypeError: engine.find: expected a string, got a number");
+    CHECK(script_test::completion(scene.vm, "thrown(() => engine.find({}))") ==
+          "TypeError: engine.find: expected a string, got an object");
+    CHECK(script_test::completion(scene.vm, "thrown(() => engine.findAll(5))") ==
+          "TypeError: engine.findAll: expected a string, got a number");
+    // A right value still reaches the World check.
+    CHECK(script_test::completion(scene.vm, "thrown(() => engine.find('a'))") ==
+          "TypeError: engine.find: no World is bound");
+    CHECK(script_test::completion(scene.vm, "thrown(() => engine.findAll('a'))") ==
+          "TypeError: engine.findAll: no World is bound");
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("world: findAll of the empty string is an empty array while unnamed entities exist (WA30)") {
+    const script_test::LogCapture log;
+    WorldScene scene;
+    std::vector<Entity> made;
+    for (int i = 0; i < 5; ++i) {
+        made.push_back(scene.world.create());
+    }
+    REQUIRE(scene.world.setName(made[1], "Named"));
+    REQUIRE(scene.world.name(made[0]).empty());
+    REQUIRE(scene.world.name(made[2]).empty());
+
+    CHECK(script_test::completion(scene.vm, "JSON.stringify(engine.findAll(''))") == "[]");
+    CHECK(script_test::completion(scene.vm, "String(engine.findAll('Named').length)") == "1");
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("world: with no World bound query names a wrong class or count, not the missing World (WA31)") {
+    const script_test::LogCapture log;
+    script_test::ProbeScene scene;
+    REQUIRE(script_test::completion(scene.vm, std::string{THROWN_HELPER} + " 'ok'") == "ok");
+    scene.vm.unbindWorld();
+    CHECK(script_test::completion(scene.vm, "thrown(() => engine.query(5))") ==
+          "TypeError: engine.query: argument 1 is not an engine component class, got a number");
+    CHECK(script_test::completion(scene.vm, "thrown(() => engine.query(engine.ScriptProbe, 'x'))") ==
+          "TypeError: engine.query: argument 2 is not an engine component class, got a string");
+    CHECK(script_test::completion(scene.vm, "thrown(() => engine.query())") ==
+          "RangeError: engine.query: expected 1 to 8 component classes, got 0");
+    // Right classes still reach the World check.
+    CHECK(script_test::completion(scene.vm, "thrown(() => engine.query(engine.ScriptProbe))") ==
+          "TypeError: engine.query: no World is bound");
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE(
+    "world: a flushed subtree spends the marks of its queued descendants, so a recreated one queues again (WA32)") {
+    const script_test::LogCapture log;
+    WorldScene scene;
+    const Entity a = scene.world.create();
+    const Entity a1 = scene.world.create();
+    const Entity a2 = scene.world.create();
+    REQUIRE(scene.world.setParent(a1, a));
+    REQUIRE(scene.world.setParent(a2, a1));
+    scene.define("a", a);
+    scene.define("a1", a1);
+    scene.define("a2", a2);
+    CHECK(script_test::completion(scene.vm, "[engine.destroy(a), engine.destroy(a1), engine.destroy(a2)].join()") ==
+          "true,true,true");
+    CHECK(scene.vm.takeDestroyQueue() == std::vector<Entity>{a, a1, a2});
+
+    CHECK(scene.vm.destroyQueued(a));
+    CHECK_FALSE(scene.world.alive(a1));
+    CHECK_FALSE(scene.world.alive(a2));
+    REQUIRE(scene.world.recreate(a1) == a1);
+    REQUIRE(scene.world.recreate(a2) == a2);
+    // A leftover mark would answer false here, as for an entity that is already queued.
+    CHECK(script_test::completion(scene.vm, "[engine.destroy(a1), engine.destroy(a2)].join()") == "true,true");
+    CHECK(scene.vm.takeDestroyQueue() == std::vector<Entity>{a1, a2});
+    CHECK(scene.world.alive(a1));
+    CHECK(scene.world.alive(a2));
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("world: a flushed subtree evicts every descendant's object, so a recreated handle gets a new one (WA33)") {
+    const script_test::LogCapture log;
+    WorldScene scene;
+    const Entity a = scene.world.create();
+    const Entity a1 = scene.world.create();
+    const Entity a2 = scene.world.create();
+    REQUIRE(scene.world.setParent(a1, a));
+    REQUIRE(scene.world.setParent(a2, a1));
+    scene.define("a", a);
+    scene.define("a1", a1);
+    scene.define("a2", a2);
+    CHECK(script_test::completion(scene.vm, "String(engine.destroy(a))") == "true");
+    REQUIRE(scene.vm.takeDestroyQueue() == std::vector<Entity>{a});
+    CHECK(scene.vm.destroyQueued(a));
+
+    REQUIRE(scene.world.recreate(a1) == a1);
+    REQUIRE(scene.world.recreate(a2) == a2);
+    scene.define("x1", a1);
+    scene.define("x2", a2);
+    CHECK(script_test::completion(scene.vm, "[x1 !== a1, x2 !== a2, x1.alive, x2.alive].join()") ==
+          "true,true,true,true");
+    // The new objects are the table's: every path hands them out again.
+    CHECK(script_test::completion(scene.vm, "String(x1 === x1)") == "true");
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("world: the name setter names a wrong value before a dead receiver or a missing World (WA34)") {
+    const script_test::LogCapture log;
+    WorldScene scene;
+    const Entity live = scene.world.create();
+    const Entity doomed = scene.world.create();
+    scene.define("live", live);
+    scene.define("gone", doomed);
+    REQUIRE(script_test::completion(scene.vm, std::string{THROWN_HELPER} + " 'ok'") == "ok");
+    REQUIRE(scene.world.destroy(doomed));
+
+    CHECK(script_test::completion(scene.vm, "thrown(() => { gone.name = 5; })") ==
+          "TypeError: engine.Entity.name: expected a string, got a number");
+    CHECK(script_test::completion(scene.vm, "thrown(() => { gone.name = 'x'; })") ==
+          "TypeError: engine.Entity.name: the entity is not alive");
+    scene.vm.unbindWorld();
+    CHECK(script_test::completion(scene.vm, "thrown(() => { live.name = 5; })") ==
+          "TypeError: engine.Entity.name: expected a string, got a number");
+    CHECK(script_test::completion(scene.vm, "thrown(() => { live.name = 'x'; })") ==
+          "TypeError: engine.Entity.name: no World is bound");
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
 }

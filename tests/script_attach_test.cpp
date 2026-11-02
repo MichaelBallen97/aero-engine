@@ -906,3 +906,28 @@ TEST_CASE("vm: script is a read-only accessor that throws for a dead entity and 
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     script_test::expectCleanShutdown(fx.vm);
 }
+
+TEST_CASE("vm: entity.script is null for an entity with none, whichever attached entity sorts after it (VM88)") {
+    const script_test::LogCapture log;
+    engine::World world;
+    Fixture fx;
+    const Entity before = world.create();  // sorts below the attached entities
+    const Entity e1 = world.create();
+    const Entity between = world.create();  // sorts between them
+    const Entity e2 = world.create();
+    bind(fx, world);
+    load(fx, "m.js", classSource("  id = 'm';"));
+    const ScriptInstance a = attached(fx, "m.js", e1);
+    const ScriptInstance b = attached(fx, "m.js", e2);
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    entityGlobal(fx, "before", before);
+    entityGlobal(fx, "e1", e1);
+    entityGlobal(fx, "between", between);
+    entityGlobal(fx, "e2", e2);
+
+    CHECK(script_test::completion(fx.vm, "[before.script, between.script].map(String).join()") == "null,null");
+    CHECK(script_test::completion(fx.vm, "[e1.script === a, e2.script === b].join()") == "true,true");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
