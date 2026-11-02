@@ -1,8 +1,9 @@
 // tests/script_system_test.cpp -- task 4.4.1: engine::script::ScriptSystem over one World (LC1-LC25, LC27, LC31-LC38)
-// and task 4.4.2's flush (LC40-LC48). The system is written against the Vm's public API, so every case drives it
-// through a VM over the built-in table, a World, and a resolver from a script Guid to a res:// path. Scripts observe
-// through `globalThis.log`, instance fields and `this.entity.alive`, so none of these cases needs a bound component and
-// all of them run with the reflect tools OFF. A TU of aero_tests, which supplies main() from test_main.cpp.
+// and task 4.4.2's flush and entity.script (LC40-LC49). The system is written against the Vm's public API, so every
+// case drives it through a VM over the built-in table, a World, and a resolver from a script Guid to a res:// path.
+// Scripts observe through `globalThis.log`, instance fields and `this.entity.alive`, so none of these cases needs a
+// bound component and all of them run with the reflect tools OFF. A TU of aero_tests, which supplies main() from
+// test_main.cpp.
 #include <aero/core/guid.hpp>
 #include <aero/core/log.hpp>
 #include <aero/core/vfs.hpp>
@@ -1652,5 +1653,37 @@ TEST_CASE("system: spawning and destroying a thousand entities per update leaves
     CHECK(allocationDrift == 0U);
     CHECK(entityDrift == 0U);
     CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
+    fx.finish();
+}
+
+TEST_CASE("system: entity.script is answered from the VM's attaches, not from the system's states (LC49)") {
+    script_test::LogCapture capture;
+    SystemFixture fx;
+    // `a` reads the script of an entity attached in the same update, before that entity's own onInit has run.
+    fx.publish(guidOf(1), "a.js",
+               classSource("  onInit() { log.push('a:' + (other.script !== null) + ':' + other.script.n); }"));
+    fx.publish(guidOf(2), "b.js",
+               classSource("  n = 7;\n  onInit() { log.push('b:init'); }\n"
+                           "  onUpdate() { throw new Error('boom'); }"));
+    const Entity first = fx.attachScript(guidOf(1));
+    const Entity other = fx.attachScript(guidOf(2));
+    REQUIRE(first.index < other.index);
+    defineGlobal(fx, "other", other);
+
+    static_cast<void>(fx.tick());
+    CHECK(fx.log() == "a:true:7|b:init");
+    CHECK(recordsNaming(capture, "boom") >= 1U);  // b's onUpdate threw: its instance is faulted, not detached
+    CHECK(label(fx.system->stateOf(other)) == "Faulted");
+    CHECK(script_test::completion(fx.vm, "String(other.script.n)") == "7");
+    CHECK(script_test::completion(fx.vm, "String(other.script.entity === other)") == "true");
+
+    fx.clearLog();
+    static_cast<void>(fx.tick());
+    CHECK(script_test::completion(fx.vm, "String(other.script !== null)") == "true");
+
+    REQUIRE(fx.world.remove<ScriptComponent>(other));
+    const ScriptSystemReport report = fx.tick();
+    CHECK(report.detached >= 1U);
+    CHECK(script_test::completion(fx.vm, "String(other.script)") == "null");
     fx.finish();
 }

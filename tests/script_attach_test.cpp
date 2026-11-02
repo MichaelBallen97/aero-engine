@@ -747,3 +747,161 @@ TEST_CASE("vm: callTimeBudget reads the configured budget and the hook names are
     CHECK(engine::script::scriptHookName(ScriptHook::Update) == "onUpdate");
     CHECK(engine::script::scriptHookName(ScriptHook::Destroy) == "onDestroy");
 }
+
+// ---- VM83-VM87: entity.script, the instance attached to an entity (task 4.4.2)
+// ---------------------------------------
+
+namespace {
+
+void entityGlobal(Fixture& fx, std::string_view name, Entity entity) {
+    REQUIRE(fx.vm.defineEntityGlobal(name, entity) == BindStatus::Ok);
+}
+
+// `expr` inside a function that throws nothing: its result, or "<name>: <message>" of what it threw.
+[[nodiscard]] std::string caught(Fixture& fx, std::string_view expr) {
+    return script_test::completion(
+        fx.vm, std::format("(function () {{ try {{ return String({}); }} catch (x) {{ return x.name + ': ' + "
+                           "x.message; }} }})()",
+                           expr));
+}
+
+}  // namespace
+
+TEST_CASE("vm: entity.script is the instance attached to the entity, and null for an entity with none (VM83)") {
+    const script_test::LogCapture log;
+    engine::World world;
+    Fixture fx;
+    const Entity e1 = world.create();
+    const Entity e2 = world.create();
+    const Entity bare = world.create();
+    bind(fx, world);
+    load(fx, "m.js", classSource("  n = 0;\n  bump() { this.n += 1; return this.n; }"));
+    const ScriptInstance a = attached(fx, "m.js", e1);
+    const ScriptInstance b = attached(fx, "m.js", e2);
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    entityGlobal(fx, "e1", e1);
+    entityGlobal(fx, "e2", e2);
+    entityGlobal(fx, "bare", bare);
+
+    CHECK(script_test::completion(fx.vm,
+                                  "[e1.script === a, e2.script === b, e1.script !== e2.script, bare.script]"
+                                  ".map(String).join()") == "true,true,true,null");
+    CHECK(script_test::completion(fx.vm, "e1.script !== Object.getPrototypeOf(a)") == "true");
+    // The object is the instance itself: its own field moves, and no other instance's does.
+    CHECK(script_test::completion(fx.vm, "e1.script.bump(); e1.script.bump(); [a.n, b.n, e2.script.bump()].join()") ==
+          "2,0,1");
+    CHECK(script_test::completion(fx.vm, "e1.script.entity === e1") == "true");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("vm: after a reload entity.script is the new object, the handle's current one (VM84)") {
+    const script_test::LogCapture log;
+    engine::World world;
+    Fixture fx;
+    const Entity e1 = world.create();
+    bind(fx, world);
+    load(fx, "m.js", classSource("  keep = 4;\n  version() { return 1; }"));
+    const ScriptInstance a = attached(fx, "m.js", e1);
+    entityGlobal(fx, "e1", e1);
+    REQUIRE(script_test::completion(fx.vm, "globalThis.before = e1.script; String(before.version())") == "1");
+
+    load(fx, "m.js", classSource("  keep = 4;\n  version() { return 2; }"));
+    CHECK(script_test::completion(fx.vm,
+                                  "[e1.script !== before, e1.script.version(), before.version(), e1.script.keep]"
+                                  ".join()") == "true,2,1,4");
+    expose(fx.vm, a, "a");
+    CHECK(script_test::completion(fx.vm, "String(e1.script === a)") == "true");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("vm: entity.script is the earliest live attach, and null once the last is destroyed (VM85)") {
+    const script_test::LogCapture log;
+    engine::World world;
+    Fixture fx;
+    const Entity e1 = world.create();
+    bind(fx, world);
+    load(fx, "m.js", classSource("  id = 'm';"));
+    load(fx, "n.js", classSource("  id = 'n';", "Other"));
+    const ScriptInstance first = attached(fx, "m.js", e1);
+    const ScriptInstance second = attached(fx, "n.js", e1);
+    entityGlobal(fx, "e1", e1);
+    expose(fx.vm, first, "first");
+    expose(fx.vm, second, "second");
+    CHECK(script_test::completion(fx.vm, "[e1.script === first, e1.script === second, e1.script.id].join()") ==
+          "true,false,m");
+
+    CHECK(scriptStatusLabel(fx.vm.destroyInstance(first)) == "Ok");
+    CHECK(script_test::completion(fx.vm, "[e1.script === second, e1.script.id].join()") == "true,n");
+    // A later attach under the same entity queues behind the one that is left.
+    const ScriptInstance third = attached(fx, "m.js", e1);
+    expose(fx.vm, third, "third");
+    CHECK(script_test::completion(fx.vm, "String(e1.script === second)") == "true");
+    CHECK(scriptStatusLabel(fx.vm.destroyInstance(second)) == "Ok");
+    CHECK(script_test::completion(fx.vm, "String(e1.script === third)") == "true");
+    CHECK(scriptStatusLabel(fx.vm.destroyInstance(third)) == "Ok");
+    CHECK(script_test::completion(fx.vm, "String(e1.script)") == "null");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("vm: an instance attached under an earlier binding is not answered under a later one (VM86)") {
+    const script_test::LogCapture log;
+    engine::World world;
+    Fixture fx;
+    const Entity e1 = world.create();
+    bind(fx, world);
+    load(fx, "m.js", classSource("  id = 'm';"));
+    const ScriptInstance a = attached(fx, "m.js", e1);
+    entityGlobal(fx, "old", e1);
+    CHECK(script_test::completion(fx.vm, "old.script.id") == "m");
+
+    bind(fx, world);  // a new binding, the same World
+    entityGlobal(fx, "fresh", e1);
+    CHECK(script_test::completion(fx.vm, "String(fresh.script)") == "null");
+    CHECK(caught(fx, "old.script") ==
+          "TypeError: engine.Entity.script: the entity belongs to an earlier World binding");
+    // The instance is still live: a new attach under the new binding is answered, and the old one still is not.
+    const ScriptInstance b = attached(fx, "m.js", e1);
+    expose(fx.vm, b, "b");
+    CHECK(script_test::completion(fx.vm, "String(fresh.script === b)") == "true");
+    CHECK(scriptStatusLabel(fx.vm.destroyInstance(a)) == "Ok");
+    CHECK(script_test::completion(fx.vm, "String(fresh.script === b)") == "true");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("vm: script is a read-only accessor that throws for a dead entity and for no World (VM87)") {
+    const script_test::LogCapture log;
+    engine::World world;
+    Fixture fx;
+    const Entity e1 = world.create();
+    const Entity doomed = world.create();
+    bind(fx, world);
+    load(fx, "m.js", classSource("  id = 'm';"));
+    const ScriptInstance a = attached(fx, "m.js", e1);
+    expose(fx.vm, a, "a");
+    entityGlobal(fx, "e1", e1);
+    entityGlobal(fx, "doomed", doomed);
+
+    // The backend refuses an assignment to a getter-only accessor in sloppy code as well as in strict code.
+    CHECK(caught(fx, "(function () { e1.script = null; return 'assigned'; })()") ==
+          "TypeError: no setter for property");
+    CHECK(caught(fx, "(function () { 'use strict'; e1.script = null; return 'assigned'; })()") ==
+          "TypeError: no setter for property");
+    CHECK(script_test::completion(fx.vm, "String(e1.script === a)") == "true");
+    CHECK(script_test::completion(fx.vm,
+                                  "const d = Object.getOwnPropertyDescriptor(engine.Entity.prototype, 'script');"
+                                  "const p = Object.getOwnPropertyDescriptor(engine.Entity.prototype, 'parent');"
+                                  "[typeof d.get, d.set, d.enumerable === p.enumerable, d.configurable]"
+                                  ".map(String).join()") == "function,undefined,true,false");
+
+    REQUIRE(world.destroy(doomed));
+    CHECK(caught(fx, "doomed.script") == "TypeError: engine.Entity.script: the entity is not alive");
+    fx.vm.unbindWorld();
+    CHECK(caught(fx, "e1.script") == "TypeError: engine.Entity.script: no World is bound");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}

@@ -67,6 +67,8 @@ declare namespace engine {
         name: string;
         /** The parent entity, or null for a root. Assigning keeps the local Transform, so the world position follows the new parent; a cycle throws. */
         parent: Entity | null;
+        /** The instance of this entity's script, or null; read it again each frame, since a reload replaces it. */
+        readonly script: Script | null;
         /** The direct children, in the order they were attached. */
         children(): Entity[];
     }

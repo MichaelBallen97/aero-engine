@@ -31,12 +31,15 @@
 //     runs receiver, then value, then target, then write.
 
 #include <aero/core/guid.hpp>
+#include <aero/core/slot_map.hpp>
 #include <aero/scene/entity.hpp>
 #include <aero/script/internal/component_binding.hpp>
+#include <aero/script/vm.hpp>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <new>
 #include <optional>
 #include <quickjs.h>
@@ -53,6 +56,8 @@ class World;
 }  // namespace engine
 
 namespace engine::script {
+
+struct InstanceSlot;  // vm_impl.hpp: a host function reaches the slots through ScriptApi::instanceSlots only
 
 // engine.Entity's opaque, and every component object's.
 struct EntityRef {
@@ -73,6 +78,15 @@ struct VectorCell {
 [[nodiscard]] constexpr std::uint64_t entityKeyOf(Entity entity) noexcept {
     return (std::uint64_t{entity.index} << 32U) | entity.generation;
 }
+
+// The key of an attached instance in ScriptApi::attachedInstances. Sorted by binding, then entity, then creation order,
+// so the earliest live attach of one entity under one binding is the lower_bound of {binding, entity, 0}.
+struct AttachKey {
+    std::uint64_t binding = 0;
+    std::uint64_t entity = 0;  // entityKeyOf
+    std::uint64_t order = 0;   // InstanceSlot::order
+    auto operator<=>(const AttachKey&) const = default;
+};
 
 struct ScriptApi {
     const internal::ComponentBindingTable* table = nullptr;  // borrowed
@@ -96,6 +110,11 @@ struct ScriptApi {
     // destroyed through Vm::destroyQueued (a taken queue keeps its marks). Emptied with the table.
     std::vector<Entity> destroyQueue;
     std::unordered_set<std::uint64_t> destroyMarks;
+    // Every live attached instance: inserted by createInstance, erased by destroyInstance, cleared by releaseScripts.
+    // A reload keeps the handle, so it changes nothing here. The slot map is Vm::Impl's, borrowed (set once in create;
+    // Impl is heap-pinned).
+    std::map<AttachKey, ScriptInstance> attachedInstances;
+    const SlotMap<InstanceSlot, ScriptInstanceTag>* instanceSlots = nullptr;
 };
 
 enum class ClassCheck : std::uint8_t {
@@ -244,7 +263,8 @@ struct EntityProperty {
     std::string_view name;
     bool readOnly;
 };
-inline constexpr std::array<EntityProperty, 3> ENTITY_PROPERTIES{{{"alive", true}, {"name", false}, {"parent", false}}};
+inline constexpr std::array<EntityProperty, 4> ENTITY_PROPERTIES{
+    {{"alive", true}, {"name", false}, {"parent", false}, {"script", true}}};
 
 [[nodiscard]] constexpr int fieldMagic(std::size_t component, std::size_t field) noexcept {
     return static_cast<int>((component << 8U) | field);

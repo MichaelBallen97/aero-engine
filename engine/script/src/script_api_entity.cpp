@@ -191,12 +191,27 @@ JSValue entityGet(JSContext* ctx, JSValueConst thisValue, int magic) noexcept {
             const std::string_view name = api.world->name(ref->entity);  // copied by the call below, at once
             return JS_NewStringLen(ctx, name.empty() ? "" : name.data(), name.size());
         }
-        default: {  // parent
+        case 2: {  // parent
             if (!resolveEntity(ctx, api, *ref, site)) {
                 return JS_EXCEPTION;
             }
             const Entity parent = api.world->parent(ref->entity);
             return parent.valid() ? entityObjectFor(ctx, api, EntityRef{parent, api.binding}) : JS_NULL;
+        }
+        default: {  // script: the earliest live attach of this entity under the current binding, else null
+            if (!resolveEntity(ctx, api, *ref, site)) {
+                return JS_EXCEPTION;
+            }
+            const std::uint64_t key = entityKeyOf(ref->entity);
+            const auto found = api.attachedInstances.lower_bound(AttachKey{api.binding, key, 0});
+            if (found == api.attachedInstances.end() || found->first.binding != api.binding ||
+                found->first.entity != key) {
+                return JS_NULL;
+            }
+            assert(api.instanceSlots != nullptr);  // the map and the slots change together
+            const InstanceSlot* const slot = api.instanceSlots->get(found->second);
+            assert(slot != nullptr);
+            return slot != nullptr ? JS_DupValue(ctx, slot->object) : JS_NULL;
         }
     }
 }

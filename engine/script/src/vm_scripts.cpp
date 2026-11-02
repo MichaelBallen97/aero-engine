@@ -538,6 +538,10 @@ ScriptInstanceResult Vm::Impl::createInstanceCall(std::string_view virtualPath, 
         const std::uint64_t order = nextInstanceOrder++;
         done.instance = instanceSlots.insert(InstanceSlot{made.release(), entry.key, ref, order});
         record.instances.emplace(order, done.instance);
+        if (ref.has_value()) {
+            scriptApi.attachedInstances.emplace(AttachKey{ref->binding, entityKeyOf(ref->entity), order},
+                                                done.instance);
+        }
         return done;
     }
     if (refusal.has_value()) {
@@ -559,6 +563,10 @@ ScriptStatus Vm::Impl::destroyInstanceCall(ScriptInstance instance) {
     }
     if (const auto home = scripts.find(slot->key); home != scripts.end()) {
         home->second.instances.erase(slot->order);
+    }
+    if (slot->attached.has_value()) {
+        scriptApi.attachedInstances.erase(
+            AttachKey{slot->attached->binding, entityKeyOf(slot->attached->entity), slot->order});
     }
     JS_FreeValue(ctx, slot->object);
     static_cast<void>(instanceSlots.remove(instance));
@@ -623,6 +631,7 @@ void Vm::Impl::releaseScripts() noexcept {
     }
     scripts.clear();
     instanceSlots.clear();
+    scriptApi.attachedInstances.clear();
 }
 
 // ---- Vm's public face ------------------------------------------------------------------------------------------

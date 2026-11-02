@@ -537,6 +537,7 @@ VmCreateResult Vm::createWith(const VmConfig& config, const VirtualFileSystem* m
     // exists: no script setter, getter or Proxy can be in the way, and no property of it is ever read for the first
     // time under a budget. Only the heap limit can fail it, and the minimum limit keeps that far away.
     impl->scriptApi.table = &components;
+    impl->scriptApi.instanceSlots = &impl->instanceSlots;
     JS_SetContextOpaque(impl->ctx, &impl->scriptApi);
     if (!installScriptApi(impl->ctx, impl->rt, impl->scriptApi)) {
         impl->clearPendingException();
