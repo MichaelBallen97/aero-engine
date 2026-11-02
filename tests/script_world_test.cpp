@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <format>
 #include <memory>
+#include <ostream>  // a CHECK on std::string_view needs the complete std::ostream on MSVC (ci-portability.md)
 #include <string>
 #include <string_view>
 #include <thread>
