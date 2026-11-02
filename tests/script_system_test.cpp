@@ -1687,3 +1687,23 @@ TEST_CASE("system: entity.script is answered from the VM's attaches, not from th
     CHECK(script_test::completion(fx.vm, "String(other.script)") == "null");
     fx.finish();
 }
+
+TEST_CASE("system: an entity whose attach failed and which the same update destroys is not a failed attach (LC51)") {
+    const script_test::LogCapture capture;
+    SystemFixture fx;
+    fx.publish(guidOf(1), "boom.js", classSource("  constructor() {\n    super();\n    throw new Error('boom');\n  }"));
+    fx.publish(guidOf(2), "k.js", updateSource("engine.destroy(globalThis.doomed);"));
+    const Entity doomed = fx.attachScript(guidOf(1));
+    const Entity killer = fx.attachScript(guidOf(2));
+    REQUIRE(doomed.index < killer.index);
+    defineGlobal(fx, "doomed", doomed);
+
+    const ScriptSystemReport report = fx.tick();
+    CHECK(recordsNaming(capture, "boom") >= 1U);  // the attach did fail, in this same update
+    CHECK(report.destroyed == 1U);
+    CHECK(report.failedAttaches == 0U);  // the entity is gone by the time the report is taken
+    CHECK_FALSE(fx.world.alive(doomed));
+    CHECK(label(fx.system->stateOf(doomed)) == "None");
+    CHECK(fx.tick().failedAttaches == 0U);
+    fx.finish();
+}

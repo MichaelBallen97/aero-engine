@@ -352,11 +352,14 @@ struct ScriptSystem::Impl {
     // walk repeats until it releases nothing, because an onDestroy may move an entity into or out of the subtree (an
     // entity that left is spared, so membership is read again from the World before each release). Then the Vm destroys
     // the subtree. A hook that queues more makes another pass. It ends: each instance is released at most once and
-    // nothing attaches in this phase.
+    // nothing attaches in this phase. A subtree the Vm destroys also loses its attach failures here: tally runs in this
+    // same update, and a report's failedAttaches counts only entities that still exist (detachGone, which drops the
+    // entries of entities that died between updates, has already run).
     void flushDestroys(ScriptSystemReport& report) {
         for (std::vector<Entity> queue = vm.takeDestroyQueue(); !queue.empty(); queue = vm.takeDestroyQueue()) {
             std::vector<bool> released(runOrder.size(), false);
             for (const Entity root : queue) {
+                std::set<std::uint64_t> doomed;
                 if (world.alive(root)) {
                     for (bool releasedAny = true; releasedAny;) {
                         releasedAny = false;
@@ -370,9 +373,13 @@ struct ScriptSystem::Impl {
                             }
                         }
                     }
+                    doomed = subtreeKeys(root);  // read after the releases: an onDestroy may have moved entities
                 }
                 if (vm.destroyQueued(root)) {  // a dead root only loses its mark
                     ++report.destroyed;
+                    for (const std::uint64_t key : doomed) {
+                        attachFailures.erase(key);
+                    }
                 }
             }
             compactReleased(released);
