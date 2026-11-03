@@ -1,14 +1,15 @@
 // Aero Engine -- the hand-written half of aero-engine.d.ts (task 4.2.2): Vec3, Quat, Entity and Script (the base class
 // a script's class extends, task 4.4.1) as engine/script/src/script_api*.cpp installs them, the namespace functions
-// (task 4.4.2), the members an interface adds to a generated class (Transform's helpers), and the component types
-// each generated block merges into.
+// (task 4.4.2), the nested namespace input (task 4.4.3), the members an interface adds to a generated class
+// (Transform's helpers), and the component types each generated block merges into.
 // The build joins this file first, then one reflect-gen --emit-dts block per built-in component header.
 // A change to the script API changes this file in the same commit: DT3-DT7 compare it with a live VM.
 // Grammar (the drift reader refuses anything else): one declaration per line, doc comments on one line,
 // no at-sign anywhere. A class's constructor line is `constructor(...)`, `private constructor(...)` or, for a base
 // class a script extends, `protected constructor(...)`; a method may be optional (`name?(...): type;`), a field never.
 // A namespace function is `function name(...): type;`; its last parameter may be a rest parameter. An interface named
-// like a class adds members to it.
+// like a class adds members to it. A nested `namespace <name> {` block inside the engine namespace holds only one-line
+// string-literal unions (`type Name = "a" | "b";`) and `function` lines.
 
 declare namespace engine {
     /** Every component class, keyed by its script name. Each generated block adds its own entries. */
@@ -164,4 +165,36 @@ declare namespace engine {
     function findAll(name: string): Entity[];
     /** Every live entity holding all of 1 to 8 component classes, in ascending entity index. */
     function query(...types: ComponentClass<Component>[]): Entity[];
+
+    /** The keyboard, the mouse and up to four gamepads, read from the input bound to the VM; "this frame" means since that input's frame began. */
+    namespace input {
+        /** A physical key, named by its position on a US keyboard: "W" is the same key on every layout. */
+        type Key = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" | "Num0" | "Num1" | "Num2" | "Num3" | "Num4" | "Num5" | "Num6" | "Num7" | "Num8" | "Num9" | "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8" | "F9" | "F10" | "F11" | "F12" | "Escape" | "Enter" | "Tab" | "Space" | "Backspace" | "Delete" | "Insert" | "Home" | "End" | "PageUp" | "PageDown" | "Left" | "Right" | "Up" | "Down" | "LeftShift" | "RightShift" | "LeftCtrl" | "RightCtrl" | "LeftAlt" | "RightAlt" | "LeftGui" | "RightGui" | "CapsLock" | "Minus" | "Equals" | "LeftBracket" | "RightBracket" | "Backslash" | "Semicolon" | "Apostrophe" | "Grave" | "Comma" | "Period" | "Slash" | "Kp0" | "Kp1" | "Kp2" | "Kp3" | "Kp4" | "Kp5" | "Kp6" | "Kp7" | "Kp8" | "Kp9" | "KpEnter" | "KpPlus" | "KpMinus" | "KpMultiply" | "KpDivide" | "KpPeriod" | "PrintScreen" | "ScrollLock" | "Pause";
+        /** A mouse button. */
+        type MouseButton = "Left" | "Right" | "Middle" | "X1" | "X2";
+        /** A gamepad button, named by position: "South" is Xbox A, PlayStation Cross and Switch B. */
+        type GamepadButton = "South" | "East" | "West" | "North" | "Back" | "Guide" | "Start" | "LeftStick" | "RightStick" | "LeftShoulder" | "RightShoulder" | "DpadUp" | "DpadDown" | "DpadLeft" | "DpadRight" | "Misc1" | "RightPaddle1" | "LeftPaddle1" | "RightPaddle2" | "LeftPaddle2" | "Touchpad" | "Misc2" | "Misc3" | "Misc4" | "Misc5" | "Misc6";
+        /** A gamepad axis: a stick reads -1 to 1 with up and left negative, a trigger 0 to 1. */
+        type GamepadAxis = "LeftX" | "LeftY" | "RightX" | "RightY" | "LeftTrigger" | "RightTrigger";
+        /** A gamepad stick. */
+        type GamepadStick = "Left" | "Right";
+        /** Whether the key is held. */
+        function keyDown(key: Key): boolean;
+        /** Whether the key went down this frame; an auto-repeat is not a press. */
+        function keyPressed(key: Key): boolean;
+        /** Whether the key went up this frame. */
+        function keyReleased(key: Key): boolean;
+        /** Whether the mouse button is held. */
+        function mouseButtonDown(button: MouseButton): boolean;
+        /** Whether the mouse button went down this frame. */
+        function mouseButtonPressed(button: MouseButton): boolean;
+        /** Whether the mouse button went up this frame. */
+        function mouseButtonReleased(button: MouseButton): boolean;
+        /** The pointer's position in points from the game view's top-left corner, y down, as a new Vec3 with z 0. */
+        function mousePosition(): Vec3;
+        /** This frame's summed pointer motion in points, as a new Vec3 with z 0. */
+        function mouseDelta(): Vec3;
+        /** This frame's summed scroll, y vertical and positive away from the user, as a new Vec3 with z 0. */
+        function mouseWheel(): Vec3;
+    }
 }

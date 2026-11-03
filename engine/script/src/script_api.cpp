@@ -296,6 +296,42 @@ JSValue worldFunction(JSContext* ctx, JSValueConst /*thisValue*/, int argc, JSVa
     return true;
 }
 
+// Every InputOp is the index of its entry, which is also its definition order and its magic.
+[[nodiscard]] constexpr bool inputFunctionsInOpOrder() noexcept {
+    for (std::size_t i = 0; i < INPUT_FUNCTIONS.size(); ++i) {
+        if (static_cast<std::size_t>(INPUT_FUNCTIONS[i].op) != i) {
+            return false;
+        }
+    }
+    return true;
+}
+static_assert(inputFunctionsInOpOrder());
+
+// The one host function of engine.input's functions (magic = the InputOp); the handlers are in script_api_input.cpp.
+JSValue inputFunction(JSContext* ctx, JSValueConst /*thisValue*/, int /*argc*/, JSValueConst* argv,
+                      int magic) noexcept {
+    assert(magic >= 0 && static_cast<std::size_t>(magic) < INPUT_FUNCTIONS.size());
+    return callInputFunction(ctx, scriptApiOf(ctx), static_cast<InputOp>(magic), argv);
+}
+
+// engine.input: an ordinary object holding the functions as frozen natives, frozen itself, defined on the namespace.
+[[nodiscard]] bool installInputObject(JSContext* ctx, JSValueConst ns) {
+    const HeldValue input{ctx, JS_NewObject(ctx)};
+    if (input.isException()) {
+        return false;
+    }
+    for (const InputFunction& entry : INPUT_FUNCTIONS) {
+        const std::string name{entry.name};
+        HeldValue function{ctx, newMethod(ctx, name, &inputFunction, entry.length, static_cast<int>(entry.op))};
+        if (function.isException() || JS_FreezeObject(ctx, function.get()) < 0 ||
+            JS_DefinePropertyValueStr(ctx, input.get(), name.c_str(), function.release(), JS_PROP_ENUMERABLE) < 0) {
+            return false;
+        }
+    }
+    return JS_FreezeObject(ctx, input.get()) >= 0 &&
+           JS_DefinePropertyValueStr(ctx, ns, "input", JS_DupValue(ctx, input.get()), JS_PROP_ENUMERABLE) >= 0;
+}
+
 }  // namespace
 
 bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
@@ -354,7 +390,7 @@ bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
     }
     entity.methods.push_back(MethodSpec{"children", &entityChildren, 0, 0});
     if (!installClass(ctx, rt, ns.get(), entity, nullptr) || !installScriptBase(ctx, ns.get(), api) ||
-        !installWorldFunctions(ctx, ns.get())) {
+        !installWorldFunctions(ctx, ns.get()) || !installInputObject(ctx, ns.get())) {
         return false;
     }
     // Frozen after the last class, and defined on the global object with flags 0: not writable, not enumerable, not
@@ -375,6 +411,7 @@ void releaseScriptApi(JSContext* ctx, ScriptApi& api) noexcept {
     api.scriptBase = JS_UNDEFINED;
     api.pendingEntity.reset();
     api.world = nullptr;
+    api.input = nullptr;
 }
 
 ClassCheck checkClass(JSContext* ctx, JSValueConst value, JSValue* prototype) {

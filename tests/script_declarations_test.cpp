@@ -11,6 +11,7 @@
 #include <aero/core/vfs.hpp>
 #include <aero/scene/world.hpp>
 #include <aero/script/internal/component_binding.hpp>
+#include <aero/script/internal/input_names.hpp>
 #include <aero/script/script.hpp>
 
 #include "script_binding_support.hpp"
@@ -18,6 +19,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -503,10 +505,18 @@ constexpr std::string_view RUNTIME_SHAPE_SCRIPT =
     "    return c + '/' + engine[c].length + ':' + members.join(',');\n"
     "}).join(';')";
 
-// The namespace's functions: the keys without an own `prototype`, as name/length.
+// The namespace's functions: the function-valued keys without an own `prototype`, as name/length.
 constexpr std::string_view RUNTIME_FUNCTIONS_SCRIPT =
-    "Object.getOwnPropertyNames(engine).filter((c) => !Object.hasOwn(engine[c], 'prototype'))"
-    ".map((c) => c + '/' + engine[c].length).join(',')";
+    "Object.getOwnPropertyNames(engine).filter((c) => typeof engine[c] === 'function' && "
+    "!Object.hasOwn(engine[c], 'prototype')).map((c) => c + '/' + engine[c].length).join(',')";
+
+// The keys of engine that are neither a class nor a function: the nested namespaces (since 4.4.3).
+constexpr std::string_view RUNTIME_OBJECT_KEYS_SCRIPT =
+    "Object.getOwnPropertyNames(engine).filter((c) => typeof engine[c] !== 'function').join(',')";
+
+// engine.input's own names, as name/length.
+constexpr std::string_view RUNTIME_INPUT_SCRIPT =
+    "Object.getOwnPropertyNames(engine.input).map((n) => n + '/' + engine.input[n].length).join(',')";
 
 [[nodiscard]] std::vector<RuntimeClass> runtimeClasses() {
     engine::script::Vm vm = makeBuiltinVm();
@@ -1253,4 +1263,82 @@ TEST_CASE("declarations: the reader refuses what it cannot read in a nested name
     // An input that ends inside the nested block.
     const Declarations unclosed = parseDeclarations(open + "        function f(): void;\n");
     CHECK(unclosed.error == "line 3: the input ends inside a block");
+}
+
+TEST_CASE(
+    "declarations: engine.input's functions and arities are the declared ones, and no other object hangs off "
+    "engine (DT31)") {
+    const Declarations declared = parseDeclarations(builtFile());
+    REQUIRE(declared.error.empty());
+    REQUIRE(declared.namespaces.size() == 1U);
+    const DeclaredNamespace& input = declared.namespaces[0];
+    CHECK(input.name == "input");
+
+    engine::script::Vm vm = makeBuiltinVm();
+    const std::string live = completion(vm, RUNTIME_INPUT_SCRIPT);
+    const std::string others = completion(vm, RUNTIME_OBJECT_KEYS_SCRIPT);
+    expectCleanShutdown(vm);
+
+    std::vector<std::string> runtimeNames;
+    std::vector<int> lengths;
+    for (const std::string& entry : splitOn(live, ',')) {
+        const std::size_t slash = entry.find('/');
+        REQUIRE(slash != std::string::npos);
+        runtimeNames.push_back(entry.substr(0, slash));
+        lengths.push_back(std::stoi(entry.substr(slash + 1)));
+    }
+    std::vector<std::string> declaredNames;
+    declaredNames.reserve(input.functions.size());
+    for (const DeclaredMember& function : input.functions) {
+        declaredNames.push_back(function.name);
+    }
+    CHECK_FALSE(runtimeNames.empty());
+    CHECK(sameSet(runtimeNames, declaredNames, "engine.input's functions"));
+    for (const DeclaredMember& function : input.functions) {
+        CAPTURE(function.name);
+        const auto it = std::find(runtimeNames.begin(), runtimeNames.end(), function.name);
+        REQUIRE(it != runtimeNames.end());
+        CHECK(function.arity == lengths[static_cast<std::size_t>(it - runtimeNames.begin())]);
+    }
+
+    std::vector<std::string> declaredNamespaces;
+    for (const DeclaredNamespace& nested : declared.namespaces) {
+        declaredNamespaces.push_back(nested.name);
+    }
+    CHECK(sameSet(splitOn(others, ','), declaredNamespaces, "engine's non-function keys"));
+}
+
+namespace {
+
+template <std::size_t N>
+[[nodiscard]] std::vector<std::string> tableMembers(const std::array<std::string_view, N>& table) {
+    std::vector<std::string> out;
+    out.reserve(N);
+    for (const std::string_view name : table) {
+        out.emplace_back(name);
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("declarations: engine.input's unions list the name tables' names in table order (DT32)") {
+    namespace names = engine::script::internal;
+    const Declarations declared = parseDeclarations(builtFile());
+    REQUIRE(declared.error.empty());
+    REQUIRE(declared.namespaces.size() == 1U);
+    const std::vector<DeclaredUnion>& unions = declared.namespaces[0].unions;
+
+    const std::vector<std::pair<std::string, std::vector<std::string>>> expected{
+        {"Key", tableMembers(names::KEY_NAMES)},
+        {"MouseButton", tableMembers(names::MOUSE_BUTTON_NAMES)},
+        {"GamepadButton", tableMembers(names::GAMEPAD_BUTTON_NAMES)},
+        {"GamepadAxis", tableMembers(names::GAMEPAD_AXIS_NAMES)},
+        {"GamepadStick", tableMembers(names::GAMEPAD_STICK_NAMES)}};
+    REQUIRE(unions.size() == expected.size());
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        CAPTURE(expected[i].first);
+        CHECK(unions[i].name == expected[i].first);
+        CHECK(unions[i].members == expected[i].second);  // order too: the declarations list the table as written
+    }
 }
