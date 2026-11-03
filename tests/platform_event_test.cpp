@@ -120,10 +120,10 @@ TEST_CASE("pump drops events it does not model") {
     for (engine::platform::Event drain; ctx.pollEvent(drain);) {
     }
     SDL_Event e{};
-    // Gamepad input is explicitly out of scope (task 0.3.2 §8) and translate() still has no case for
-    // it, so it falls through to `default` and is dropped. (SDL_EVENT_MOUSE_MOTION used to be the
-    // example here, but 0.3.2 now MODELS mouse motion — using it would make this test fail at
-    // runtime, since pollEvent would return true instead of false.)
+    // This Context runs with gamepads off (the default), so it models no gamepad event and drops one. Pinning
+    // a pad's own events is input_pump_test.cpp's job. (SDL_EVENT_MOUSE_MOTION used to be the example here,
+    // but 0.3.2 now MODELS mouse motion -- using it would make this test fail at runtime, since pollEvent
+    // would return true instead of false.)
     e.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
     REQUIRE(SDL_PushEvent(&e));
     engine::platform::Event out;

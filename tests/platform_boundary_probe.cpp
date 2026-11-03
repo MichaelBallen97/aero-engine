@@ -57,6 +57,8 @@ static_assert(static_cast<int>(engine::platform::EventType::GamepadConnected) >
               static_cast<int>(engine::platform::EventType::MouseWheel));  // appended: no old value moved
 static_assert(engine::platform::StickPosition{} == engine::platform::StickPosition{});
 static_assert(engine::platform::STICK_DEADZONE > 0.0F && engine::platform::STICK_DEADZONE < 1.0F);
+static_assert(engine::platform::ContextConfig{}.gamepads == engine::platform::GamepadDrivers::Off);
+static_assert(static_cast<int>(engine::platform::GamepadDrivers::Off) == 0);
 
 // ---- task 0.3.3 audio surface ----
 static_assert(engine::platform::AudioDeviceConfig{}.sampleRate == 48000U);

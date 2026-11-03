@@ -5,13 +5,16 @@
 // factory for windows and the source of events. SDL never crosses this boundary (docs/04) — enforced
 // by the lint grep and tests/platform_boundary_probe.cpp.
 //
-// Context holds no SDL type (SDL init and the event queue are process-global), so it needs no pimpl:
-// its state is a bool and a std::thread::id.
+// Context holds no SDL type (SDL init and the event queue are process-global), so it needs no pimpl on the
+// default path: its state is a bool, a thread id and, when the gamepad subsystem runs, a GamepadTable defined in
+// src/platform.cpp behind a unique_ptr.
 
 #include <aero/platform/event.hpp>
 #include <aero/platform/input.hpp>
 #include <aero/platform/window.hpp>
 
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <thread>
 
@@ -21,11 +24,21 @@ struct RawEventAccessor;
 
 namespace engine::platform {
 
+// Which joystick drivers the Context starts (task 4.4.3). Gamepads are opt-in: the subsystem costs about 15-20 ms
+// at start-up and leaves framework threads behind, so a Context that does not read a pad pays nothing.
+enum class GamepadDrivers : std::uint8_t {
+    Off = 0,      // no gamepad subsystem: nothing connects, and the Context pays nothing for it (the default)
+    System,       // SDL's default drivers: every real pad connects
+    VirtualOnly,  // for headless tests and CI: every real device is ignored and the slow drivers are skipped, so
+                  // only a virtual pad made through the backend connects. A shipped game never uses it.
+};
+
 struct ContextConfig {
     // Run with no display: selects SDL's "dummy" video driver (SDL_HINT_VIDEO_DRIVER=dummy) before
     // init, so windows can be created and the queue pumped on a headless machine. This is what the
     // unit tests and CI use. false uses the platform's real default driver (Cocoa/Win32/X11/Wayland).
     bool headless = false;
+    GamepadDrivers gamepads = GamepadDrivers::Off;
 };
 
 class Context {
@@ -49,8 +62,10 @@ public:
     [[nodiscard]] std::optional<Window> createWindow(const WindowConfig& config = {});
 
     // Pull the next translated event, draining and DISCARDING any backend event still unmodeled (e.g.
-    // gamepad, text input). Also folds keyboard/mouse events into input() as it translates them (task
-    // 0.3.2). Returns false when the queue is empty. Must be called on the Context's thread; asserted
+    // text input, sensors; gamepad events are modeled when `gamepads` is not Off). Also folds keyboard,
+    // mouse and gamepad events into input() as it translates them (tasks 0.3.2 and 4.4.3): a pad's connect,
+    // disconnect, buttons and axes surface as the five gamepad EventTypes. Returns false when the queue is
+    // empty. Must be called on the Context's thread; asserted
     // in debug. Drive it as:
     //     platform::Event ev;
     //     while (ctx.pollEvent(ev)) { /* handle ev */ }
@@ -66,6 +81,8 @@ public:
 
 private:
     friend struct internal::RawEventAccessor;
+    struct GamepadTable;                         // src/platform.cpp: the slots' backend handles and the waiting ids
+    std::unique_ptr<GamepadTable> gamepadTable;  // null unless the gamepad subsystem started
     bool initialized = false;
     std::thread::id ownerThread;  // the main thread; pollEvent/createWindow must run here
     InputState inputState;        // folded by pollEvent (src/platform.cpp); frame-reset by newFrame()
