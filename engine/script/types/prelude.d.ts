@@ -196,5 +196,17 @@ declare namespace engine {
         function mouseDelta(): Vec3;
         /** This frame's summed scroll, y vertical and positive away from the user, as a new Vec3 with z 0. */
         function mouseWheel(): Vec3;
+        /** Whether a gamepad holds the slot (0 to 3, default 0). */
+        function gamepadConnected(slot?: number): boolean;
+        /** Whether the button is held on the slot's gamepad; an empty slot reads false. */
+        function gamepadButtonDown(button: GamepadButton, slot?: number): boolean;
+        /** Whether the button went down this frame on the slot's gamepad. */
+        function gamepadButtonPressed(button: GamepadButton, slot?: number): boolean;
+        /** Whether the button went up this frame on the slot's gamepad. */
+        function gamepadButtonReleased(button: GamepadButton, slot?: number): boolean;
+        /** The axis's raw value with no deadzone: a stick -1 to 1, a trigger 0 to 1; an empty slot reads 0. */
+        function gamepadAxis(axis: GamepadAxis, slot?: number): number;
+        /** The stick through a round deadzone, rescaled to reach length 1 at full tilt, as a new Vec3 (x, y, 0); up is -y. */
+        function gamepadStick(stick: GamepadStick, slot?: number): Vec3;
     }
 }

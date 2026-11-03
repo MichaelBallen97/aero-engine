@@ -252,17 +252,23 @@ struct InputFunctionRow {
     std::string_view validCall;  // arguments that pass every check but the binding
 };
 
-// The keyboard and mouse functions in definition order, with the length each is made with. The table they mirror is
-// private to the script layer's sources; DT31 pins the same names and lengths to the declarations.
-constexpr std::array<InputFunctionRow, 9> KEYBOARD_AND_MOUSE{{{"keyDown", 1, "'W'"},
-                                                              {"keyPressed", 1, "'W'"},
-                                                              {"keyReleased", 1, "'W'"},
-                                                              {"mouseButtonDown", 1, "'Left'"},
-                                                              {"mouseButtonPressed", 1, "'Left'"},
-                                                              {"mouseButtonReleased", 1, "'Left'"},
-                                                              {"mousePosition", 0, ""},
-                                                              {"mouseDelta", 0, ""},
-                                                              {"mouseWheel", 0, ""}}};
+// Every engine.input function in definition order, with the length each is made with. The table they mirror is private
+// to the script layer's sources; DT31 pins the same names and lengths to the declarations.
+constexpr std::array<InputFunctionRow, 15> INPUT_ROWS{{{"keyDown", 1, "'W'"},
+                                                       {"keyPressed", 1, "'W'"},
+                                                       {"keyReleased", 1, "'W'"},
+                                                       {"mouseButtonDown", 1, "'Left'"},
+                                                       {"mouseButtonPressed", 1, "'Left'"},
+                                                       {"mouseButtonReleased", 1, "'Left'"},
+                                                       {"mousePosition", 0, ""},
+                                                       {"mouseDelta", 0, ""},
+                                                       {"mouseWheel", 0, ""},
+                                                       {"gamepadConnected", 1, "0"},
+                                                       {"gamepadButtonDown", 2, "'South', 0"},
+                                                       {"gamepadButtonPressed", 2, "'South', 0"},
+                                                       {"gamepadButtonReleased", 2, "'South', 0"},
+                                                       {"gamepadAxis", 2, "'LeftX', 0"},
+                                                       {"gamepadStick", 2, "'Left', 0"}}};
 
 }  // namespace
 
@@ -315,7 +321,7 @@ TEST_CASE("input: with no input bound every function throws after its arguments 
     Vm vm = script_test::makeBuiltinVm();
     platform::InputState state;
     const auto expectUnbound = [&vm] {
-        for (const InputFunctionRow& row : KEYBOARD_AND_MOUSE) {
+        for (const InputFunctionRow& row : INPUT_ROWS) {
             CAPTURE(row.name);
             const std::string call = "engine.input." + std::string{row.name} + "(" + std::string{row.validCall} + ")";
             CHECK(outcome(vm, call) == "TypeError|engine.input." + std::string{row.name} + ": no input is bound");
@@ -467,7 +473,7 @@ TEST_CASE("input: engine.input is a frozen object of frozen functions on a froze
 
     std::string names;
     std::string lengths;
-    for (const InputFunctionRow& row : KEYBOARD_AND_MOUSE) {
+    for (const InputFunctionRow& row : INPUT_ROWS) {
         names += (names.empty() ? "" : ",") + std::string{row.name};
         lengths += (lengths.empty() ? "" : ",") + std::to_string(row.length);
     }
@@ -557,6 +563,298 @@ TEST_CASE("input: every key name reads its own key and the other names read fals
         CHECK(outcome(vm, "engine.input.keyDown('" + std::string{wrong} + "')") ==
               "RangeError|engine.input.keyDown: not a key name");
     }
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(vm);
+}
+
+// ---- SI12-SI17: the gamepad functions ------------------------------------------------------------------------------
+
+namespace {
+
+[[nodiscard]] platform::Event padEvent(platform::EventType type, std::uint8_t slot) {
+    platform::Event event;
+    event.type = type;
+    event.gamepad = platform::GamepadDeviceData{slot};
+    return event;
+}
+
+[[nodiscard]] platform::Event padButtonEvent(platform::EventType type, std::uint8_t slot, platform::GamepadButton b) {
+    platform::Event event;
+    event.type = type;
+    event.gamepadButton = platform::GamepadButtonData{slot, b};
+    return event;
+}
+
+[[nodiscard]] platform::Event padAxisEvent(std::uint8_t slot, platform::GamepadAxis axis, std::int16_t value) {
+    platform::Event event;
+    event.type = platform::EventType::GamepadAxisMoved;
+    event.gamepadAxis = platform::GamepadAxisData{slot, axis, value};
+    return event;
+}
+
+void connectPad(platform::InputState& state, std::uint8_t slot) {
+    state.process(padEvent(platform::EventType::GamepadConnected, slot));
+}
+
+void pressPad(platform::InputState& state, std::uint8_t slot, platform::GamepadButton button) {
+    state.process(padButtonEvent(platform::EventType::GamepadButtonDown, slot, button));
+}
+
+void releasePad(platform::InputState& state, std::uint8_t slot, platform::GamepadButton button) {
+    state.process(padButtonEvent(platform::EventType::GamepadButtonUp, slot, button));
+}
+
+void movePad(platform::InputState& state, std::uint8_t slot, platform::GamepadAxis axis, std::int16_t value) {
+    state.process(padAxisEvent(slot, axis, value));
+}
+
+constexpr std::string_view SLOT_RANGE = ": the slot must be an integer from 0 to 3";
+
+}  // namespace
+
+TEST_CASE("input: gamepadConnected reads the slot it is given and never throws for an empty one (SI12)") {
+    const script_test::LogCapture log;
+    Vm vm = script_test::makeBuiltinVm();
+    platform::InputState state;
+    REQUIRE(vm.bindInput(state) == BindStatus::Ok);
+
+    CHECK(outcome(vm, "engine.input.gamepadConnected()") == "ok:false");
+    CHECK(outcome(vm, "[0, 1, 2, 3].map((s) => engine.input.gamepadConnected(s)).join()") ==
+          "ok:false,false,false,false");
+
+    connectPad(state, 2);
+    CHECK(outcome(vm, "engine.input.gamepadConnected(2)") == "ok:true");
+    CHECK(outcome(vm, "engine.input.gamepadConnected(1)") == "ok:false");
+    CHECK(outcome(vm, "engine.input.gamepadConnected()") == "ok:false");  // the default slot is 0, not the pad's
+
+    connectPad(state, 0);
+    CHECK(outcome(vm, "engine.input.gamepadConnected()") == "ok:true");
+    CHECK(outcome(vm, "typeof engine.input.gamepadConnected(0)") == "ok:boolean");
+
+    state.process(padEvent(platform::EventType::GamepadDisconnected, 2));
+    CHECK(outcome(vm, "engine.input.gamepadConnected(2)") == "ok:false");
+    CHECK(outcome(vm, "engine.input.gamepadConnected(0)") == "ok:true");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(vm);
+}
+
+TEST_CASE("input: gamepad buttons read the slot they are given, with edges per frame (SI13)") {
+    const script_test::LogCapture log;
+    Vm vm = script_test::makeBuiltinVm();
+    platform::InputState state;
+    REQUIRE(vm.bindInput(state) == BindStatus::Ok);
+    connectPad(state, 0);
+    connectPad(state, 1);
+
+    const auto read = [&vm](std::string_view slotArgument) {
+        const std::string slot{slotArgument};
+        return script_test::completion(vm, "[engine.input.gamepadButtonDown('South'" + slot +
+                                               "), engine.input.gamepadButtonPressed('South'" + slot +
+                                               "), engine.input.gamepadButtonReleased('South'" + slot + ")].join()");
+    };
+    state.newFrame();  // frame 1
+    pressPad(state, 1, platform::GamepadButton::South);
+    CHECK(read(", 1") == "true,true,false");
+    CHECK(read("") == "false,false,false");  // slot 0 holds nothing
+    CHECK(read(", 0") == "false,false,false");
+
+    state.newFrame();  // frame 2: the edge is gone, the button stays held
+    CHECK(read(", 1") == "true,false,false");
+
+    state.newFrame();  // frame 3
+    releasePad(state, 1, platform::GamepadButton::South);
+    CHECK(read(", 1") == "false,false,true");
+    state.newFrame();
+    CHECK(read(", 1") == "false,false,false");
+
+    // Every button of an empty slot reads false, through all three functions.
+    std::string list = "globalThis.GB = [";
+    for (const std::string_view name : names::GAMEPAD_BUTTON_NAMES) {
+        list += "'" + std::string{name} + "',";
+    }
+    list += "]; GB.length";
+    CHECK(script_test::completion(vm, list) == std::to_string(names::GAMEPAD_BUTTON_NAMES.size()));
+    pressPad(state, 1, platform::GamepadButton::Start);
+    CHECK(script_test::completion(vm,
+                                  "GB.map((n) => [engine.input.gamepadButtonDown(n, 3),"
+                                  " engine.input.gamepadButtonPressed(n, 3), engine.input.gamepadButtonReleased(n, 3)]"
+                                  ".some((v) => v)).some((v) => v).toString()") == "false");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(vm);
+}
+
+TEST_CASE("input: gamepadAxis returns the folded axis with no deadzone (SI14)") {
+    const script_test::LogCapture log;
+    Vm vm = script_test::makeBuiltinVm();
+    platform::InputState state;
+    REQUIRE(vm.bindInput(state) == BindStatus::Ok);
+    connectPad(state, 0);
+    connectPad(state, 1);
+
+    movePad(state, 0, platform::GamepadAxis::LeftX, -32768);
+    movePad(state, 0, platform::GamepadAxis::RightX, 32767);
+    movePad(state, 0, platform::GamepadAxis::LeftTrigger, 0);
+    movePad(state, 0, platform::GamepadAxis::RightTrigger, 32767);
+    movePad(state, 1, platform::GamepadAxis::LeftX, 4000);
+    CHECK(outcome(vm, "engine.input.gamepadAxis('LeftX') === -1") == "ok:true");
+    CHECK(outcome(vm, "engine.input.gamepadAxis('RightX') === 1") == "ok:true");
+    CHECK(outcome(vm, "engine.input.gamepadAxis('LeftTrigger') === 0") == "ok:true");
+    CHECK(outcome(vm, "engine.input.gamepadAxis('RightTrigger') === 1") == "ok:true");
+    // 4000 is inside the stick deadzone and still reads raw: the float division, widened to a double.
+    CHECK(outcome(vm, "engine.input.gamepadAxis('LeftX', 1) === Math.fround(4000 / 32767)") == "ok:true");
+    CHECK(outcome(vm, "engine.input.gamepadAxis('LeftX', 1) !== 0") == "ok:true");
+    CHECK(outcome(vm, "typeof engine.input.gamepadAxis('LeftY')") == "ok:number");
+    CHECK(outcome(vm,
+                  "engine.input.gamepadAxis('LeftX', 2) === 0 && engine.input.gamepadAxis('RightTrigger', 3) === 0") ==
+          "ok:true");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(vm);
+}
+
+TEST_CASE("input: gamepadStick returns the dead-zoned stick as a new Vec3 with z 0 (SI15)") {
+    const script_test::LogCapture log;
+    Vm vm = script_test::makeBuiltinVm();
+    platform::InputState state;
+    REQUIRE(vm.bindInput(state) == BindStatus::Ok);
+    connectPad(state, 0);
+    connectPad(state, 1);
+    connectPad(state, 2);
+
+    movePad(state, 0, platform::GamepadAxis::LeftY, -32768);  // full tilt up
+    movePad(state, 1, platform::GamepadAxis::LeftX, 4000);    // inside the deadzone
+    movePad(state, 1, platform::GamepadAxis::LeftY, 4000);
+    movePad(state, 2, platform::GamepadAxis::RightX, 32767);  // the right stick only
+    const std::string vector = "(v) => [v instanceof engine.Vec3, v.x, v.y, v.z].join(':')";
+    CHECK(script_test::completion(vm, "(" + vector + ")(engine.input.gamepadStick('Left'))") == "true:0:-1:0");
+    CHECK(script_test::completion(vm, "(" + vector + ")(engine.input.gamepadStick('Right'))") == "true:0:0:0");
+    CHECK(script_test::completion(vm, "(" + vector + ")(engine.input.gamepadStick('Left', 1))") == "true:0:0:0");
+    CHECK(script_test::completion(vm, "(" + vector + ")(engine.input.gamepadStick('Right', 2))") == "true:1:0:0");
+    CHECK(script_test::completion(vm, "(" + vector + ")(engine.input.gamepadStick('Left', 2))") == "true:0:0:0");
+    CHECK(script_test::completion(vm, "(" + vector + ")(engine.input.gamepadStick('Right', 3))") == "true:0:0:0");
+    CHECK(script_test::completion(vm,
+                                  "(engine.input.gamepadStick('Left') === engine.input.gamepadStick('Left'))"
+                                  ".toString()") == "false");
+    // A write to one object changes nothing the next call reads.
+    CHECK(script_test::completion(vm,
+                                  "(() => { const p = engine.input.gamepadStick('Left'); p.y = 99; p.z = 7;"
+                                  " const q = engine.input.gamepadStick('Left'); return [q.y, q.z].join(); })()") ==
+          "-1,0");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(vm);
+}
+
+TEST_CASE("input: a slot is an integer from 0 to 3 and every check precedes the binding (SI16)") {
+    const script_test::LogCapture log;
+    Vm vm = script_test::makeBuiltinVm();
+    platform::InputState state;
+    connectPad(state, 0);
+    connectPad(state, 3);
+    REQUIRE(vm.bindInput(state) == BindStatus::Ok);
+
+    // Slot 0 is the only one holding the button; omitted, undefined and -0 all read it.
+    pressPad(state, 0, platform::GamepadButton::East);
+    CHECK(outcome(vm, "engine.input.gamepadButtonDown('East')") == "ok:true");
+    CHECK(outcome(vm, "engine.input.gamepadButtonDown('East', undefined)") == "ok:true");
+    CHECK(outcome(vm, "engine.input.gamepadButtonDown('East', -0)") == "ok:true");
+    CHECK(outcome(vm, "engine.input.gamepadButtonDown('East', 3)") == "ok:false");
+    CHECK(outcome(vm, "engine.input.gamepadConnected(3)") == "ok:true");
+    CHECK(outcome(vm, "engine.input.gamepadConnected(-0)") == "ok:true");
+
+    const std::string typeError = "TypeError|engine.input.gamepadConnected: expected a slot number, got ";
+    CHECK(outcome(vm, "engine.input.gamepadConnected('1')") == typeError + "a string");
+    CHECK(outcome(vm, "engine.input.gamepadConnected(null)") == typeError + "null");
+    CHECK(outcome(vm, "engine.input.gamepadConnected(true)") == typeError + "a boolean");
+    CHECK(outcome(vm, "engine.input.gamepadConnected(1n)") == typeError + "a bigint");
+    CHECK(outcome(vm, "engine.input.gamepadConnected({})") == typeError + "an object");
+
+    const std::string rangeError = "RangeError|engine.input.gamepadConnected" + std::string{SLOT_RANGE};
+    for (const std::string_view bad : {"4", "-1", "1.5", "NaN", "Infinity", "-Infinity", "2 ** 53"}) {
+        CAPTURE(bad);
+        CHECK(outcome(vm, "engine.input.gamepadConnected(" + std::string{bad} + ")") == rangeError);
+    }
+    // The name is checked before the slot, the slot before the binding.
+    CHECK(outcome(vm, "engine.input.gamepadButtonDown('Nope', 9)") ==
+          "RangeError|engine.input.gamepadButtonDown: not a gamepad button name");
+    CHECK(outcome(vm, "engine.input.gamepadButtonDown(3, 9)") ==
+          "TypeError|engine.input.gamepadButtonDown: expected a string, got a number");
+    CHECK(outcome(vm, "engine.input.gamepadAxis('LeftX', 9)") ==
+          "RangeError|engine.input.gamepadAxis" + std::string{SLOT_RANGE});
+    CHECK(outcome(vm, "engine.input.gamepadStick('Left', '0')") ==
+          "TypeError|engine.input.gamepadStick: expected a slot number, got a string");
+
+    vm.unbindInput();
+    CHECK(outcome(vm, "engine.input.gamepadConnected(9)") == rangeError);
+    CHECK(outcome(vm, "engine.input.gamepadConnected(1.5)") == rangeError);
+    CHECK(outcome(vm, "engine.input.gamepadConnected()") ==
+          "TypeError|engine.input.gamepadConnected: no input is bound");
+    CHECK(outcome(vm, "engine.input.gamepadButtonPressed('West', 1)") ==
+          "TypeError|engine.input.gamepadButtonPressed: no input is bound");
+    CHECK(outcome(vm, "engine.input.gamepadButtonReleased('Nope')") ==
+          "RangeError|engine.input.gamepadButtonReleased: not a gamepad button name");
+    CHECK(outcome(vm, "engine.input.gamepadAxis('LeftX')") == "TypeError|engine.input.gamepadAxis: no input is bound");
+    CHECK(outcome(vm, "engine.input.gamepadStick('Right')") ==
+          "TypeError|engine.input.gamepadStick: no input is bound");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(vm);
+}
+
+TEST_CASE("input: every gamepad button, axis and stick name reads its own and no other (SI17)") {
+    const script_test::LogCapture log;
+    Vm vm = script_test::makeBuiltinVm();
+    std::string list = "globalThis.GB = [";
+    for (const std::string_view name : names::GAMEPAD_BUTTON_NAMES) {
+        list += "'" + std::string{name} + "',";
+    }
+    list += "]; GB.length";
+    CHECK(script_test::completion(vm, list) == std::to_string(names::GAMEPAD_BUTTON_NAMES.size()));
+
+    for (std::size_t held = 0; held < names::GAMEPAD_BUTTON_NAMES.size(); ++held) {
+        CAPTURE(names::GAMEPAD_BUTTON_NAMES[held]);
+        platform::InputState state;
+        connectPad(state, 1);
+        pressPad(state, 1, static_cast<platform::GamepadButton>(held));
+        REQUIRE(vm.bindInput(state) == BindStatus::Ok);
+        std::string expected(names::GAMEPAD_BUTTON_NAMES.size(), '0');
+        expected[held] = '1';
+        CHECK(script_test::completion(vm, "GB.map((n) => engine.input.gamepadButtonDown(n, 1) ? 1 : 0).join('')") ==
+              expected);
+        CHECK(script_test::completion(vm, "GB.map((n) => engine.input.gamepadButtonPressed(n, 1) ? 1 : 0).join('')") ==
+              expected);
+    }
+
+    // Each axis, set to a distinct raw value, reads back under its own name.
+    platform::InputState state;
+    connectPad(state, 0);
+    constexpr std::array<std::int16_t, 6> RAW{1000, 2000, 3000, 4000, 5000, 6000};
+    for (std::size_t i = 0; i < RAW.size(); ++i) {
+        movePad(state, 0, static_cast<platform::GamepadAxis>(i), RAW[i]);
+    }
+    REQUIRE(vm.bindInput(state) == BindStatus::Ok);
+    for (std::size_t i = 0; i < RAW.size(); ++i) {
+        CAPTURE(names::GAMEPAD_AXIS_NAMES[i]);
+        const std::string call = "engine.input.gamepadAxis('" + std::string{names::GAMEPAD_AXIS_NAMES[i]} + "')";
+        CHECK(outcome(vm, call + " === Math.fround(" + std::to_string(RAW[i]) + " / 32767)") == "ok:true");
+    }
+    for (const std::string_view stick : names::GAMEPAD_STICK_NAMES) {
+        CAPTURE(stick);
+        CHECK(outcome(vm, "engine.input.gamepadStick('" + std::string{stick} + "') instanceof engine.Vec3") ==
+              "ok:true");
+    }
+
+    for (const std::string_view wrong : {"A", "B", "Cross", "LB", "Select", "LeftZ", "Up"}) {
+        CAPTURE(wrong);
+        const std::string quoted = "('" + std::string{wrong} + "')";
+        CHECK(outcome(vm, "engine.input.gamepadButtonDown" + quoted) ==
+              "RangeError|engine.input.gamepadButtonDown: not a gamepad button name");
+        CHECK(outcome(vm, "engine.input.gamepadAxis" + quoted) ==
+              "RangeError|engine.input.gamepadAxis: not a gamepad axis name");
+        CHECK(outcome(vm, "engine.input.gamepadStick" + quoted) ==
+              "RangeError|engine.input.gamepadStick: not a stick name");
+    }
+    CHECK(outcome(vm, "engine.input.gamepadStick('LeftX')") ==
+          "RangeError|engine.input.gamepadStick: not a stick name");
+    CHECK(outcome(vm, "engine.input.gamepadAxis('Left')") ==
+          "RangeError|engine.input.gamepadAxis: not a gamepad axis name");
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     script_test::expectCleanShutdown(vm);
 }

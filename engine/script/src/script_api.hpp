@@ -191,7 +191,7 @@ inline constexpr std::size_t MAX_QUERY_CLASSES = 8;
 
 // ---- engine.input (script_api_input.cpp) --------------------------------------------------------------------------
 // The functions of the frozen object `engine.input`. One host function (script_api.cpp) serves them all; its magic is
-// the op. The gamepad ops join in a later step of the task.
+// the op.
 enum class InputOp : std::uint8_t {
     KeyDown,
     KeyPressed,
@@ -202,6 +202,12 @@ enum class InputOp : std::uint8_t {
     MousePosition,
     MouseDelta,
     MouseWheel,
+    GamepadConnected,
+    GamepadButtonDown,
+    GamepadButtonPressed,
+    GamepadButtonReleased,
+    GamepadAxis,
+    GamepadStick,
 };
 struct InputFunction {
     std::string_view name;
@@ -209,15 +215,22 @@ struct InputFunction {
     int length;  // counts an optional slot argument (rule 2)
 };
 // In op order, which is the definition order on engine.input.
-inline constexpr std::array<InputFunction, 9> INPUT_FUNCTIONS{{{"keyDown", InputOp::KeyDown, 1},
-                                                               {"keyPressed", InputOp::KeyPressed, 1},
-                                                               {"keyReleased", InputOp::KeyReleased, 1},
-                                                               {"mouseButtonDown", InputOp::MouseButtonDown, 1},
-                                                               {"mouseButtonPressed", InputOp::MouseButtonPressed, 1},
-                                                               {"mouseButtonReleased", InputOp::MouseButtonReleased, 1},
-                                                               {"mousePosition", InputOp::MousePosition, 0},
-                                                               {"mouseDelta", InputOp::MouseDelta, 0},
-                                                               {"mouseWheel", InputOp::MouseWheel, 0}}};
+inline constexpr std::array<InputFunction, 15> INPUT_FUNCTIONS{
+    {{"keyDown", InputOp::KeyDown, 1},
+     {"keyPressed", InputOp::KeyPressed, 1},
+     {"keyReleased", InputOp::KeyReleased, 1},
+     {"mouseButtonDown", InputOp::MouseButtonDown, 1},
+     {"mouseButtonPressed", InputOp::MouseButtonPressed, 1},
+     {"mouseButtonReleased", InputOp::MouseButtonReleased, 1},
+     {"mousePosition", InputOp::MousePosition, 0},
+     {"mouseDelta", InputOp::MouseDelta, 0},
+     {"mouseWheel", InputOp::MouseWheel, 0},
+     {"gamepadConnected", InputOp::GamepadConnected, 1},
+     {"gamepadButtonDown", InputOp::GamepadButtonDown, 2},
+     {"gamepadButtonPressed", InputOp::GamepadButtonPressed, 2},
+     {"gamepadButtonReleased", InputOp::GamepadButtonReleased, 2},
+     {"gamepadAxis", InputOp::GamepadAxis, 2},
+     {"gamepadStick", InputOp::GamepadStick, 2}}};
 // The handlers, behind one exhaustive switch over `op`. Not noexcept (they build strings on their throw paths); the one
 // noexcept host function that calls them is in script_api.cpp, the worldFunction shape (bugprone-exception-escape).
 // `argv` holds at least the function's length of values.
