@@ -1,11 +1,12 @@
 #pragma once
-// Aero Engine — platform event, input & window-identity types (tasks 0.3.1, 0.3.2).
+// Aero Engine — platform event, input & window-identity types (tasks 0.3.1, 0.3.2, 4.4.3).
 // engine::platform's event and input vocabulary. SDL is the backend of the pump that PRODUCES these
 // (engine/platform/src/platform.cpp) and never crosses this boundary (docs/04 boundary rule); the
 // `lint` job's SDL step and tests/platform_boundary_probe.cpp enforce that mechanically. Every type
 // here is an engine type — Key/MouseButton are engine enums whose mapping from the backend lives in
-// the pump, not here.
+// the pump, not here. Since 4.4.3 the vocabulary also covers gamepads.
 
+#include <cstddef>
 #include <cstdint>
 
 namespace engine::platform {
@@ -165,6 +166,49 @@ enum class Key : std::uint8_t {
 // Left=1/Middle=2/Right=3). The pump maps them explicitly. Count is the sizing sentinel.
 enum class MouseButton : std::uint8_t { Left = 0, Right, Middle, X1, X2, Count };
 
+// Gamepad slots the engine models: player slots 0..3, the engine's own numbering and never the backend's
+// device ids (task 4.4.3).
+inline constexpr std::size_t MAX_GAMEPADS = 4;
+
+// Gamepad buttons, named by POSITION in the backend's order (SDL_gamepad.h:152-182), the way Key names a
+// physical location: South is Xbox A, PlayStation Cross and Switch B, whatever the face prints. Values are
+// engine-owned and CONTIGUOUS from 0. Count is the array-sizing sentinel, not a button.
+enum class GamepadButton : std::uint8_t {
+    South = 0,
+    East,
+    West,
+    North,
+    Back,
+    Guide,
+    Start,
+    LeftStick,
+    RightStick,
+    LeftShoulder,
+    RightShoulder,
+    DpadUp,
+    DpadDown,
+    DpadLeft,
+    DpadRight,
+    Misc1,
+    RightPaddle1,
+    LeftPaddle1,
+    RightPaddle2,
+    LeftPaddle2,
+    Touchpad,
+    Misc2,
+    Misc3,
+    Misc4,
+    Misc5,
+    Misc6,
+    Count  // sentinel: number of buttons, for array sizing -- NOT a button
+};
+
+// Gamepad axes: four sticks (-1..1 after the fold, up and left negative) and two triggers (0..1).
+enum class GamepadAxis : std::uint8_t { LeftX = 0, LeftY, RightX, RightY, LeftTrigger, RightTrigger, Count };
+
+// The two analog sticks, as a pair of axes read through the radial deadzone.
+enum class GamepadStick : std::uint8_t { Left = 0, Right, Count };
+
 // Held modifier flags, as engine-owned bits. The pump builds a KeyMods from the backend's mod mask.
 enum class KeyMod : std::uint16_t {
     None = 0,
@@ -214,6 +258,12 @@ enum class EventType : std::uint8_t {
     MouseButtonUp,    // Event::mouseButton
     MouseMoved,       // Event::mouseMotion (absolute position + relative delta)
     MouseWheel,       // Event::mouseWheel (normalized: FLIPPED already undone)
+    // ---- gamepads (task 4.4.3) ----
+    GamepadConnected,     // a pad took a slot -- Event::gamepad
+    GamepadDisconnected,  // the slot's pad went away -- Event::gamepad
+    GamepadButtonDown,    // Event::gamepadButton
+    GamepadButtonUp,      // Event::gamepadButton
+    GamepadAxisMoved,     // Event::gamepadAxis (the raw value)
 };
 
 // ---- event payloads (task 0.3.2) --------------------------------------------------------------
@@ -244,6 +294,23 @@ struct MouseWheelData {
     float y = 0.0f;  // vertical scroll (normalized: positive away from the user)
 };
 
+// Gamepad payloads (task 4.4.3). The slot is the engine's 0..MAX_GAMEPADS-1 player slot. The axis value stays
+// RAW (the backend's int16 range) so the normalization lives in one place, the InputState fold.
+struct GamepadDeviceData {
+    std::uint8_t slot = 0;
+};
+
+struct GamepadButtonData {
+    std::uint8_t slot = 0;
+    GamepadButton button = GamepadButton::South;
+};
+
+struct GamepadAxisData {
+    std::uint8_t slot = 0;
+    GamepadAxis axis = GamepadAxis::LeftX;
+    std::int16_t value = 0;
+};
+
 // One event from the pump. `type` selects which union arm is meaningful; `window` is the originating
 // window (invalid for Quit). The union's first arm (`size`) carries a default member initializer, so
 // Event stays an AGGREGATE and TRIVIALLY COPYABLE (every arm is), and a default-constructed Event is
@@ -253,11 +320,14 @@ struct Event {
     EventType type = EventType::None;
     WindowId window;
     union {
-        WindowSize size{};            // WindowResized (points) | WindowPixelSizeChanged (pixels)
-        KeyData key;                  // KeyDown | KeyUp
-        MouseButtonData mouseButton;  // MouseButtonDown | MouseButtonUp
-        MouseMotionData mouseMotion;  // MouseMoved
-        MouseWheelData mouseWheel;    // MouseWheel
+        WindowSize size{};                // WindowResized (points) | WindowPixelSizeChanged (pixels)
+        KeyData key;                      // KeyDown | KeyUp
+        MouseButtonData mouseButton;      // MouseButtonDown | MouseButtonUp
+        MouseMotionData mouseMotion;      // MouseMoved
+        MouseWheelData mouseWheel;        // MouseWheel
+        GamepadDeviceData gamepad;        // GamepadConnected | GamepadDisconnected
+        GamepadButtonData gamepadButton;  // GamepadButtonDown | GamepadButtonUp
+        GamepadAxisData gamepadAxis;      // GamepadAxisMoved
     };
 };
 

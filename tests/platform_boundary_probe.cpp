@@ -48,6 +48,16 @@ static_assert(std::is_trivially_copyable_v<engine::platform::Event>);           
 static_assert(std::is_nothrow_default_constructible_v<engine::platform::InputState>);
 static_assert(std::is_default_constructible_v<engine::platform::InputState>);
 
+// ---- task 4.4.3 gamepad surface ----
+static_assert(engine::platform::MAX_GAMEPADS == 4);
+static_assert(static_cast<int>(engine::platform::GamepadButton::Count) == 26);
+static_assert(static_cast<int>(engine::platform::GamepadAxis::Count) == 6);
+static_assert(static_cast<int>(engine::platform::GamepadStick::Count) == 2);
+static_assert(static_cast<int>(engine::platform::EventType::GamepadConnected) >
+              static_cast<int>(engine::platform::EventType::MouseWheel));  // appended: no old value moved
+static_assert(engine::platform::StickPosition{} == engine::platform::StickPosition{});
+static_assert(engine::platform::STICK_DEADZONE > 0.0F && engine::platform::STICK_DEADZONE < 1.0F);
+
 // ---- task 0.3.3 audio surface ----
 static_assert(engine::platform::AudioDeviceConfig{}.sampleRate == 48000U);
 static_assert(engine::platform::AudioDeviceConfig{}.channels == 2U);

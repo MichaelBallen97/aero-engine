@@ -57,6 +57,7 @@ add_executable(aero_tests
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
+    gamepad_input_test.cpp # task 4.4.3 -- the gamepad fold and the stick deadzone (GP1-GP11)
     audio_device_test.cpp # task 0.3.3 — black-box AudioDevice, null backend (no hardware)
     rhi_types_test.cpp    # task 0.4.1 — handle/desc/flag vocabulary (compile-time heavy, no GPU)
     rhi_format_test.cpp   # task 0.4.1 — format classification/size/toString (no GPU)
