@@ -546,3 +546,88 @@ TEST_CASE("pump: System mode sets no hint and starts and stops the subsystem on 
     }
     CHECK(SDL_WasInit(0) == 0);
 }
+
+// The end-to-end witness of AC-14 and of Story 3's input line: a script reads, through a real pump, what a synthetic
+// keyboard and mouse and one virtual pad did, from the very InputState the Context folds into.
+TEST_CASE("pump: engine.input reads the Context's own state through a real pump, frame by frame (SI18)") {
+    Context ctx{VIRTUAL_ONLY};
+    REQUIRE(ctx.valid());
+    drain(ctx);
+    VirtualPad pad;
+    pad.attach();
+    drain(ctx);
+    pad.openAndPrime();
+    drain(ctx);
+    REQUIRE(ctx.input().gamepadConnected(0));
+
+    engine::script::Vm vm = script_test::makeBuiltinVm();
+    REQUIRE(vm.bindInput(ctx.input()) == engine::script::BindStatus::Ok);
+
+    ctx.newFrame();
+    SDL_Event keyDown{};
+    keyDown.type = SDL_EVENT_KEY_DOWN;
+    keyDown.key.scancode = SDL_SCANCODE_W;
+    keyDown.key.down = true;
+    REQUIRE(SDL_PushEvent(&keyDown));
+    SDL_Event buttonDown{};
+    buttonDown.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    buttonDown.button.button = SDL_BUTTON_LEFT;
+    buttonDown.button.down = true;
+    buttonDown.button.x = 10.0F;
+    buttonDown.button.y = 20.0F;
+    REQUIRE(SDL_PushEvent(&buttonDown));
+    SDL_Event motion{};
+    motion.type = SDL_EVENT_MOUSE_MOTION;
+    motion.motion.x = 12.0F;
+    motion.motion.y = 24.0F;
+    motion.motion.xrel = 2.0F;
+    motion.motion.yrel = 4.0F;
+    REQUIRE(SDL_PushEvent(&motion));
+    SDL_Event wheel{};
+    wheel.type = SDL_EVENT_MOUSE_WHEEL;
+    wheel.wheel.y = 1.0F;
+    wheel.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
+    REQUIRE(SDL_PushEvent(&wheel));
+    pad.button(0, true);
+    pad.axis(1, -32768);
+    pad.axis(4, 32767);
+    drain(ctx);
+
+    CHECK(script_test::completion(vm,
+                                  "[engine.input.keyDown('W'), engine.input.keyPressed('W'),"
+                                  " engine.input.mouseButtonPressed('Left'), engine.input.mousePosition().x,"
+                                  " engine.input.mousePosition().y, engine.input.mouseDelta().x,"
+                                  " engine.input.mouseDelta().y, engine.input.mouseWheel().y,"
+                                  " engine.input.gamepadConnected(0), engine.input.gamepadButtonPressed('South'),"
+                                  " engine.input.gamepadStick('Left').y, engine.input.gamepadAxis('LeftTrigger')]"
+                                  ".join()") == "true,true,true,12,24,2,4,1,true,true,-1,1");
+
+    ctx.newFrame();
+    SDL_Event keyUp{};
+    keyUp.type = SDL_EVENT_KEY_UP;
+    keyUp.key.scancode = SDL_SCANCODE_W;
+    keyUp.key.down = false;
+    REQUIRE(SDL_PushEvent(&keyUp));
+    SDL_Event buttonUp{};
+    buttonUp.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    buttonUp.button.button = SDL_BUTTON_LEFT;
+    buttonUp.button.down = false;
+    buttonUp.button.x = 12.0F;
+    buttonUp.button.y = 24.0F;
+    REQUIRE(SDL_PushEvent(&buttonUp));
+    pad.button(0, false);
+    drain(ctx);
+
+    CHECK(script_test::completion(vm,
+                                  "[engine.input.keyReleased('W'), engine.input.keyDown('W'),"
+                                  " engine.input.mouseButtonReleased('Left'), engine.input.mouseDelta().x,"
+                                  " engine.input.gamepadButtonReleased('South')].join()") == "true,false,true,0,true");
+
+    pad.detach();
+    drain(ctx);
+    pad.closeJoystick();
+    CHECK(script_test::completion(vm, "String(engine.input.gamepadConnected(0))") == "false");
+
+    vm.unbindInput();
+    script_test::expectCleanShutdown(vm);
+}

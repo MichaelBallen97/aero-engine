@@ -57,7 +57,7 @@ add_executable(aero_tests
     script_math_test.cpp # task 4.4.2 -- the Vec3 and Quat helpers (VX1-VX15)
     platform_test.cpp
     platform_event_test.cpp
-    input_pump_test.cpp   # task 4.4.3 -- virtual gamepads and synthetic events through a real Context (GP12-GP22)
+    input_pump_test.cpp   # task 4.4.3 -- virtual gamepads and synthetic events through a real Context (GP12-GP22, SI18)
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
     gamepad_input_test.cpp # task 4.4.3 -- the gamepad fold and the stick deadzone (GP1-GP11)
     audio_device_test.cpp # task 0.3.3 — black-box AudioDevice, null backend (no hardware)

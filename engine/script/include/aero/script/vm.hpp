@@ -48,8 +48,8 @@ struct BytecodeCook;          // the cook (src/bytecode_cook.cpp): two VMs of it
 // The JavaScript heap: every byte the backend allocates, header included, is charged against it. There
 // is deliberately no "unlimited": 0 is refused rather than read as the backend's own "no limit".
 inline constexpr std::size_t DEFAULT_HEAP_LIMIT_BYTES = std::size_t{64} * 1024U * 1024U;  // 64 MiB
-// The smallest heap a VM may be given. An empty VM needs about 180 KB (166 970 B Release, 180 090 B Debug, with the
-// eleven built-in components bound; 143 702 B Debug with none -- the `engine` namespace is built in every VM). That
+// The smallest heap a VM may be given. An empty VM needs about 180 KB (169 105 B Release, 182 321 B Debug, with the
+// eleven built-in components bound; 149 351 B Debug with none -- the `engine` namespace is built in every VM). That
 // includes the three builtins the backend builds lazily on a first read, which create reads once so that no later
 // read can fail, so no create runs out of heap at or above this; below it the backend's context-creation
 // failure path is not safe to take, so such a limit is refused up front instead of being tried.
