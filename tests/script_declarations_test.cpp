@@ -1302,6 +1302,7 @@ TEST_CASE(
     }
 
     std::vector<std::string> declaredNamespaces;
+    declaredNamespaces.reserve(declared.namespaces.size());
     for (const DeclaredNamespace& nested : declared.namespaces) {
         declaredNamespaces.push_back(nested.name);
     }

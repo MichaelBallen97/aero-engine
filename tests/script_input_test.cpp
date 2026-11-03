@@ -274,7 +274,7 @@ constexpr std::array<InputFunctionRow, 15> INPUT_ROWS{{{"keyDown", 1, "'W'"},
 
 TEST_CASE("input: bindInput and unbindInput refuse an invalid Vm and another thread, and keep the binding (SI3)") {
     script_test::LogCapture log;
-    platform::InputState state;
+    const platform::InputState state;
     Vm invalid;
     CHECK(invalid.bindInput(state) == BindStatus::InvalidVm);
     {
@@ -319,7 +319,7 @@ TEST_CASE("input: bindInput and unbindInput refuse an invalid Vm and another thr
 TEST_CASE("input: with no input bound every function throws after its arguments are checked (SI4)") {
     const script_test::LogCapture log;
     Vm vm = script_test::makeBuiltinVm();
-    platform::InputState state;
+    const platform::InputState state;
     const auto expectUnbound = [&vm] {
         for (const InputFunctionRow& row : INPUT_ROWS) {
             CAPTURE(row.name);
@@ -436,7 +436,7 @@ TEST_CASE("input: the pointer functions return a new Vec3 each call (SI7)") {
 TEST_CASE("input: a name that is not a string or not in the table is refused without running script code (SI8)") {
     const script_test::LogCapture log;
     Vm vm = script_test::makeBuiltinVm();
-    platform::InputState state;
+    const platform::InputState state;
     REQUIRE(vm.bindInput(state) == BindStatus::Ok);
     script_test::completion(vm,
                             "globalThis.n = 0; globalThis.o = { toString() { globalThis.n++; return 'W'; },"
@@ -552,7 +552,7 @@ TEST_CASE("input: every key name reads its own key and the other names read fals
         expected[i] = '1';
         CHECK(script_test::completion(vm, "NAMES.map((n) => engine.input.keyDown(n) ? 1 : 0).join('')") == expected);
     }
-    platform::InputState empty;
+    const platform::InputState empty;
     REQUIRE(vm.bindInput(empty) == BindStatus::Ok);
     for (const std::string_view name : names::MOUSE_BUTTON_NAMES) {
         CAPTURE(name);
