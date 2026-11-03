@@ -238,6 +238,35 @@ snapshot of the World's ScriptComponents before any script runs, so a hook's Wor
 live-allocation figures flat after every update (Q7), so a per-update retention is a finding, never a flake; no case
 asserts a duration (4.1.1's trap).
 
+**ONE ENTITY OBJECT PER ENTITY PER BINDING, AND EVERY PATH GOES THROUGH THE TABLE (4.4.2).** A host function that
+hands a script an entity (`this.entity`, `spawn`, `find`, `findAll`, `query`, `parent`, `children()`, and whatever a
+later task adds) takes its object from the VM's strong table, so `===` and `Set` and `Map` keys hold (WA1); an object
+made outside the table breaks identity. The objects are non-extensible. `bindWorld` and `unbindWorld` empty the table
+and the destroy queue, and `destroyQueued` drops every object and mark of the subtree it destroys, so a recreated handle
+gets a new object (WA32, WA33). An entity C++ destroys outside the API keeps its object until the binding ends (G4).
+
+**NO HOST FUNCTION DESTROYS AN ENTITY: THE FLUSH DOES, AFTER `onDestroy` (4.4.2).** `engine.destroy` only queues: the
+entity stays alive and readable, and a repeat answers `false`. `ScriptSystem::update`'s sixth phase takes the queue
+after every hook. For each queued entity, each attached instance in its subtree whose `onInit` succeeded and whose
+script is not suspended gets `onDestroy` in run order while its entity lives, with membership re-checked on the live
+hierarchy before each release, because an `onDestroy` may move entities in or out (LC45). Then `destroyQueued`
+destroys the subtree, and the subtree's attach failures are dropped (LC51-LC53). A hook that queues more extends the
+same flush; `stop()` destroys what is still queued without hooks.
+
+**A SCRIPT-FACING MATH HELPER IS TOTAL (4.4.2).** No helper a script can reach may reach a core assert: it uses
+`normalizeOrZero` or `normalizeOrIdentity`, a zero axis gives the identity, and NaN propagates (`invert` of a NaN
+quaternion is four quiet NaNs, VX11). A helper writes in place and returns `this`, or returns a number or a new
+detached object.
+
+**A NEW NAMESPACE FUNCTION IS A RESERVED COMPONENT SCRIPT NAME (4.4.2).** `component_bindings.cpp` refuses a component
+whose script name collides with an `engine` member: `Vec3`, `Quat`, `Entity`, `Script`, `spawn`, `destroy`, `find`,
+`findAll` and `query`. A task that adds a namespace function adds it there, to the prelude, and to the binding cases
+that list the namespace's members.
+
+**A TEST'S SLOPPY-MODE ARM BUILDS ITS FUNCTION WITH `Function` (4.4.2).** `evaluateScript` compiles strict (`vm.cpp`),
+so a "sloppy" arm run through it is strict. quickjs-ng 0.15.1 ignores a sloppy write to a getter-only accessor and
+throws in strict code (VM87).
+
 ## What Phase 4's next tasks inherit
 
 **Phase 4 is open; Epic 4.1 is closed (4.1.1, 4.1.2) and 4.2.1, quickjs binding emission, is merged (`docs/tasks/phase-4.md`).**
@@ -268,3 +297,8 @@ script Guid to its `res://` path) and the VFS mount; nothing in the editor runs 
 entity API a hook calls beyond `get`, `has`, `add` and `remove`. A script that recurses past about 50 levels fails in
 Debug only (D8: Windows Debug's C stack is the lowest). The merge's record enters D8, the line-0 frame of a throwing
 field initializer beside R35, and D9, which closes the `bindWorld` handoff, in `docs/08-risks.md`.
+
+**What 4.4.2 leaves for later tasks.** 4.4.3 adds input to the same namespace, and its new names join the reserved
+list. 4.4.4 adds `spawn(asset, transform)` as an overload of `spawn()`, which refuses any argument today (WA17). 4.7.4's
+play session binds once per Play, so the entity table lives for one Play, and its `update` calls run the flush. A
+`getOrAdd` stays open in `docs/08`.

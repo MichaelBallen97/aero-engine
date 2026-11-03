@@ -69,6 +69,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | 4.3.3 Script hot reload | #130 | `08025f9` | **3 / 3**, nothing failed (terminal rows, no editor UI: the HR cases under `leaks`, 0 leaks; a reload of 10 000 instances in 3 ms in Release and 32 ms in Debug; the pinned esbuild's class shape, line for line). Three code-review rounds (two blocking findings, each a refusal made after the time budget had ended, and four should-fix, all closed); a 69-row sabotage matrix, 68 red and one non-finding, whose holes HR38–HR41 closed and re-ran red; R34 (the job an interrupted call leaves) recorded; CI green on the first push (`41186262804`) and on `main`'s push run (`41190384148`), 6 / 6 each |
 | 4.3.4 Source-mapped errors | #131 | `4d9d1ef` | **2 / 2**, nothing failed (terminal rows, no editor UI: SR1–SR30, CS11–CS16, ST43 and ST44 under `leaks`, 0 leaks; SR9's first mapping of 120 000 segments in 2.9–3.2 ms in Release and 79–80 ms in Debug, the second in 0 µs and 13–17 µs). Two code-review rounds (two should-fix findings, a cooked read keeping the map a failed JavaScript compile left under its name and the VM-tier arms no case reached, and two minors, all closed); a 99-row sabotage matrix whose ten holes SR22–SR30 and CS16 closed and re-ran red; R35 (quickjs's recorded positions) and R36 (nothing of a generation freed before teardown) recorded; CI green on the first push (`41252762043`) and on `main`'s push run (`41259313081`), 6 / 6 each |
 | 4.4.1 ScriptComponent + lifecycle | #132 | `63ca43a` | **12 / 12**, nothing failed (the editor GUI driven on macOS: the Script kind's colour and filter, `.d.ts` and `.TS` staying Text, Add Component, attaching by drop and by picker, Undo and Redo, a saved and reopened scene naming the `.meta` guid, refused drops on the Hierarchy and the Viewport; the lifecycle cases under `leaks`, 0 leaks; BN57's 1 000-instance update at a median of 0.563–0.574 ms in Release; LC31's `stop()` over 10 000 instances in 53.0–54.1 ms in Debug). Two code-review rounds (one should-fix, the suspension WARN counting over half-moved run-order entries during a detach, and one minor, both closed); a 92-row sabotage matrix whose nine holes LC34–LC39, I369 and VM82 closed and re-ran red; R37 (the Debug recursion depth from a hook) recorded and the `bindWorld` handoff's 4.4.1 half closed; CI green on the first push (`41307754224`, 6 / 6) and on `main`'s push run (`41314380171`, 6 / 6) |
+| 4.4.2 Entity/world API | #133 | `1094266` | **3 / 3**, nothing failed (terminal rows, no editor UI: the 81 new cases under `leaks`, 0 leaks; LC48's update spawning and destroying 1 000 entities at a median of 0.671–0.677 ms in Release against 1.94 ms; WA27's `find` / `findAll` / `query` over 10 000 entities at most 29.1 / 44.0 / 129.2 µs in Release against 90.9 / 134.4 / 405.1 µs, both bounds 3 × the Release medians measured afterwards at the commits that added the cases). Three code-review rounds (four should-fix in round 1: a strict "sloppy" arm, a commuting `lookAt` sample, a missing `<ostream>`, and an attach failure counted for an entity the flush destroyed; one in round 2, the flushed subtree's erase untested; all closed, round 3 approved); a 135-row sabotage matrix whose seven predicted holes WA29–WA34 and VM88 closed and re-ran red; no new risk or handoff; CI green on the first push (`41544399893`, 6 / 6) and on `main`'s push run (`41553547614`, 6 / 6) |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -21181,3 +21182,177 @@ I368–I369 (I370).
 R37, the `bindWorld` handoff's 4.4.1 half closed, two unowned handoffs and the validation debt),
 `docs/future-roadmap.md` (script fields in the Inspector), the phase file, and the scripting, components and editor
 rule files.
+
+### 4.4.2 — Entity/world API — a script spawns, finds, queries and queues entities for destruction, reads and sets an entity's name and parent, reaches another entity's script, and moves entities with in-place Vec3, Quat and Transform helpers, through one entity object per entity per binding
+
+A script now works on the world it runs in: `engine.spawn`, `find`, `findAll`, `query` and a deferred `destroy`;
+`entity.name`, `entity.parent`, `entity.children()` and `entity.script`; in-place math on `Vec3` and `Quat`; and
+world-space reads and own-frame writes on `engine.Transform`. Merged as PR #133 (`1094266`, a true merge commit):
+fifteen commits on `4b922c4` — the plan's nine steps, round 1's three fix commits, round 2's regression cases, the
+commit that closed the sabotage holes and its lint fix. CI: run `41544399893` at `68e074c`, 6 / 6 green on the first
+push; `main`'s push run `41553547614` on the merged head, 6 / 6 green. This is the engine side of Story 3's first
+line and the engine-API half of its fourth line; nothing in the editor runs a script before 4.7.4, and Story 3 also
+waits on 4.4.3 and 4.4.4.
+
+**What shipped.**
+- **One `engine.Entity` object per entity per binding** (`script_api_world.cpp`, `script_api_entity.cpp`, `vm.cpp`):
+  every path that hands out an entity (`this.entity`, `spawn`, `find`, `findAll`, `query`, `parent`, `children()`)
+  returns the object a strong table holds for it, so `===` and `Set`/`Map` keys work (WA1). The objects are
+  non-extensible, whichever path made them (WA2). `bindWorld` and `unbindWorld` empty the table and the destroy queue:
+  an object of the old binding reads dead and the new binding makes new objects (WA3, WA4). An entity C++ destroys
+  outside the API keeps its object until the binding ends (the spec's accepted clause, G4). VM73 flipped: an instance's
+  `entity` is now the table's object.
+- **Entity-level data** (`script_api_entity.cpp`): `entity.name` reads and writes `World::setName` (never unique, `""`
+  clears); `entity.parent` reads and writes `World::setParent`, keeping the local TRS (WA11), with a cycle or a dead parent
+  pre-checked so every refusal is one `TypeError` with no record and nothing changed (WA12); `entity.children()` is a
+  new array in attach order each call (WA13). The name setter checks its value before its receiver (host-function rule
+  9; WA34).
+- **The namespace functions** (`script_api.cpp` dispatches, `script_api_world.cpp` handles): `spawn()` takes no
+  argument (`TypeError: engine.spawn: expected no arguments, got 1`, nothing created; WA17) and returns a new root
+  entity holding an identity Transform and no name, alive at once, its script attaching at the next update; a spawn
+  whose Transform the World refuses destroys the entity and throws. `find(name)` is the live entity with that exact
+  name and the lowest index, or `null`; `findAll(name)` every match; `query(...types)` every entity holding all of 1 to
+  8 component classes, anything else a `RangeError`; all arrays in ascending entity index, `find('')` `null` and
+  `findAll('')` `[]`. `find` and `query` check their arguments before the binding (WA29, WA31). `spawn`, `destroy`, `find`, `findAll`
+  and `query` joined `Vec3`, `Quat`, `Entity` and `Script` as reserved component script names
+  (`component_bindings.cpp`).
+- **`engine.destroy(e)` is deferred to the end of the update** (`script_api_world.cpp`, `vm.hpp`, `script_system.cpp`):
+  it queues a live entity of the current binding once and returns `true`; the entity stays alive and readable; a repeat
+  or a dead entity answers `false` and never throws. `Vm::takeDestroyQueue()` hands the queue over and
+  `Vm::destroyQueued(entity)` destroys one queued subtree after dropping every entity object and mark in it, so a
+  recreated handle gets a new object (WA32, WA33). `ScriptSystem::update` gained a sixth phase, the flush: for each
+  queued entity, each attached instance in its subtree whose `onInit` succeeded and whose script is not suspended gets
+  `onDestroy` in run order while its entity is alive, then the World destroys the subtree; an `onDestroy` that queues
+  more extends the same flush (LC43). `stop()` destroys what is still queued with no hook run.
+  `ScriptSystemReport::destroyed` counts the queued entities a call destroyed.
+- **`entity.script`** (`script_api_entity.cpp`, `vm_scripts.cpp`): the instance attached to that entity in this VM,
+  or `null`; the VM keeps the entity-to-instance map current at attach, reload and destroy (VM83–VM88, LC49). It is a
+  getter-only accessor on the prototype, enumerable and non-configurable: a module's write throws, a sloppy write is
+  ignored (VM87).
+- **`Vec3` and `Quat` helpers** (`script_api_values.cpp`): `Vec3` add, sub, scale, addScaled, negate, normalize, lerp,
+  cross, applyQuat, clone, dot, length, lengthSquared, distanceTo; `Quat` multiply, premultiply, invert, normalize,
+  slerp, setFromAxisAngle, setFromEuler, toEuler, clone, dot. Writes are in place and return `this`; queries return
+  numbers; `clone` is a detached copy. Every helper is total through the engine's own core math (a zero vector stays
+  zero; a zero quaternion or axis gives the identity; NaN propagates), so none reaches a core assert. A number refusal
+  names its site `engine.<Class>.<helper>` (VX8).
+- **Transform helpers** (`script_api_transform.cpp`, new): `worldPosition()`, `forward()`, `right()` and `up()` read
+  the world matrix and return new detached vectors (unit directions; zero when a scale collapses the axis);
+  `translate(v)` and `rotate(q)` act on the entity's own axes; `lookAt(target, up?)` aims −Z at a world-space point,
+  `up` defaulting to world +Y, and degenerate input leaves the rotation unchanged. `rotate` with a zero `q` stores the
+  identity (`normalizeOrIdentity(rotation * q)`, G5).
+- **The prelude** (`prelude.d.ts`, +90 lines) declares all of it; the Transform helpers are an `interface Transform`
+  that merges with the generated class, and the namespace functions are `function` declarations. `typescript.clean`
+  gained `world.ts` and `target.ts`; `typescript.broken` flags TS2551 (a misspelt helper), TS2345 (a wrong argument),
+  TS2554 (an argument to `spawn`), TS2540 (a write to `entity.script`) and TS2322 (a number for `entity.parent`), and its
+  `position` literal moved from TS2741 to TS2740 now that `Vec3` has more members.
+- **End to end** (LC50, `tests/fixtures/scripts/world/`): two committed esbuild bundles, `player` and `enemy`, spawn,
+  find, move and destroy entities across three updates of a `ScriptSystem`.
+
+**Code-review rounds.** Round 1 (on `4b922c4..d436234`, the nine steps): no blocking, four should-fix. (1) VM87's
+"sloppy" arm ran through `evaluateScript`, which compiles strict, so both arms were strict; the build's own report that
+quickjs-ng throws on a sloppy write to `entity.script` was a mismeasurement, and `83b2e5a` repinned the arm through
+`Function` (the write is ignored, to spec). (2) XF6's sample (a half turn about Y and an XZ target) commuted, so a
+reversed product at `script_api_transform.cpp:76` stayed green; `83b2e5a` turned the parent a quarter about +X. (3)
+`script_world_test.cpp` lacked `<ostream>` for a `string_view` check (`ci-portability.md`); `608c677`. (4)
+`failedAttaches` counted an entity the same update's flush destroyed; `7a29126` erases the flushed subtree's keys from
+the attach failures after the releases, once `destroyQueued` confirms, with LC51. Round 2 (on `d436234..83b2e5a`): one
+should-fix — LC51 failed the attach on the bare queued root, so the subtree erase and its timing went untested;
+`d6d0481` added LC52 (a child's failed attach, red when only the root is erased) and LC53 (an `onDestroy` that moves a
+failed entity out of the subtree, red when the keys are read before the releases). Round 3 (on `83b2e5a..d6d0481`):
+approved, no finding.
+
+**The sabotage matrix.** 135 doctest rows in `aero_tests` through `macos-debug`, run at `d6d0481`: 128 RED and 7 HOLE,
+all seven predicted at design. S11 (`find` checks the World before its argument; C.4 orders the value first), S19 (the
+same in `query`), S13 (`findAll('')` answers every unnamed entity), S30 (a queued descendant keeps its mark after its
+ancestor's subtree is destroyed), S31 (only the root's table entry is evicted), S38 (`entity.script` answers the next
+attached entity's instance for an unattached one) and S41 (the name setter checks its receiver before its value).
+`2ed0367` closed them with WA29 (S11), WA30 (S13), WA31 (S19), WA32 (S30), WA33 (S31), VM88 (S38) and WA34 (S41), each
+re-run RED; `68e074c` reserved WA30's capacity for clang-tidy, and S13 re-ran RED there. Last verdict per row: 135 / 135
+RED. Not seeded, with their reasons recorded at design: WA27 (every scan is `World::eachEntity`, so no loop can stop
+early), LC42 and LC47 (the decision lives in 4.4.1's `release()`), VM84 (the map stores the handle, so no token can
+return the old object), VX6 and VX15 (both reads precede the single write), and the `typescript.*` entries (ctest, not
+doctest).
+
+**Traps found, each measured.**
+- **`evaluateScript` compiles strict** (`vm.cpp:325`): a test's sloppy-mode arm must build its function with
+  `Function`. quickjs-ng 0.15.1 ignores a sloppy write to a getter-only accessor and throws only under `JS_PROP_THROW`,
+  or `JS_PROP_THROW_STRICT` in strict code.
+- **The flush's membership is live** (plan C.5): members computed once per pass would release an entity an `onDestroy`
+  had just moved out (LC45), so each release first walks the parent chain (`isUnder(entity, root)`), and entities moved
+  in are taken by a repeat pass; every instance is released once and the hierarchy is acyclic, so the flush ends.
+- **`invertTotal` with a NaN length** (plan C.4): `conjugate(q)` leaves y and z −0 and w 1; the NaN branch returns four
+  quiet NaNs (VX11).
+- **Release and Debug are an order of magnitude apart on the new paths**: WA27's `find` / `findAll` / `query` over
+  10 000 entities read 29 / 44 / 129 µs in Release and 808 / 4 667 / 8 664 µs in Debug (ASan); LC48's update over
+  1 000 spawns and 1 000 destroys 0.67 ms in Release and ~20 ms in Debug.
+- **The namespace budget moved** (`vm.hpp`, ML76): an empty VM costs 163 792 B in Release and 176 768 B in Debug (1 790
+  allocations; 143 702 B and 1 393 allocations with reflect tools off) and binds 810 atoms, from 778.
+- **doctest-totals' STALE flag** marks a binary older than HEAD's commit time even when nothing relinks it; a dry run
+  (`ninja -n -j 1` printing "no work to do") proves the tree current. warn-sweep's touch leaves the other preset ~45
+  steps behind (a ~26 s rebuild of identical sources).
+- **A matrix `--rerun` rewrites `sabotage-summary.md`** with only its own verdicts; the per-row record keeps the last
+  verdict of every row.
+- **A commit that only adds test cases still needs lint before the closing gate**: WA30's `push_back` loop tripped
+  `performance-inefficient-vector-operation`.
+
+**Where the implementation departed from the plan.**
+- Each noexcept host function that builds a `std::vector` calls a non-noexcept helper in `script_api_world.cpp`
+  (`entityArray`, `childrenArray`, `findAllArray`, `queryArray`), and `worldFunction` is a pure dispatcher; a
+  `std::bad_alloc` there terminates (host-function rule 6). The earlier repo precedent is an explicit `try`/`catch` to
+  `std::terminate()` inside the noexcept function (`jobs.cpp`, `sdl_gpu_backend.cpp`); the review rounds raised
+  nothing on it.
+- C.4 and C.5 as above; `attachFailures` drops a flushed subtree's entries (round 1, finding 4).
+- `query` fills a `std::array<std::size_t, 8>` whose size a `static_assert` ties to `World::MAX_QUERY_TYPES`.
+- `vectorHelper` finds its vector argument by opaque and builds strings only on throw paths; `readVectorArgument`
+  serves `translate`, `rotate` and `lookAt`.
+- Steps 1–3 wrote their cases with the source and were sabotaged instead of seen red first; Steps 4–8 ran red first;
+  LC50 was sabotaged through its fixture.
+- Step 9 folded two clang-tidy fixes in earlier steps' test files into its commit.
+- The manual page's leaks row selects all 81 new cases, not the plan's 71. Rows T2 and T3's references (G3: 3 × the
+  Release median at the step that added the case) were not recorded during the build, whose step gates ran Debug only;
+  they were measured on 2026-11-03 by building `macos-release` at `9710d3f` (WA27: 30.291 / 44.791 / 135.042 µs) and
+  `b094568` (LC48: 0.646584 ms), the middle of three runs each.
+
+**What was deliberately left out, and which task holds each.**
+- `spawn(asset, transform)` and the entity-tree asset (4.4.4); input (4.4.3); Play, Pause, Step and Stop, the restore
+  and the play session (4.7.1, 4.7.2, 4.7.4).
+- A `getOrAdd`: no Story 3 line or sample needs one yet, `docs/08`'s own condition, so its line stays open.
+- World-space writes, a reparent that keeps the world transform, `rotateAround` and scale helpers; tags or layers
+  beyond names; events or messages between scripts; coroutines; raycasts; script-defined components; an entity id or
+  serialized entity reference in the API; a `Mat4` class: non-goals.
+- A weak, finalizer-cleared entity table (it would need a spike); attaching a spawned entity's script within the same
+  update; `AERO_RANGE` enforcement on script writes (unscheduled).
+
+**The sentences that govern new work.** Every path that hands a script an entity goes through the VM's table, one
+non-extensible object per entity per binding, and every bind or unbind empties the table and the destroy queue. No
+host function destroys an entity: `engine.destroy` queues, and `ScriptSystem`'s flush runs `onDestroy` while the
+entity lives, re-checks membership on the live hierarchy before each release, and only then destroys the subtree. A
+script-facing math helper is total and never reaches a core assert. A new namespace function joins the reserved
+component script names. These live in `.claude/rules/scripting.md`.
+
+**Validation and sabotage status — macOS 3 / 3 (2026-11-03), Windows and Linux unrun.** `macos-release` at `68e074c`.
+T1: `leaks --atExit` over the 81 new cases read `81 | 81 passed` and `0 leaks for 0 total leaked bytes`. T2: LC48's
+update over 1 000 spawns and 1 000 destroys, a median of 0.670792 / 0.677334 / 0.671125 ms over three runs (bound
+1.939752 ms), with heap, allocation and entity drift 0 in each. T3: WA27's medians over 10 000 entities at most
+29.083 µs (`find`), 44 µs (`findAll`) and 129.166 µs (`query`) over three runs (bounds 90.873, 134.373 and 405.126 µs).
+No row was NOT EXECUTABLE on macOS. Off macOS, T1 is NOT EXECUTABLE (`leaks`) and T2 and T3 are owed by hand; CI is the
+only witness there: PR #133's run `41544399893` ran the 81 new cases in Debug (ASan/UBSan) and Release on the Windows and
+Linux lanes, and clang-tidy found nothing on the Linux lane.
+
+Measured at `68e074c` on fresh build directories:
+- `aero_tests` **1915** (+81), and `aero_editor_shell_test` **2517**, `aero_editor_imgui_test` **375**,
+  `aero_scene_serialize_test` **43**, `aero_editor_inspector_test` **74**, **14 / 28** unchanged; reflect-tools-OFF
+  `aero_tests` 1883, shell 2475 and ImGui 375; shader-tools-OFF `aero_tests` 1775, shell 2517 and ImGui 356.
+- `ctest -N` **233 / 220 / 107**, with `cooker.*` 81 in all three; no entry added.
+- The guards read math **650**, platform **98**, rhi **195**, scene **98**, golden-rule **197**,
+  project-no-delete **A=8 B=113**, audio **11-3-62**, probes **7-64** and script **179-98-18**.
+
+**Case ids claimed:** WA1–WA34 (next free: WA35), VX1–VX15 (VX16), XF1–XF9 (XF10), VM83–VM88 (VM89), LC40–LC53 (LC54)
+and DT26–DT28 (DT29).
+
+**Build & dependency impact:** no vcpkg port and no new target. `engine/script` gains `src/script_api_world.cpp` and
+`src/script_api_transform.cpp`; `vm.hpp`, `script_system.hpp`, `component_binding.hpp`, `script_api.{hpp,cpp}`,
+`script_api_entity.cpp`, `script_api_values.cpp`, `script_system.cpp`, `vm.cpp`, `vm_scripts.cpp`,
+`component_bindings.cpp` and `prelude.d.ts` grow. `aero_tests` gains `script_world_test.cpp`, `script_math_test.cpp` and
+`script_transform_test.cpp`, the committed bundle under `tests/fixtures/scripts/world/`, and two `tsc` fixtures. Docs:
+`docs/08` (4.4.2's validation debt, and the `getOrAdd` handoff no longer naming 4.4.2 as its home), the phase file, and the scripting rule file.

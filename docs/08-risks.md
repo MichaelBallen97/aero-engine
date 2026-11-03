@@ -235,8 +235,8 @@ not repeated here.
 - **`AERO_RANGE` is not enforced on script writes** (4.2.1) — `MeshRenderer.primitive = 3` is stored as written. No
   task owns a range check on the script side; the inspector enforces the range, a script does not.
 - **A `getOrAdd` for script components** (4.2.1) — `entity.add(C)` on an entity that already holds `C` resets it to the
-  defaults, as `World::add` does; a script author who expects "add if absent" needs a separate call. 4.4.2's
-  spawn/destroy API is where it would be added if a sample needs it.
+  defaults, as `World::add` does; a script author who expects "add if absent" needs a separate call. 4.4.2 left it
+  out, since no Story 3 line or sample needs one yet; the first sample that needs it adds it.
 - **Inside a macOS `.app`, the editor looks for esbuild in `Contents/Resources/`** (4.3.1's validation pass) — with no
   `AERO_ESBUILD_PATH`, `ScriptTranspiler::resolveBinary` takes `SDL_GetBasePath()`, which for an app bundle is its
   `Resources` directory, not the `Contents/MacOS/` that holds the executable; the build's copy beside `aero_editor` is
@@ -388,6 +388,11 @@ SR30's heap sweep included.
 (`leaks` over the lifecycle cases) is NOT EXECUTABLE there, and T2, T3 and the nine editor rows G1–G9 are owed by
 hand; T2's and T3's bounds come from this Mac's spike figures. CI's Windows and Linux lanes ran all 89 new cases green
 in both configurations on PR #132's run (`41307754224`), the 100 ms budget cases and BN57's flat heap included.
+
+**4.4.2 OWES A WINDOWS PAGE AND A LINUX PAGE.** No manual pass has run off macOS. Of the page's three rows, T1 (`leaks`
+over the 81 new cases) is NOT EXECUTABLE there, and T2 and T3 are owed by hand; their bounds are 3 × this Mac's Release
+medians at the commits that added WA27 and LC48. CI's Windows and Linux lanes ran all 81 new cases green in both
+configurations on PR #133's run (`41544399893`), and clang-tidy found nothing on the Linux lane.
 
 **METHOD TRAPS FOR DRIVING THE EDITOR, ALL MEASURED.** A pending TCC prompt stalls the editor to ~0.2% CPU
 with a window that **NEVER RENDERS** (a black capture); the prompts **CASCADE**, one per bundle identity, and

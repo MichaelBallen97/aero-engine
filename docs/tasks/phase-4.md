@@ -239,6 +239,17 @@ restore 4.7.2's, and the play session that calls `update`, `stop` and `reloadScr
 Subtasks:
 - Entity spawn/destroy/find; component access (typed via bindings)
 - Transform convenience API (position/rotation/scale)
+**Outcome:** a script works on the world it runs in. `engine.spawn()` makes a new root entity holding an identity
+Transform; `engine.find(name)`, `findAll(name)` and `query(...types)` (1 to 8 component classes) look entities up in
+ascending entity index; and `engine.destroy(e)` queues an entity, which `ScriptSystem`'s sixth phase, the flush,
+destroys at the end of the update with its subtree, after `onDestroy` has run for each attached instance in it while
+the entity is still alive. Every path hands out one non-extensible `engine.Entity` object per entity per binding, so
+`===` holds; `entity.name`, `entity.parent` (which keeps the local Transform) and `entity.children()` read and write the
+World's names and hierarchy, and `entity.script` is the instance attached to that entity, or `null`. `Vec3` and `Quat`
+gain in-place math helpers that never reach a core assert, `engine.Transform` gains `worldPosition`, `forward`,
+`right`, `up`, `translate`, `rotate` and `lookAt`, and the prelude declares all of it. Typed component get and set
+shipped with 4.2.1. Nothing in the editor runs a script yet: Play and Stop are 4.7.1's, the restore 4.7.2's and the play
+session 4.7.4's, and `spawn(asset, transform)` is 4.4.4's.
 
 ### 4.4.3 Input API for scripts · P1 · M · depends: 4.4.2, 0.3.2
 **Goal:** *(audit D7)* gameplay reads input through a stable engine API (touch joins in Phase 6 through this same surface).
