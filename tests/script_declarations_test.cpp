@@ -1,5 +1,5 @@
-// Aero Engine -- the TypeScript declarations against a live VM (task 4.2.2; DT1-DT7, since 4.4.1 DT22-DT25, and since
-// 4.4.2 DT26-DT27).
+// Aero Engine -- the TypeScript declarations against a live VM (task 4.2.2; DT1-DT7, since 4.4.1 DT22-DT25, since
+// 4.4.2 DT26-DT28, and since 4.4.3 DT29-DT32).
 //
 // The build joins engine/script/types/prelude.d.ts with one reflect-gen --emit-dts block per built-in component header
 // into aero-engine.d.ts. These cases read that file from disk with a deliberately strict reader (the line grammar in
@@ -53,15 +53,25 @@ struct DeclaredClass {
     bool base = false;  // `protected constructor(...)`: a class a script extends, never one it constructs
     std::vector<DeclaredMember> members;  // public members, in file order
 };
+struct DeclaredUnion {
+    std::string name;
+    std::vector<std::string> members;  // the string literals, in file order
+};
+struct DeclaredNamespace {  // a `namespace <ident> {` block nested in the engine namespace (since 4.4.3)
+    std::string name;
+    std::vector<DeclaredUnion> unions;      // file order
+    std::vector<DeclaredMember> functions;  // its `function` lines, file order
+};
 struct Declarations {
     std::vector<DeclaredClass> classes;     // file order
     std::vector<DeclaredClass> interfaces;  // a plain `interface Name {` that adds members to the class of that name
     std::vector<DeclaredMember> functions;  // the namespace's `function` lines, file order
-    std::vector<std::string> componentMap;  // keys, file order
-    std::string error;                      // non-empty: refused, "line N: <why>"
+    std::vector<DeclaredNamespace> namespaces;  // file order
+    std::vector<std::string> componentMap;      // keys, file order
+    std::string error;                          // non-empty: refused, "line N: <why>"
 };
 
-enum class Context : std::uint8_t { Top, Namespace, Map, TypeBody, Class, Interface };
+enum class Context : std::uint8_t { Top, Namespace, Map, TypeBody, Class, Interface, Nested };
 
 [[nodiscard]] bool startsWith(std::string_view text, std::string_view prefix) {
     return text.substr(0, prefix.size()) == prefix;
@@ -207,6 +217,51 @@ enum class Context : std::uint8_t { Top, Namespace, Map, TypeBody, Class, Interf
     return true;
 }
 
+// `type <Ident> = "<ident>"( | "<ident>")*;`: each member a double-quoted identifier, at least one, none repeated.
+[[nodiscard]] bool parseUnion(std::string_view line, DeclaredUnion& declared) {
+    if (!startsWith(line, "type ") || !endsWith(line, ";")) {
+        return false;
+    }
+    line.remove_prefix(5);
+    line.remove_suffix(1);
+    const std::string_view name = leadingIdent(line);
+    if (name.empty()) {
+        return false;
+    }
+    line.remove_prefix(name.size());
+    if (!startsWith(line, " = ")) {
+        return false;
+    }
+    line.remove_prefix(3);
+    declared.name = std::string{name};
+    declared.members.clear();
+    for (;;) {
+        if (line.size() < 2 || line.front() != '"') {
+            return false;
+        }
+        const std::size_t close = line.find('"', 1);
+        if (close == std::string_view::npos) {
+            return false;
+        }
+        const std::string_view member = line.substr(1, close - 1);
+        if (member.empty() || leadingIdent(member).size() != member.size()) {
+            return false;
+        }
+        if (std::find(declared.members.begin(), declared.members.end(), member) != declared.members.end()) {
+            return false;
+        }
+        declared.members.emplace_back(member);
+        line.remove_prefix(close + 1);
+        if (line.empty()) {
+            return true;
+        }
+        if (!startsWith(line, " | ")) {
+            return false;
+        }
+        line.remove_prefix(3);
+    }
+}
+
 [[nodiscard]] Declarations parseDeclarations(std::string_view text) {
     Declarations result;
     Context context = Context::Top;
@@ -264,6 +319,21 @@ enum class Context : std::uint8_t { Top, Namespace, Map, TypeBody, Class, Interf
                     }
                 } else if (startsWith(line, "type ") && !leadingIdent(line.substr(5)).empty() && endsWith(line, ";")) {
                     understood = true;
+                } else if (startsWith(line, "namespace ") && endsWith(line, " {")) {
+                    const std::string_view name = leadingIdent(line.substr(10));
+                    if (!name.empty() && line.substr(10 + name.size()) == " {") {
+                        const bool seen = std::any_of(result.namespaces.begin(), result.namespaces.end(),
+                                                      [&](const DeclaredNamespace& n) { return n.name == name; });
+                        if (seen) {
+                            refuse("namespace " + std::string{name} + " is declared twice");
+                            return result;
+                        }
+                        DeclaredNamespace declared;
+                        declared.name = std::string{name};
+                        result.namespaces.push_back(declared);
+                        context = Context::Nested;
+                        understood = true;
+                    }
                 } else if (startsWith(line, "function ")) {  // a method form only: a field after `function` is refused
                     DeclaredMember function;
                     if (parseMember(line.substr(9), function) && function.arity >= 0 && !function.optional) {
@@ -315,6 +385,24 @@ enum class Context : std::uint8_t { Top, Namespace, Map, TypeBody, Class, Interf
                     DeclaredMember member;
                     if (parseMember(line, member)) {
                         result.interfaces.back().members.push_back(member);
+                        understood = true;
+                    }
+                }
+                break;
+            case Context::Nested:
+                if (line == "}") {
+                    context = Context::Namespace;
+                    understood = true;
+                } else if (startsWith(line, "type ")) {
+                    DeclaredUnion declared;
+                    if (parseUnion(line, declared)) {
+                        result.namespaces.back().unions.push_back(declared);
+                        understood = true;
+                    }
+                } else if (startsWith(line, "function ")) {
+                    DeclaredMember function;
+                    if (parseMember(line.substr(9), function) && function.arity >= 0 && !function.optional) {
+                        result.namespaces.back().functions.push_back(function);
                         understood = true;
                     }
                 }
@@ -1101,4 +1189,68 @@ TEST_CASE("declarations: the reader keeps a plain interface's members apart and 
         interfaceNames.push_back(member.name);
     }
     CHECK(sameSet(liveHelpers, interfaceNames, "Transform's helpers"));
+}
+
+TEST_CASE("declarations: the reader returns a nested namespace's unions and functions apart from the top ones (DT29)") {
+    const std::string open = "declare namespace engine {\n";
+    const Declarations parsed =
+        parseDeclarations(open +
+                          "    function top(): void;\n"
+                          "    namespace input {\n"
+                          "        /** doc */\n"
+                          "        type Key = \"A\" | \"Num1\" | \"Pause\";\n"
+                          "        type Two = \"Left\" | \"Right\";\n"
+                          "        function keyDown(key: Key): boolean;\n"
+                          "        function gamepadAxis(axis: GamepadAxis, slot?: number): number;\n"
+                          "    }\n"
+                          "}\n");
+    CHECK(parsed.error.empty());
+    REQUIRE(parsed.functions.size() == 1U);  // the nested functions never leak into the namespace's own list
+    CHECK(parsed.functions[0].name == "top");
+    REQUIRE(parsed.namespaces.size() == 1U);
+    const DeclaredNamespace& input = parsed.namespaces[0];
+    CHECK(input.name == "input");
+    REQUIRE(input.unions.size() == 2U);
+    CHECK(input.unions[0].name == "Key");
+    CHECK(input.unions[0].members == std::vector<std::string>{"A", "Num1", "Pause"});
+    CHECK(input.unions[1].name == "Two");
+    CHECK(input.unions[1].members == std::vector<std::string>{"Left", "Right"});
+    REQUIRE(input.functions.size() == 2U);
+    CHECK(input.functions[0].name == "keyDown");
+    CHECK(input.functions[0].arity == 1);
+    CHECK(input.functions[1].name == "gamepadAxis");
+    CHECK(input.functions[1].arity == 2);
+
+    // The block may sit anywhere in the namespace and the line after it is read in the namespace again.
+    const Declarations after =
+        parseDeclarations(open + "    namespace input {\n    }\n    function late(): void;\n}\n");
+    CHECK(after.error.empty());
+    REQUIRE(after.functions.size() == 1U);
+    CHECK(after.functions[0].name == "late");
+}
+
+TEST_CASE("declarations: the reader refuses what it cannot read in a nested namespace, naming the line (DT30)") {
+    const std::string open = "declare namespace engine {\n    namespace input {\n";
+    const std::string close = "    }\n}\n";
+    // Each bad line is the third line of the text.
+    CHECK(refusedAt(open + "        type K = \"A\" | B;\n" + close, 3));
+    CHECK(refusedAt(open + "        type K = \"1A\";\n" + close, 3));
+    CHECK(refusedAt(open + "        type K = ;\n" + close, 3));
+    CHECK(refusedAt(open + "        type K = \"\";\n" + close, 3));
+    CHECK(refusedAt(open + "        type K = \"A\" | \"A\";\n" + close, 3));
+    CHECK(refusedAt(open + "        type K = \"A\"\n" + close, 3));
+    CHECK(refusedAt(open + "        type K = string;\n" + close, 3));
+    CHECK(refusedAt(open + "        type K = \"A\" |\"B\";\n" + close, 3));
+    CHECK(refusedAt(open + "        class A {\n        constructor();\n        }\n" + close, 3));
+    CHECK(refusedAt(open + "        interface A {\n        }\n" + close, 3));
+    CHECK(refusedAt(open + "        namespace deeper {\n        }\n" + close, 3));
+    CHECK(refusedAt(open + "        function f();\n" + close, 3));
+    CHECK(refusedAt(open + "        function f?(): void;\n" + close, 3));
+    CHECK(refusedAt(open + "        const x: number;\n" + close, 3));
+    // A second block of the same name is refused at its own line; a distinct name is fine.
+    CHECK(refusedAt(open + close.substr(0, 6) + "    namespace input {\n" + close, 4));
+    CHECK_FALSE(refusedAt(open + close.substr(0, 6) + "    namespace other {\n" + close, 4));
+    // An input that ends inside the nested block.
+    const Declarations unclosed = parseDeclarations(open + "        function f(): void;\n");
+    CHECK(unclosed.error == "line 3: the input ends inside a block");
 }

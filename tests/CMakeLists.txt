@@ -51,6 +51,7 @@ add_executable(aero_tests
     script_reload_test.cpp # task 4.3.3 -- script classes, instances and hot reload (HR1-HR32)
     script_source_map_test.cpp # task 4.3.4 -- source maps: the pure core and the VM's mapped errors (SR1-SR30)
     script_attach_test.cpp # task 4.4.1 -- engine.Script and the instances the VM attaches to entities (VM66-VM87)
+    script_input_test.cpp # task 4.4.3 -- engine.input: the name tables, the binding and the functions (SI1-SI17)
     script_system_test.cpp # task 4.4.1 -- ScriptSystem: the lifecycle over one World (LC1-LC25, LC27, LC31-LC38, LC40-LC49, LC51-LC53)
     script_world_test.cpp # task 4.4.2 -- the entity table, the world functions and the destroy queue (WA1-WA28)
     script_math_test.cpp # task 4.4.2 -- the Vec3 and Quat helpers (VX1-VX15)
@@ -180,6 +181,11 @@ target_compile_definitions(aero_tests PRIVATE AERO_ASSETS_SRC_DIR="${CMAKE_SOURC
 # four backend setters are never called (the AERO_ASSETS_SRC_DIR / CM50 shape above). UNGATED, like the
 # definition above -- both reduced configurations build this TU and must run the case too.
 target_compile_definitions(aero_tests PRIVATE AERO_SCRIPT_SRC_DIR="${CMAKE_SOURCE_DIR}/engine/script/src")
+
+# task 4.4.3: SI1 reads aero/platform/event.hpp's enums as text to pin the engine.input name tables to them. A path, not a
+# flag, like the definition above, and UNGATED for the same reason.
+target_compile_definitions(aero_tests PRIVATE
+    AERO_PLATFORM_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/engine/platform/include")
 
 # task 4.1.2: script_module_test.cpp's ML13/ML14/ML43 mount tests/fixtures/scripts at the res:// root through a
 # DirectoryBackend -- Epic 4.1's Definition of Done read off real files. A PATH, NOT A FLAG (the
