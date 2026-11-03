@@ -303,3 +303,18 @@ TEST_CASE("gamepad: a stick reads its own axes, down is positive, and the raw ax
 
     CHECK(in.gamepadStick(GamepadStick::Left, 2) == StickPosition{});
 }
+
+TEST_CASE("gamepad: a Count button reads false even while its neighbouring arrays hold a press or a release (GP23)") {
+    InputState in;
+    in.process(connected(0));
+    in.process(button(EventType::GamepadButtonDown, 0, GamepadButton::South));
+    REQUIRE(in.gamepadButtonPressed(GamepadButton::South));
+    // The slot lays down[], pressed[] and released[] end to end, so an unchecked down[Count] is pressed[0].
+    CHECK_FALSE(in.gamepadButtonDown(GamepadButton::Count));
+
+    in.newFrame();
+    in.process(button(EventType::GamepadButtonUp, 0, GamepadButton::South));
+    REQUIRE(in.gamepadButtonReleased(GamepadButton::South));
+    // An unchecked pressed[Count] is released[0].
+    CHECK_FALSE(in.gamepadButtonPressed(GamepadButton::Count));
+}

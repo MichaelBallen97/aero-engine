@@ -504,6 +504,92 @@ TEST_CASE("pump: a waiting pad's events, a failed open and an unknown removal ch
     CHECK(capture.countAtLeast(engine::LogLevel::Warn) == 1);
 }
 
+TEST_CASE("pump: a pad that arrives in the drain that frees a slot waits behind the pad already queued (GP24)") {
+    Context ctx{VIRTUAL_ONLY};
+    REQUIRE(ctx.valid());
+    drain(ctx);
+    std::array<VirtualPad, 6> pads;
+    for (std::size_t i = 0; i < 5; ++i) {
+        pads[i].attach();
+    }
+    REQUIRE(deviceEvents(drain(ctx)).size() == 4);
+    REQUIRE(SDL_GetGamepadFromID(pads[4].id) == nullptr);
+
+    // One drain sees the removal and then the newcomer: the freed slot is the longest waiter's, not the newcomer's.
+    pads[2].detach();
+    pads[5].attach();
+    const std::vector<DeviceEvent> swap = deviceEvents(drain(ctx));
+    REQUIRE(swap.size() == 2);
+    CHECK(swap[0] == DeviceEvent{EventType::GamepadDisconnected, 2});
+    CHECK(swap[1] == DeviceEvent{EventType::GamepadConnected, 2});
+    CHECK(SDL_GetGamepadFromID(pads[4].id) != nullptr);
+    CHECK(SDL_GetGamepadFromID(pads[5].id) == nullptr);
+
+    pads[0].detach();
+    const std::vector<DeviceEvent> next = deviceEvents(drain(ctx));
+    REQUIRE(next.size() == 2);
+    CHECK(next[1] == DeviceEvent{EventType::GamepadConnected, 0});
+    CHECK(SDL_GetGamepadFromID(pads[5].id) != nullptr);
+}
+
+TEST_CASE("pump: a waiting pad that is removed leaves the queue and costs nothing when a slot frees (GP25)") {
+    Context ctx{VIRTUAL_ONLY};
+    REQUIRE(ctx.valid());
+    drain(ctx);
+    const script_test::LogCapture capture;
+    std::array<VirtualPad, 6> pads;
+    for (std::size_t i = 0; i < 6; ++i) {
+        pads[i].attach();
+    }
+    REQUIRE(deviceEvents(drain(ctx)).size() == 4);
+
+    // pads[4] waits oldest, pads[5] behind it; the oldest goes away, then a slot frees.
+    pads[4].detach();
+    CHECK(drain(ctx).empty());
+    pads[1].detach();
+    const std::vector<DeviceEvent> swap = deviceEvents(drain(ctx));
+    REQUIRE(swap.size() == 2);
+    CHECK(swap[0] == DeviceEvent{EventType::GamepadDisconnected, 1});
+    CHECK(swap[1] == DeviceEvent{EventType::GamepadConnected, 1});
+    CHECK(SDL_GetGamepadFromID(pads[5].id) != nullptr);
+    // A removed id left in the queue would be tried first, fail to open and log a WARN.
+    CHECK(capture.countAtLeast(engine::LogLevel::Warn) == 0);
+}
+
+TEST_CASE("pump: a second GAMEPAD_ADDED for a slotted or a waiting pad changes nothing (GP26)") {
+    Context ctx{VIRTUAL_ONLY};
+    REQUIRE(ctx.valid());
+    drain(ctx);
+    std::array<VirtualPad, 5> pads;
+    pads[0].attach();
+    pads[1].attach();
+    REQUIRE(deviceEvents(drain(ctx)).size() == 2);
+
+    // A slotted id again, with free slots left: it must not take a second slot.
+    SDL_Event again = gamepadDeviceEvent(SDL_EVENT_GAMEPAD_ADDED, pads[0].id);
+    REQUIRE(SDL_PushEvent(&again));
+    CHECK(drain(ctx).empty());
+    CHECK_FALSE(ctx.input().gamepadConnected(2));
+
+    pads[2].attach();
+    pads[3].attach();
+    pads[4].attach();
+    REQUIRE(deviceEvents(drain(ctx)).size() == 2);
+
+    // A waiting id again: it must not queue twice and take two slots.
+    SDL_Event waitingAgain = gamepadDeviceEvent(SDL_EVENT_GAMEPAD_ADDED, pads[4].id);
+    REQUIRE(SDL_PushEvent(&waitingAgain));
+    CHECK(drain(ctx).empty());
+    pads[0].detach();
+    pads[1].detach();
+    const std::vector<DeviceEvent> swap = deviceEvents(drain(ctx));
+    REQUIRE(swap.size() == 3);
+    CHECK(swap[0] == DeviceEvent{EventType::GamepadDisconnected, 0});
+    CHECK(swap[1] == DeviceEvent{EventType::GamepadConnected, 0});
+    CHECK(swap[2] == DeviceEvent{EventType::GamepadDisconnected, 1});
+    CHECK_FALSE(ctx.input().gamepadConnected(1));
+}
+
 TEST_CASE("pump: a Context destroyed with pads slotted and waiting leaves SDL down and the next one clean (GP21)") {
     {
         Context ctx{VIRTUAL_ONLY};
