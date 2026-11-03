@@ -142,6 +142,10 @@ struct VmAccess {
     // logged: the Vm is invalid, called from another thread, the handle names no live instance, or the define failed.
     // Runs no script code and adds nothing to a fresh VM: the way a case observes an instance (task 4.3.3).
     [[nodiscard]] static bool defineInstanceGlobal(Vm& vm, ScriptInstance instance, std::string_view name);
+
+    // The atoms the VM's runtime holds now (the backend's JSMemoryUsage::atom_count): what ML76 sizes its prelude by,
+    // so its window follows whatever the namespace binds. 0 for an invalid Vm or another thread. Runs no script code.
+    [[nodiscard]] static std::size_t atomCount(const Vm& vm);
 };
 
 }  // namespace engine::script::internal

@@ -5,6 +5,7 @@
 
 #include <aero/core/log.hpp>
 #include <aero/core/vfs.hpp>
+#include <aero/script/internal/component_binding.hpp>
 #include <aero/script/internal/module_graph.hpp>
 #include <aero/script/script.hpp>
 
@@ -3164,12 +3165,16 @@ namespace {
 }
 
 // The atom array grows 711 -> 1066 -> 1599 entries, and the fresh VM's atoms are the backend's 633 plus the `engine`
-// namespace's (task 4.2.1), which depends on the build: measured on macos-debug, 778 with the eleven built-ins bound
-// (the array is already at 1066) and 653 with an empty table (reflect tools OFF, still at 711). This prelude interns
-// 272 more (and about two of its own), which leaves the bound VM under 1066 (about 1051) and the empty one at about
-// 926, so the 160 fresh names below cross 1066 on BOTH builds. A binding that adds or removes more than a dozen atoms
-// moves this window; the case then fails on its REQUIRE until the count is re-derived.
-constexpr std::string_view ATOM_PRELUDE = "for (let i = 0; i < 272; i++) globalThis['q' + i] = 0; 0";
+// namespace's, which depends on the build (the eleven built-ins bound or an empty table) and on every name the
+// namespace binds. The prelude therefore interns however many names bring the fresh VM's count to ATOM_TARGET, so the
+// bound VM sits just under 1066 (the prelude adds about two atoms of its own) and the 160 fresh names below cross it.
+// On an empty table (reflect tools OFF) the array is still at 711 when the prelude starts and grows to 1066 inside it,
+// so the window holds on both builds. The count is measured on one fresh VM, and the case says what it measured.
+constexpr std::size_t ATOM_TARGET = 1050;
+
+[[nodiscard]] std::string atomPrelude(std::size_t freshAtoms) {
+    return "for (let i = 0; i < " + std::to_string(ATOM_TARGET - freshAtoms) + "; i++) globalThis['q' + i] = 0; 0";
+}
 
 }  // namespace
 
@@ -3182,13 +3187,22 @@ TEST_CASE(
     const std::string source = freshNamesSource();
     const auto seed = [&source](MemoryBackend& files) { files.set("names.js", source); };
     const auto call = [](Vm& vm) { return vm.evaluateModule("res://names.js"); };
+    std::size_t freshAtoms = 0;
+    {
+        const ModuleFixture probe;
+        freshAtoms = engine::script::internal::VmAccess::atomCount(probe.vm);
+    }
+    MESSAGE("ML76: a fresh VM holds " << freshAtoms << " atoms");
+    REQUIRE(freshAtoms > 0U);
+    REQUIRE(freshAtoms < ATOM_TARGET - 64U);
+    const std::string prelude = atomPrelude(freshAtoms);
 
     // (a) evaluateModule, from 6 to 14 KiB of room in 64-byte steps: 129 runs across the array's growth.
     std::size_t empty = 0;
     std::size_t runs = 0;
     for (std::size_t room = 6 * KIB; room <= 14 * KIB; room += 64) {
         INFO("room " << room);
-        const HeapRun run = runWithRoom(log, seed, ATOM_PRELUDE, room, call);
+        const HeapRun run = runWithRoom(log, seed, prelude, room, call);
         CHECK(run.status == "OutOfMemory");
         CHECK(run.error.message != "[uninitialized]");
         CHECK(run.record.ends_with(outOfMemoryTail(run.error)));
@@ -3214,7 +3228,7 @@ TEST_CASE(
         INFO("room " << room);
         ModuleFixture fx{patient(VmConfig{.heapLimitBytes = MIB})};
         fx.files->set("names.js", source);
-        REQUIRE(label(fx.vm.evaluateScript(ATOM_PRELUDE, "fill.js")) == "Ok");
+        REQUIRE(label(fx.vm.evaluateScript(prelude, "fill.js")) == "Ok");
         REQUIRE(label(fx.vm.evaluateScript("globalThis.buf = null; globalThis.r = 'none'; 0", "fill.js")) == "Ok");
         const std::size_t inUse = fx.vm.stats().heapBytesInUse;
         REQUIRE(inUse + room < MIB);

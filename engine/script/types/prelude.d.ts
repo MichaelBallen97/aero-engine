@@ -1,11 +1,14 @@
 // Aero Engine -- the hand-written half of aero-engine.d.ts (task 4.2.2): Vec3, Quat, Entity and Script (the base class
-// a script's class extends, task 4.4.1) as engine/script/src/script_api*.cpp installs them, and the component types
+// a script's class extends, task 4.4.1) as engine/script/src/script_api*.cpp installs them, the namespace functions
+// (task 4.4.2), the members an interface adds to a generated class (Transform's helpers), and the component types
 // each generated block merges into.
 // The build joins this file first, then one reflect-gen --emit-dts block per built-in component header.
 // A change to the script API changes this file in the same commit: DT3-DT7 compare it with a live VM.
 // Grammar (the drift reader refuses anything else): one declaration per line, doc comments on one line,
 // no at-sign anywhere. A class's constructor line is `constructor(...)`, `private constructor(...)` or, for a base
 // class a script extends, `protected constructor(...)`; a method may be optional (`name?(...): type;`), a field never.
+// A namespace function is `function name(...): type;`; its last parameter may be a rest parameter. An interface named
+// like a class adds members to it.
 
 declare namespace engine {
     /** Every component class, keyed by its script name. Each generated block adds its own entries. */
@@ -31,6 +34,34 @@ declare namespace engine {
         set(x: number, y: number, z: number): this;
         /** Copies another Vec3 into this one and returns this vector. */
         copy(v: Vec3): this;
+        /** Adds v to this vector and returns it. */
+        add(v: Vec3): this;
+        /** Subtracts v from this vector and returns it. */
+        sub(v: Vec3): this;
+        /** Multiplies this vector by s and returns it. */
+        scale(s: number): this;
+        /** Adds v times s to this vector and returns it. */
+        addScaled(v: Vec3, s: number): this;
+        /** Negates this vector and returns it. */
+        negate(): this;
+        /** Scales this vector to unit length (a zero vector stays zero) and returns it. */
+        normalize(): this;
+        /** Moves this vector the fraction t of the way to v (t is not clamped) and returns it. */
+        lerp(v: Vec3, t: number): this;
+        /** Sets this vector to the cross product this x v and returns it. */
+        cross(v: Vec3): this;
+        /** Rotates this vector by q (normalized first) and returns it. */
+        applyQuat(q: Quat): this;
+        /** A new detached Vec3 holding this vector's values. */
+        clone(): Vec3;
+        /** The dot product with v. */
+        dot(v: Vec3): number;
+        /** The length. */
+        length(): number;
+        /** The squared length. */
+        lengthSquared(): number;
+        /** The distance to v. */
+        distanceTo(v: Vec3): number;
     }
 
     /** A rotation quaternion. A component's Quat field reads as a live view. */
@@ -46,6 +77,26 @@ declare namespace engine {
         set(x: number, y: number, z: number, w: number): this;
         /** Copies another Quat into this one and returns this quaternion. */
         copy(q: Quat): this;
+        /** Sets this quaternion to this * q (q applied first) and returns it. */
+        multiply(q: Quat): this;
+        /** Sets this quaternion to q * this (q applied last) and returns it. */
+        premultiply(q: Quat): this;
+        /** Inverts this quaternion (a zero quaternion becomes the identity) and returns it. */
+        invert(): this;
+        /** Scales this quaternion to unit length (a zero quaternion becomes the identity) and returns it. */
+        normalize(): this;
+        /** Moves this rotation the fraction t of the way to q along the shorter arc and returns it. */
+        slerp(q: Quat, t: number): this;
+        /** Sets this quaternion to a rotation of radians about axis (normalized first; a zero axis gives the identity) and returns it. */
+        setFromAxisAngle(axis: Vec3, radians: number): this;
+        /** Sets this quaternion from Euler angles in radians, the Inspector's order, and returns it. */
+        setFromEuler(x: number, y: number, z: number): this;
+        /** A new detached Quat holding this quaternion's values. */
+        clone(): Quat;
+        /** The Euler angles in radians, the Inspector's order, as a new Vec3. */
+        toEuler(): Vec3;
+        /** The dot product with q. */
+        dot(q: Quat): number;
     }
 
     /** An entity of the World the VM is bound to. A script cannot construct one. */
@@ -62,6 +113,14 @@ declare namespace engine {
         add<T extends Component>(type: ComponentClass<T>): T;
         /** Removes the component; false when the entity had none. */
         remove<T extends Component>(type: ComponentClass<T>): boolean;
+        /** The entity's name; "" when it has none, and assigning "" clears it. Names are never unique. */
+        name: string;
+        /** The parent entity, or null for a root. Assigning keeps the local Transform, so the world position follows the new parent; a cycle throws. */
+        parent: Entity | null;
+        /** The instance of this entity's script, or null; read it again each frame, since a reload replaces it. */
+        readonly script: Script | null;
+        /** The direct children, in the order they were attached. */
+        children(): Entity[];
     }
 
     /** The base class of a script: a script module's default export extends it, and the engine makes one instance per entity whose ScriptComponent names the script. */
@@ -76,4 +135,33 @@ declare namespace engine {
         /** Runs once, when the instance is detached or the session stops. */
         onDestroy?(): void;
     }
+
+    /** The transform helpers every Transform component object carries; the generated block declares its fields. */
+    interface Transform {
+        /** The entity's position in world space, as a new Vec3. */
+        worldPosition(): Vec3;
+        /** The entity's -Z axis in world space as a unit vector (zero when its scale collapses it), as a new Vec3. */
+        forward(): Vec3;
+        /** The entity's +X axis in world space as a unit vector, as a new Vec3. */
+        right(): Vec3;
+        /** The entity's +Y axis in world space as a unit vector, as a new Vec3. */
+        up(): Vec3;
+        /** Moves the entity by v along its own axes and returns this Transform. */
+        translate(v: Vec3): this;
+        /** Turns the entity by q about its own axes and returns this Transform. */
+        rotate(q: Quat): this;
+        /** Turns the entity so its -Z axis faces target, a world-space point (up defaults to world +Y), and returns this Transform. */
+        lookAt(target: Vec3, up?: Vec3): this;
+    }
+
+    /** A new root entity holding an identity Transform and no name; it is alive at once, and its script attaches at the next update. */
+    function spawn(): Entity;
+    /** Queues the entity for destruction with its subtree at the end of the update; false when it is already queued or not alive. */
+    function destroy(entity: Entity): boolean;
+    /** The live entity with exactly this name and the lowest entity index, or null. */
+    function find(name: string): Entity | null;
+    /** Every live entity with exactly this name, in ascending entity index. */
+    function findAll(name: string): Entity[];
+    /** Every live entity holding all of 1 to 8 component classes, in ascending entity index. */
+    function query(...types: ComponentClass<Component>[]): Entity[];
 }

@@ -50,8 +50,10 @@ add_executable(aero_tests
     script_declarations_test.cpp # task 4.2.2 -- the declarations against a live VM (DT1-DT7, DT22-DT25)
     script_reload_test.cpp # task 4.3.3 -- script classes, instances and hot reload (HR1-HR32)
     script_source_map_test.cpp # task 4.3.4 -- source maps: the pure core and the VM's mapped errors (SR1-SR30)
-    script_attach_test.cpp # task 4.4.1 -- engine.Script and the instances the VM attaches to entities (VM66-VM81)
-    script_system_test.cpp # task 4.4.1 -- ScriptSystem: the lifecycle over one World (LC1-LC25, LC27, LC31-LC33)
+    script_attach_test.cpp # task 4.4.1 -- engine.Script and the instances the VM attaches to entities (VM66-VM87)
+    script_system_test.cpp # task 4.4.1 -- ScriptSystem: the lifecycle over one World (LC1-LC25, LC27, LC31-LC38, LC40-LC49, LC51-LC53)
+    script_world_test.cpp # task 4.4.2 -- the entity table, the world functions and the destroy queue (WA1-WA28)
+    script_math_test.cpp # task 4.4.2 -- the Vec3 and Quat helpers (VX1-VX15)
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -118,9 +120,10 @@ target_compile_definitions(aero_tests PRIVATE
     AERO_SCRIPT_DECLARATION_SOURCES="${_aero_script_declaration_sources}")
 
 # task 4.2.1 -- the generated built-in table (BN6, BN37-BN49). Tools ON only: with them OFF aero_script binds no
-# component, which is the shape the configure's STATUS line announces.
+# component, which is the shape the configure's STATUS line announces. Task 4.4.2 -- script_transform_test.cpp
+# (XF1-XF9): the helpers live on the generated engine.Transform, so it joins the same gate.
 if(AERO_REFLECT_TOOLS)
-    target_sources(aero_tests PRIVATE script_component_test.cpp)
+    target_sources(aero_tests PRIVATE script_component_test.cpp script_transform_test.cpp)
 endif()
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional

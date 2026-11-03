@@ -31,18 +31,24 @@
 //     runs receiver, then value, then target, then write.
 
 #include <aero/core/guid.hpp>
+#include <aero/core/slot_map.hpp>
 #include <aero/scene/entity.hpp>
 #include <aero/script/internal/component_binding.hpp>
+#include <aero/script/vm.hpp>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <new>
 #include <optional>
 #include <quickjs.h>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace engine {
@@ -50,6 +56,8 @@ class World;
 }  // namespace engine
 
 namespace engine::script {
+
+struct InstanceSlot;  // vm_impl.hpp: a host function reaches the slots through ScriptApi::instanceSlots only
 
 // engine.Entity's opaque, and every component object's.
 struct EntityRef {
@@ -66,6 +74,24 @@ struct VectorCell {
     bool view = false;
 };
 
+// The one key every per-entity map of the script layer uses (the 3.7.2 rule: one comparator, one place).
+[[nodiscard]] constexpr std::uint64_t entityKeyOf(Entity entity) noexcept {
+    return (std::uint64_t{entity.index} << 32U) | entity.generation;
+}
+
+// The key of an attached instance in ScriptApi::attachedInstances. Sorted by binding, then entity, then creation order,
+// so the earliest live attach of one entity under one binding is the lower_bound of {binding, entity, 0}.
+struct AttachKey {
+    std::uint64_t binding = 0;
+    std::uint64_t entity = 0;  // entityKeyOf
+    std::uint64_t order = 0;   // InstanceSlot::order
+    auto operator<=>(const AttachKey&) const = default;
+};
+
+// "No component": componentClassIndex's answer for a value that names none, and ScriptApi::transformComponent's
+// value while the table binds no Transform.
+inline constexpr std::size_t NO_COMPONENT = static_cast<std::size_t>(-1);
+
 struct ScriptApi {
     const internal::ComponentBindingTable* table = nullptr;  // borrowed
     World* world = nullptr;                                  // borrowed; null when none is bound
@@ -81,6 +107,21 @@ struct ScriptApi {
                                                  // releaseScriptApi before the context
     std::optional<EntityRef> pendingEntity;      // set by the VM around ONE engine-driven construction; taken by the
                                                  // first base construction inside it (C4)
+    // Task 4.4.2: the one engine.Entity object of each entity of the current binding, HELD. Emptied by every bindWorld
+    // and unbindWorld and by releaseScriptApi, and an entry is evicted by Vm::destroyQueued.
+    std::unordered_map<std::uint64_t, JSValue> entityObjects;
+    // engine.destroy's queue under the current binding, in queue order, and the mark of every entity queued and not yet
+    // destroyed through Vm::destroyQueued (a taken queue keeps its marks). Emptied with the table.
+    std::vector<Entity> destroyQueue;
+    std::unordered_set<std::uint64_t> destroyMarks;
+    // Every live attached instance: inserted by createInstance, erased by destroyInstance, cleared by releaseScripts.
+    // A reload keeps the handle, so it changes nothing here. The slot map is Vm::Impl's, borrowed (set once in create;
+    // Impl is heap-pinned).
+    std::map<AttachKey, ScriptInstance> attachedInstances;
+    const SlotMap<InstanceSlot, ScriptInstanceTag>* instanceSlots = nullptr;
+    // The table index of the Transform binding, or NO_COMPONENT (the table is empty with the reflect tools OFF). The
+    // transform helpers are installed on that class only.
+    std::size_t transformComponent = NO_COMPONENT;
 };
 
 enum class ClassCheck : std::uint8_t {
@@ -102,9 +143,70 @@ enum class ClassCheck : std::uint8_t {
 void releaseScriptApi(JSContext* ctx, ScriptApi& api) noexcept;
 // The API a host function belongs to: the context opaque, set at create.
 [[nodiscard]] ScriptApi& scriptApiOf(JSContext* ctx) noexcept;
-// A new engine.Entity object for `entity`, stamped with the current binding. JS_EXCEPTION, with an exception pending,
-// when the heap limit refused it.
-[[nodiscard]] JSValue newEntityObject(JSContext* ctx, const ScriptApi& api, Entity entity);
+
+// ---- the entity table (script_api_world.cpp) --------------------------------------------------------------------
+// The one engine.Entity object of `ref` while `ref` is of the current binding and a World is bound: made once,
+// non-extensible, held until the binding ends, and returned with a new reference on every call. Any other ref (an
+// earlier binding, or no World) gets a new non-extensible object the table never holds. JS_EXCEPTION, with an exception
+// pending, when the heap limit refused it.
+[[nodiscard]] JSValue entityObjectFor(JSContext* ctx, ScriptApi& api, const EntityRef& ref);
+// Frees every held object and empties the table, the destroy queue and the marks. noexcept: JS_FreeValue runs only the
+// shared finalizer (finalizeOpaque), never script code.
+void releaseEntityObjects(JSContext* ctx, ScriptApi& api) noexcept;
+// A new array holding the entity object of each of `entities`, in order, all of the current binding (the array rule: no
+// World access happens while objects are made). JS_EXCEPTION, with an exception pending, when the heap limit refused
+// one; whatever was made is freed then.
+[[nodiscard]] JSValue entityArray(JSContext* ctx, ScriptApi& api, const std::vector<Entity>& entities);
+// entityArray over the direct children of `parent`, in attach order. Its own function, in this file, so a noexcept host
+// function calls it without a vector's throwing paths being visible to clang-tidy's bugprone-exception-escape.
+[[nodiscard]] JSValue childrenArray(JSContext* ctx, ScriptApi& api, Entity parent);
+// engine.findAll's and engine.query's results (the World is bound; the checks were made by the caller). Their own
+// functions, in this file, for the reason childrenArray gives. Ascending entity index.
+[[nodiscard]] JSValue findAllArray(JSContext* ctx, ScriptApi& api, std::string_view name);
+[[nodiscard]] JSValue queryArray(JSContext* ctx, ScriptApi& api, std::span<const std::size_t> components);
+
+// ---- the namespace functions (script_api_world.cpp) -------------------------------------------------------------
+struct WorldFunction {
+    std::string_view name;
+    int length;
+};
+// In magic order. query's length is World::MAX_QUERY_TYPES (8), so argv always holds 8 values.
+inline constexpr std::array<WorldFunction, 5> WORLD_FUNCTIONS{
+    {{"spawn", 0}, {"destroy", 1}, {"find", 1}, {"findAll", 1}, {"query", 8}}};
+inline constexpr std::size_t MAX_QUERY_CLASSES = 8;
+// One handler per entry of WORLD_FUNCTIONS, each with its checks in the contract's order. They build strings and
+// vectors, so they are not noexcept: the host function that calls them (script_api.cpp) is, and keeps their throwing
+// paths out of its own translation unit, which clang-tidy's bugprone-exception-escape would otherwise report (the
+// reason childrenArray gives).
+[[nodiscard]] JSValue spawnEntity(JSContext* ctx, ScriptApi& api, int argc);
+[[nodiscard]] JSValue queueDestroy(JSContext* ctx, ScriptApi& api, JSValueConst value);
+[[nodiscard]] JSValue findEntity(JSContext* ctx, ScriptApi& api, JSValueConst value);
+[[nodiscard]] JSValue findAllEntities(JSContext* ctx, ScriptApi& api, JSValueConst value);
+[[nodiscard]] JSValue queryEntities(JSContext* ctx, ScriptApi& api, int argc, JSValueConst* argv);
+
+// ---- the one source that names the Transform component (script_api_transform.cpp) -------------------------------
+[[nodiscard]] ComponentTypeId transformTypeId() noexcept;
+// world.add<Transform>(entity, {}) != nullptr: the Transform spawn gives a new entity.
+[[nodiscard]] bool addIdentityTransform(World& world, Entity entity);
+
+// The helpers engine.Transform carries beyond its bound fields (task 4.4.2). One dispatcher; its magic is the op. The
+// receiver is checked against the Transform class by its opaque, every argument's kind before any is read, every
+// argument read before the World is touched, and the entity's Transform last, so a refusal writes nothing.
+enum class TransformOp : std::uint8_t { WorldPosition, Forward, Right, Up, Translate, Rotate, LookAt };
+struct TransformHelper {
+    std::string_view name;
+    TransformOp op;
+    int length;
+};
+// In definition order on the prototype, after the fields.
+inline constexpr std::array<TransformHelper, 7> TRANSFORM_HELPERS{{{"worldPosition", TransformOp::WorldPosition, 0},
+                                                                   {"forward", TransformOp::Forward, 0},
+                                                                   {"right", TransformOp::Right, 0},
+                                                                   {"up", TransformOp::Up, 0},
+                                                                   {"translate", TransformOp::Translate, 1},
+                                                                   {"rotate", TransformOp::Rotate, 1},
+                                                                   {"lookAt", TransformOp::LookAt, 2}}};
+JSValue transformHelper(JSContext* ctx, JSValueConst thisValue, int argc, JSValueConst* argv, int magic) noexcept;
 
 // ---- shared by the API's files --------------------------------------------------------------------------------
 
@@ -164,15 +266,30 @@ struct Site {
 [[nodiscard]] void* resolveStorage(JSContext* ctx, const ScriptApi& api, const EntityRef& ref, std::size_t component,
                                    const Site& site);
 
+// Which bound component a class argument names, found by identity against the constructors the API holds: nothing of
+// the argument is read, so no getter, Proxy trap or conversion runs. NO_COMPONENT: it names none.
+[[nodiscard]] std::size_t componentClassIndex(JSContext* ctx, const ScriptApi& api, JSValueConst argument);
+
 // The host functions the class install attaches (magic: see the comment on each).
 JSValue entityMethod(JSContext* ctx, JSValueConst thisValue, int argc, JSValueConst* argv, int method) noexcept;
-JSValue entityAlive(JSContext* ctx, JSValueConst thisValue, int magic) noexcept;
+// engine.Entity's accessors (magic = index into ENTITY_PROPERTIES) and children().
+JSValue entityGet(JSContext* ctx, JSValueConst thisValue, int magic) noexcept;
+JSValue entitySet(JSContext* ctx, JSValueConst thisValue, JSValueConst value, int magic) noexcept;
+JSValue entityChildren(JSContext* ctx, JSValueConst thisValue, int argc, JSValueConst* argv, int magic) noexcept;
 // A component field's accessor pair; magic = component << 8 | field.
 JSValue fieldGet(JSContext* ctx, JSValueConst thisValue, int magic) noexcept;
 JSValue fieldSet(JSContext* ctx, JSValueConst thisValue, JSValueConst value, int magic) noexcept;
 
 // The methods of engine.Entity, in magic order.
 inline constexpr std::array<std::string_view, 4> ENTITY_METHODS{"has", "get", "add", "remove"};
+
+// The accessors of engine.Entity, in magic order.
+struct EntityProperty {
+    std::string_view name;
+    bool readOnly;
+};
+inline constexpr std::array<EntityProperty, 4> ENTITY_PROPERTIES{
+    {{"alive", true}, {"name", false}, {"parent", false}, {"script", true}}};
 
 [[nodiscard]] constexpr int fieldMagic(std::size_t component, std::size_t field) noexcept {
     return static_cast<int>((component << 8U) | field);
@@ -225,5 +342,74 @@ JSValue vectorGetAxis(JSContext* ctx, JSValueConst thisValue, int magic) noexcep
 JSValue vectorSetAxis(JSContext* ctx, JSValueConst thisValue, JSValueConst value, int magic) noexcept;
 JSValue vectorSet(JSContext* ctx, JSValueConst thisValue, int argc, JSValueConst* argv, int dimension) noexcept;
 JSValue vectorCopy(JSContext* ctx, JSValueConst thisValue, int argc, JSValueConst* argv, int dimension) noexcept;
+
+// The in-place helpers (task 4.4.2). One dispatcher; its magic carries the class as well as the operation, so a Quat
+// helper lifted onto a Vec3 refuses it as the axis accessors do.
+enum class VectorOp : std::uint8_t {
+    Add,
+    Sub,
+    Scale,
+    AddScaled,
+    Negate,
+    Normalize,
+    Lerp,
+    Cross,
+    ApplyQuat,
+    Clone,
+    Dot,
+    Length,
+    LengthSquared,
+    DistanceTo,
+    Multiply,
+    Premultiply,
+    Invert,
+    Slerp,
+    SetFromAxisAngle,
+    SetFromEuler,
+    ToEuler,
+};
+struct VectorHelper {
+    std::string_view name;
+    VectorOp op;
+    int length;
+};
+[[nodiscard]] constexpr int vectorHelperMagic(int dimension, VectorOp op) noexcept {
+    return dimension * 32 + static_cast<int>(op);  // 21 ops < 32
+}
+// In definition order on the prototype, after set and copy.
+inline constexpr std::array<VectorHelper, 14> VEC3_HELPERS{{{"add", VectorOp::Add, 1},
+                                                            {"sub", VectorOp::Sub, 1},
+                                                            {"scale", VectorOp::Scale, 1},
+                                                            {"addScaled", VectorOp::AddScaled, 2},
+                                                            {"negate", VectorOp::Negate, 0},
+                                                            {"normalize", VectorOp::Normalize, 0},
+                                                            {"lerp", VectorOp::Lerp, 2},
+                                                            {"cross", VectorOp::Cross, 1},
+                                                            {"applyQuat", VectorOp::ApplyQuat, 1},
+                                                            {"clone", VectorOp::Clone, 0},
+                                                            {"dot", VectorOp::Dot, 1},
+                                                            {"length", VectorOp::Length, 0},
+                                                            {"lengthSquared", VectorOp::LengthSquared, 0},
+                                                            {"distanceTo", VectorOp::DistanceTo, 1}}};
+inline constexpr std::array<VectorHelper, 10> QUAT_HELPERS{{{"multiply", VectorOp::Multiply, 1},
+                                                            {"premultiply", VectorOp::Premultiply, 1},
+                                                            {"invert", VectorOp::Invert, 0},
+                                                            {"normalize", VectorOp::Normalize, 0},
+                                                            {"slerp", VectorOp::Slerp, 2},
+                                                            {"setFromAxisAngle", VectorOp::SetFromAxisAngle, 2},
+                                                            {"setFromEuler", VectorOp::SetFromEuler, 3},
+                                                            {"clone", VectorOp::Clone, 0},
+                                                            {"toEuler", VectorOp::ToEuler, 0},
+                                                            {"dot", VectorOp::Dot, 1}}};
+JSValue vectorHelper(JSContext* ctx, JSValueConst thisValue, int argc, JSValueConst* argv, int magic) noexcept;
+
+// Shared with the transform helpers. `where` is the site text ("engine.Transform.translate"). An instance of the
+// dimension's class read out whole (a view resolves its entity now); false: a TypeError is pending
+// ("<where>: expected an engine.Vec3, got ...") or the view's own resolve error.
+[[nodiscard]] bool readVectorArgument(JSContext* ctx, const ScriptApi& api, JSValueConst value, int dimension,
+                                      const std::string& where, std::array<float, 4>& out);
+// A new detached engine.Vec3 / engine.Quat holding `values`. JS_EXCEPTION with an exception pending on a refusal.
+[[nodiscard]] JSValue newDetachedVector(JSContext* ctx, const ScriptApi& api, int dimension,
+                                        const std::array<float, 4>& values) noexcept;
 
 }  // namespace engine::script

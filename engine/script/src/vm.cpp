@@ -493,6 +493,15 @@ VmCreateResult internal::VmAccess::create(const VmConfig& config, const Componen
     return Vm::createWith(config, nullptr, components);
 }
 
+std::size_t internal::VmAccess::atomCount(const Vm& vm) {
+    if (vm.impl == nullptr || !vm.impl->onVmThread() || vm.impl->rt == nullptr) {
+        return 0;
+    }
+    JSMemoryUsage usage{};
+    JS_ComputeMemoryUsage(vm.impl->rt, &usage);
+    return static_cast<std::size_t>(usage.atom_count);
+}
+
 VmCreateResult Vm::createWith(const VmConfig& config, const VirtualFileSystem* modules,
                               const internal::ComponentBindingTable& components) {
     if (const VmCreateStatus refusal = validate(config); refusal != VmCreateStatus::Ok) {
@@ -528,6 +537,7 @@ VmCreateResult Vm::createWith(const VmConfig& config, const VirtualFileSystem* m
     // exists: no script setter, getter or Proxy can be in the way, and no property of it is ever read for the first
     // time under a budget. Only the heap limit can fail it, and the minimum limit keeps that far away.
     impl->scriptApi.table = &components;
+    impl->scriptApi.instanceSlots = &impl->instanceSlots;
     JS_SetContextOpaque(impl->ctx, &impl->scriptApi);
     if (!installScriptApi(impl->ctx, impl->rt, impl->scriptApi)) {
         impl->clearPendingException();

@@ -12,6 +12,7 @@
 #include "vm_impl.hpp"
 
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <span>
 #include <string>
@@ -113,8 +114,12 @@ JSValue scriptBaseConstructor(JSContext* ctx, JSValueConst newTarget, int /*argc
     if (api.pendingEntity.has_value()) {  // the first base construction of an engine-driven construction takes it
         const EntityRef ref = *api.pendingEntity;
         api.pendingEntity.reset();
-        if (JS_DefinePropertyValueStr(ctx, object.get(), "entity", newOpaqueObject(ctx, api.entityClass, ref),
-                                      JS_PROP_CONFIGURABLE) < 0) {
+        HeldValue entityObject{ctx, entityObjectFor(ctx, api, ref)};
+        if (entityObject.isException()) {
+            return JS_EXCEPTION;
+        }
+        // The define consumes the value on every path.
+        if (JS_DefinePropertyValueStr(ctx, object.get(), "entity", entityObject.release(), JS_PROP_CONFIGURABLE) < 0) {
             return JS_EXCEPTION;
         }
     }
@@ -225,6 +230,17 @@ struct ClassSpec {
     }
     spec.methods.push_back(MethodSpec{"set", &vectorSet, dimension, dimension});
     spec.methods.push_back(MethodSpec{"copy", &vectorCopy, 1, dimension});
+    const auto addHelpers = [&](const auto& helpers) {
+        for (const VectorHelper& helper : helpers) {
+            spec.methods.push_back(MethodSpec{std::string{helper.name}, &vectorHelper, helper.length,
+                                              vectorHelperMagic(dimension, helper.op)});
+        }
+    };
+    if (dimension == 3) {
+        addHelpers(VEC3_HELPERS);
+    } else {
+        addHelpers(QUAT_HELPERS);
+    }
     return spec;
 }
 
@@ -244,6 +260,39 @@ struct ClassSpec {
         return false;
     }
     api.scriptBase = JS_DupValue(ctx, constructor.get());
+    return true;
+}
+
+// The one host function of the five namespace functions (magic = index into WORLD_FUNCTIONS); the handlers are in
+// script_api_world.cpp.
+JSValue worldFunction(JSContext* ctx, JSValueConst /*thisValue*/, int argc, JSValueConst* argv, int magic) noexcept {
+    ScriptApi& api = scriptApiOf(ctx);
+    assert(magic >= 0 && static_cast<std::size_t>(magic) < WORLD_FUNCTIONS.size());
+    switch (magic) {
+        case 0:
+            return spawnEntity(ctx, api, argc);
+        case 1:
+            return queueDestroy(ctx, api, argv[0]);  // length 1: argv[0] exists
+        case 2:
+            return findEntity(ctx, api, argv[0]);
+        case 3:
+            return findAllEntities(ctx, api, argv[0]);
+        default:
+            return queryEntities(ctx, api, argc, argv);
+    }
+}
+
+// The namespace functions (spawn, destroy, find, findAll, query): each a frozen native, defined on the namespace after
+// Script. A native function has no `prototype`, so a frozen function is the whole of its shape.
+[[nodiscard]] bool installWorldFunctions(JSContext* ctx, JSValueConst ns) {
+    for (std::size_t i = 0; i < WORLD_FUNCTIONS.size(); ++i) {
+        const std::string name{WORLD_FUNCTIONS[i].name};
+        HeldValue function{ctx, newMethod(ctx, name, &worldFunction, WORLD_FUNCTIONS[i].length, static_cast<int>(i))};
+        if (function.isException() || JS_FreezeObject(ctx, function.get()) < 0 ||
+            JS_DefinePropertyValueStr(ctx, ns, name.c_str(), function.release(), JS_PROP_ENUMERABLE) < 0) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -273,6 +322,13 @@ bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
             const internal::FieldBinding& field = components[i].fields[f];
             spec.accessors.push_back(AccessorSpec{std::string{field.name}, fieldMagic(i, f), false});
         }
+        if (components[i].type == transformTypeId()) {  // the helpers sit on the engine's Transform class alone
+            api.transformComponent = i;
+            for (const TransformHelper& helper : TRANSFORM_HELPERS) {
+                spec.methods.push_back(
+                    MethodSpec{std::string{helper.name}, &transformHelper, helper.length, static_cast<int>(helper.op)});
+            }
+        }
         if (!installClass(ctx, rt, ns.get(), spec, &api.componentConstructors)) {
             return false;
         }
@@ -286,13 +342,19 @@ bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
     entity.classId = &api.entityClass;
     entity.constructor = &entityConstructor;
     entity.throwing = true;
-    entity.getter = &entityAlive;
-    entity.accessors.push_back(AccessorSpec{"alive", 0, true});
+    entity.getter = &entityGet;
+    entity.setter = &entitySet;
+    for (std::size_t property = 0; property < ENTITY_PROPERTIES.size(); ++property) {
+        entity.accessors.push_back(AccessorSpec{std::string{ENTITY_PROPERTIES[property].name},
+                                                static_cast<int>(property), ENTITY_PROPERTIES[property].readOnly});
+    }
     for (std::size_t method = 0; method < ENTITY_METHODS.size(); ++method) {
         entity.methods.push_back(
             MethodSpec{std::string{ENTITY_METHODS[method]}, &entityMethod, 1, static_cast<int>(method)});
     }
-    if (!installClass(ctx, rt, ns.get(), entity, nullptr) || !installScriptBase(ctx, ns.get(), api)) {
+    entity.methods.push_back(MethodSpec{"children", &entityChildren, 0, 0});
+    if (!installClass(ctx, rt, ns.get(), entity, nullptr) || !installScriptBase(ctx, ns.get(), api) ||
+        !installWorldFunctions(ctx, ns.get())) {
         return false;
     }
     // Frozen after the last class, and defined on the global object with flags 0: not writable, not enumerable, not
@@ -302,11 +364,13 @@ bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
 }
 
 void releaseScriptApi(JSContext* ctx, ScriptApi& api) noexcept {
+    releaseEntityObjects(ctx, api);
     for (const JSValue constructor : api.componentConstructors) {
         JS_FreeValue(ctx, constructor);
     }
     api.componentConstructors.clear();
     api.componentClasses.clear();
+    api.transformComponent = NO_COMPONENT;
     JS_FreeValue(ctx, api.scriptBase);
     api.scriptBase = JS_UNDEFINED;
     api.pendingEntity.reset();

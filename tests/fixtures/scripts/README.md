@@ -18,15 +18,17 @@ is a `REQUIRE` failure, never a silent skip.
 | `bytecode/throws.ts`, `throws.js` | BY15 | fails on purpose at top level through a nested call |
 | `bytecode/source-text.ts`, `source-text.js` | BY15 | a function, a class, a method and two arrows, each one's `toString()`, `name` and `length` in `globalThis.results` |
 | `lifecycle/mover.ts`, `mover.js` | BN56, BN57 | the script lifecycle's Mover (4.4.1): a class extending `engine.Script` whose `onUpdate(dt)` adds `speed * dt` (`speed = 2`) to its entity's Transform `position.x` |
+| `world/player.ts`, `player.js` | LC50 | the world API's driver (4.4.2): spawns three `Bullet`s in `onInit`, finds and queries by name and component, moves the bullets and turns its own Transform each update, and calls the enemy's `hit()` through `entity.script` |
+| `world/enemy.ts`, `enemy.js` | LC50 | counts `hit()` calls, queues its own entity with `engine.destroy` on the second, and spawns a `Wreck` at its world position in `onDestroy` |
 
 The stack text ML14 asserts — `    at fail (res://dod/throws.js:5:15)` and `    at <anonymous>
 (res://dod/throws.js:8:6)` — depends on these files' exact lines and columns: an edit to `dod/throws.js` (its
 comment line included) moves it. Every file is LF-terminated (`.gitattributes`), and `encoding/bom.js` was written
 with `printf '\xef\xbb\xbfglobalThis.bomLoaded = true;\n'`, so its first three bytes are the mark itself.
 
-The three `bytecode/*.js` files and `lifecycle/mover.js` are esbuild 0.28.2's bundles of the `.ts` beside them, made with
+The three `bytecode/*.js` files, `lifecycle/mover.js` and the two `world/*.js` files are esbuild 0.28.2's bundles of the `.ts` beside them, made with
 4.3.1's fixed flag list (`ESBUILD_FIXED_FLAGS`, `editor/include/aero/editor/esbuild_tool.hpp`) plus `--outfile`, from
-inside `bytecode/` (or `lifecycle/`):
+inside `bytecode/` (or `lifecycle/`, or `world/`):
 
 ```
 esbuild <name>.ts --bundle --format=esm --platform=neutral --target=es2023 --supported:using=false \
@@ -36,4 +38,4 @@ esbuild <name>.ts --bundle --format=esm --platform=neutral --target=es2023 --sup
 ```
 
 The `.js.map` files are not committed; the `sourceMappingURL` comment at the end of each bundle is harmless.
-`features.js` keeps `import.meta` textually. Regenerate all four bundles together when the pinned esbuild moves.
+`features.js` keeps `import.meta` textually. Regenerate all six bundles together when the pinned esbuild moves.

@@ -34,7 +34,8 @@ namespace {
         return "the script name must be a non-empty identifier";
     }
     if (binding.scriptName == "Vec3" || binding.scriptName == "Quat" || binding.scriptName == "Entity" ||
-        binding.scriptName == "Script") {
+        binding.scriptName == "Script" || binding.scriptName == "spawn" || binding.scriptName == "destroy" ||
+        binding.scriptName == "find" || binding.scriptName == "findAll" || binding.scriptName == "query") {
         return "the script name is reserved for a class the namespace already holds";
     }
     if (!binding.type.valid()) {
