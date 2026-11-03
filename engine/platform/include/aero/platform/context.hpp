@@ -71,9 +71,10 @@ public:
     //     while (ctx.pollEvent(ev)) { /* handle ev */ }
     bool pollEvent(Event& out);
 
-    // Advance input to a new frame: clears this-frame key/button edges and the per-frame mouse
-    // motion/wheel deltas; held state (keyDown) and the last mouse position persist. Call ONCE at the
-    // top of each frame, before the pollEvent drain loop (see input.hpp). Inert Context: harmless.
+    // Advance input to a new frame: clears this-frame key/button edges, every gamepad slot's button
+    // edges and the per-frame mouse motion/wheel deltas; held state (keyDown, held pad buttons, axes)
+    // and the last mouse position persist. Call ONCE at the top of each frame, before the pollEvent
+    // drain loop (see input.hpp). Inert Context: harmless.
     void newFrame() noexcept { inputState.newFrame(); }
 
     // The current input snapshot, updated by pollEvent as it translates events. Read-only to callers.

@@ -6,8 +6,13 @@
 //
 // FRAME MODEL: call newFrame() ONCE at the top of each frame, BEFORE draining pollEvent. It clears
 // the per-frame edges (keyPressed/keyReleased, mouse button edges) and deltas (mouse motion, wheel)
-// while keeping held state (keyDown, mouseButtonDown) and the last mouse position. A loop that reads
-// only keyDown()/mousePosition() may skip newFrame(); edge queries and deltas require it.
+// while keeping held state (keyDown, mouseButtonDown) and the last mouse position. newFrame() also
+// clears every gamepad slot's pressed and released edges; a held pad button and a stick position stay.
+// A loop that reads only keyDown()/mousePosition() may skip newFrame(); edge queries and deltas
+// require it.
+//
+// A focus loss (WindowFocusLost) clears held keys and mouse buttons only. A held pad button and the
+// axes stay as they were, because SDL keeps a held pad button held and always delivers its release.
 //
 //   ctx.newFrame();
 //   for (Event ev; ctx.pollEvent(ev);) { /* optional discrete handling */ }
