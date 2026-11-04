@@ -35,7 +35,11 @@ t.translate(t.rotation); // expect TS2345
 t.position.addScaled(t.position, "2"); // expect TS2345
 engine.query(engine.Vec3); // expect TS2345
 engine.find(3); // expect TS2345
-engine.spawn("bullet"); // expect TS2554
+engine.spawn("bullet", new engine.Vec3(), new engine.Quat(), new engine.Vec3(), 1); // expect TS2554
+engine.spawn(3); // expect TS2345
+engine.spawn("bullet", 3); // expect TS2769
+engine.spawn("bullet", t, t.rotation); // expect TS2345
+engine.spawn("bullet", { position: new engine.Vec3() }); // expect TS2769
 e.script = null; // expect TS2540
 e.parent = 3; // expect TS2322
 engine.input.keyDown("Spcae"); // expect TS2345

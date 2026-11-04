@@ -1,5 +1,5 @@
 // Aero Engine -- the TypeScript declarations against a live VM (task 4.2.2; DT1-DT7, since 4.4.1 DT22-DT25, since
-// 4.4.2 DT26-DT28, since 4.4.3 DT29-DT32, and since 4.4.4 DT33-DT34).
+// 4.4.2 DT26-DT28, since 4.4.3 DT29-DT32, and since 4.4.4 DT33-DT35).
 //
 // The build joins engine/script/types/prelude.d.ts with one reflect-gen --emit-dts block per built-in component header
 // into aero-engine.d.ts. These cases read that file from disk with a deliberately strict reader (the line grammar in
@@ -1435,4 +1435,21 @@ TEST_CASE("declarations: a function repeated apart, or with a rest parameter, is
                                                  "    function f(a: string): Thing;\n"
                                                  "}\n");
     CHECK(apart.error.find("function f is declared apart from its overloads") != std::string::npos);
+}
+
+TEST_CASE("declarations: spawn is declared as three overloads whose largest arity is the runtime's length (DT35)") {
+    const Declarations declared = parseDeclarations(builtFile());
+    REQUIRE(declared.error.empty());
+    const auto spawn = std::find_if(declared.functions.begin(), declared.functions.end(),
+                                    [](const DeclaredMember& function) { return function.name == "spawn"; });
+    REQUIRE(spawn != declared.functions.end());
+    CHECK(spawn->overloads == 3);
+    CHECK(spawn->arity == 4);
+    CHECK_FALSE(spawn->rest);
+
+    engine::script::Vm vm = makeBuiltinVm();
+    const std::string live = completion(vm, RUNTIME_FUNCTIONS_SCRIPT);
+    expectCleanShutdown(vm);
+    CHECK(live.find("spawn/4") != std::string::npos);
+    CHECK(live.find("spawn/0") == std::string::npos);
 }

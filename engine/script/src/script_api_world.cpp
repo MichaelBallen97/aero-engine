@@ -41,10 +41,10 @@ JSValue throwAtSite(JSContext* ctx, const Site& site, const std::string& reason,
 
 }  // namespace
 
-JSValue spawnEntity(JSContext* ctx, ScriptApi& api, int argc) {
+JSValue spawnEntity(JSContext* ctx, ScriptApi& api, int argc, JSValueConst* argv) {
     const Site site{{}, "spawn", {}};
     if (argc > 0) {
-        return throwAtSite(ctx, site, "expected no arguments, got " + std::to_string(argc));
+        return spawnPrefab(ctx, api, argc, argv);
     }
     if (api.world == nullptr) {
         return throwAtSite(ctx, site, "no World is bound");

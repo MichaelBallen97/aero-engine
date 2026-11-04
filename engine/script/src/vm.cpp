@@ -538,6 +538,8 @@ VmCreateResult Vm::createWith(const VmConfig& config, const VirtualFileSystem* m
     // time under a budget. Only the heap limit can fail it, and the minimum limit keeps that far away.
     impl->scriptApi.table = &components;
     impl->scriptApi.instanceSlots = &impl->instanceSlots;
+    impl->scriptApi.modules = modules;
+    impl->scriptApi.heapLimitBytes = config.heapLimitBytes;
     JS_SetContextOpaque(impl->ctx, &impl->scriptApi);
     if (!installScriptApi(impl->ctx, impl->rt, impl->scriptApi)) {
         impl->clearPendingException();

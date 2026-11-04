@@ -54,6 +54,7 @@ add_executable(aero_tests
     script_input_test.cpp # task 4.4.3 -- engine.input: the name tables, the binding and the functions (SI1-SI17)
     script_system_test.cpp # task 4.4.1 -- ScriptSystem: the lifecycle over one World (LC1-LC25, LC27, LC31-LC38, LC40-LC49, LC51-LC53)
     script_world_test.cpp # task 4.4.2 -- the entity table, the world functions and the destroy queue (WA1-WA28)
+    script_prefab_test.cpp # task 4.4.4 -- spawn(asset, ...): the forms, the refusals and the cache (PR1-PR20)
     script_math_test.cpp # task 4.4.2 -- the Vec3 and Quat helpers (VX1-VX15)
     platform_test.cpp
     platform_event_test.cpp

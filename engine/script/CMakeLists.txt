@@ -53,6 +53,7 @@ add_library(aero_script STATIC
     src/script_api_world.cpp
     src/script_api_transform.cpp
     src/script_api_input.cpp
+    src/script_api_prefab.cpp
     src/script_system.cpp
 )
 add_library(aero::script ALIAS aero_script)
@@ -78,6 +79,11 @@ if(AERO_REFLECT_TOOLS)
         HEADERS ${AERO_BUILTIN_COMPONENT_HEADERS}
         INCLUDE_DIRS ${_aero_script_parse_dirs})
     target_compile_definitions(aero_script PRIVATE AERO_SCRIPT_COMPONENT_BINDINGS=1)
+    # task 4.4.4: spawn(asset, ...) parses a .aeroprefab. PRIVATE, so CMake propagates $<LINK_ONLY:...>: the archive
+    # reaches every executable and its include directory reaches no consumer. It brings nothing the link line lacks
+    # but the generated serializers.
+    target_link_libraries(aero_script PRIVATE aero::scene_serialize)
+    target_compile_definitions(aero_script PRIVATE AERO_SCRIPT_PREFABS=1)
 else()
     message(STATUS "aero_script: no component bindings (AERO_REFLECT_TOOLS=OFF) -- "
                    "engine holds Vec3, Quat, Entity and Script only")

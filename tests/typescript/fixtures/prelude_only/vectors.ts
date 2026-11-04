@@ -5,4 +5,6 @@ v.copy(new engine.Vec3());
 const q = new engine.Quat(0, 0, 0, 1).set(0, 0, 0, 1);
 q.copy(new engine.Quat());
 const alive: boolean = e.alive;
-export { v, q, alive };
+const bare: engine.Entity = engine.spawn("res://a.aeroprefab");
+const placed: engine.Entity = engine.spawn("res://a.aeroprefab", v, q, v);
+export { v, q, alive, bare, placed };

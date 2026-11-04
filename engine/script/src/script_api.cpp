@@ -270,7 +270,7 @@ JSValue worldFunction(JSContext* ctx, JSValueConst /*thisValue*/, int argc, JSVa
     assert(magic >= 0 && static_cast<std::size_t>(magic) < WORLD_FUNCTIONS.size());
     switch (magic) {
         case 0:
-            return spawnEntity(ctx, api, argc);
+            return spawnEntity(ctx, api, argc, argv);  // length 4: reads argv[0..3] only
         case 1:
             return queueDestroy(ctx, api, argv[0]);  // length 1: argv[0] exists
         case 2:

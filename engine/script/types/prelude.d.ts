@@ -157,6 +157,10 @@ declare namespace engine {
 
     /** A new root entity holding an identity Transform and no name; it is alive at once, and its script attaches at the next update. */
     function spawn(): Entity;
+    /** A copy of the .aeroprefab at this res:// path, at the fields of `transform` as a script reads them (identity when omitted); returns its root. */
+    function spawn(asset: string, transform?: Transform): Entity;
+    /** A copy of the .aeroprefab at this res:// path, placed at position, rotation and scale; returns its root. */
+    function spawn(asset: string, position: Vec3, rotation?: Quat, scale?: Vec3): Entity;
     /** Queues the entity for destruction with its subtree at the end of the update; false when it is already queued or not alive. */
     function destroy(entity: Entity): boolean;
     /** The live entity with exactly this name and the lowest entity index, or null. */
