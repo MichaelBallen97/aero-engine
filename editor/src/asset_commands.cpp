@@ -1,6 +1,6 @@
 // editor/src/asset_commands.cpp -- task 3.1.5: InstantiateAssetCommand, the sixth structural command
 // and the first that creates more than one entity. Built ON TOP of entity_commands.hpp's two promoted
-// helpers, never beside a second copy of them.
+// helpers, never beside a second copy of them. Task 4.4.4 adds InstantiatePrefabCommand, the seventh.
 #include <aero/editor/asset_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/selection.hpp>
@@ -99,5 +99,43 @@ bool InstantiateAssetCommand::undo(CommandContext& context) {
 std::string_view InstantiateAssetCommand::label() const noexcept { return INSTANTIATE_ASSET_COMMAND_LABEL; }
 
 Entity InstantiateAssetCommand::createdRoot() const noexcept { return rootEntity; }
+
+InstantiatePrefabCommand::InstantiatePrefabCommand(Prefab prefabIn, Entity parent, const Transform& placement,
+                                                   std::span<const Entity> selBefore)
+    : prefab(std::move(prefabIn)),
+      parentTarget(parent),
+      rootPlacement(placement),
+      selectionBefore(selBefore.begin(), selBefore.end()) {}
+
+bool InstantiatePrefabCommand::redo(CommandContext& context) {
+    if (rootEntity.valid()) {
+        // Every LATER redo restores the snapshot ITS OWN undo took: re-instantiating would mint fresh handles every
+        // cycle, so a rename pushed after this command would stop naming a live entity after one undo and redo.
+        return restoreStructuralState(context, state, std::span<const Entity>{&rootEntity, 1});
+    }
+    const Entity created = prefab.instantiate(context.world, rootPlacement, parentTarget);
+    if (!created.valid()) {
+        return false;  // a dead parent: instantiate changed nothing, and the selection is not written
+    }
+    rootEntity = created;
+    context.selection.set(rootEntity);
+    return true;
+}
+
+bool InstantiatePrefabCommand::undo(CommandContext& context) {
+    if (!rootEntity.valid()) {
+        return false;
+    }
+    if (!captureAndDestroySubtrees(context, std::span<const Entity>{&rootEntity, 1}, state)) {
+        return false;
+    }
+    context.selection.setAll(selectionBefore);
+    context.selection.prune(context.world);
+    return true;
+}
+
+std::string_view InstantiatePrefabCommand::label() const noexcept { return INSTANTIATE_PREFAB_COMMAND_LABEL; }
+
+Entity InstantiatePrefabCommand::createdRoot() const noexcept { return rootEntity; }
 
 }  // namespace engine::editor

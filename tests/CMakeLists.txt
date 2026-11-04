@@ -555,6 +555,7 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/skeleton_cook_source_test.cpp
                editor/animation_cook_source_test.cpp
                editor/asset_drag_test.cpp
+               editor/prefab_asset_test.cpp    # task 4.4.4 -- the prefab command, the text bridge and the save (PE1-PE17)
                editor/instantiate_plan_test.cpp
                editor/asset_commands_test.cpp
                editor/material_from_import_test.cpp

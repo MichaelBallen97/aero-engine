@@ -7,6 +7,7 @@
 #include <aero/editor/entity_commands.hpp>  // StructuralUndoState + the two promoted helpers
 #include <aero/editor/instantiate_plan.hpp>
 #include <aero/scene/entity.hpp>
+#include <aero/scene/prefab.hpp>  // task 4.4.4: the Prefab InstantiatePrefabCommand owns
 #include <aero/scene/transform.hpp>
 
 #include <span>
@@ -46,6 +47,34 @@ private:
     Transform rootPlacement{};
     Entity rootEntity{};        // filled by the FIRST redo; the identity every later cycle restores
     StructuralUndoState state;  // filled by undo, consumed by every later redo (the D21 shape)
+    std::vector<Entity> selectionBefore;
+};
+
+inline constexpr std::string_view INSTANTIATE_PREFAB_COMMAND_LABEL = "Instantiate Prefab";
+
+// task 4.4.4: the SEVENTH structural command, InstantiateAssetCommand's shape over a Prefab instead of a plan. The
+// first redo copies the prefab's tree and selects its root; every later redo and every undo go through the same two
+// helpers, so a handle minted by the first redo names the same entity for the life of the history entry.
+class InstantiatePrefabCommand final : public Command {
+public:
+    // `prefab` is MOVED IN and OWNED: a command holds values and handles. `parent` is Entity{} for a scene-root drop,
+    // and `placement` is what the drop resolved. `selectionBefore` is copied here, before push() applies anything.
+    InstantiatePrefabCommand(Prefab prefab, Entity parent, const Transform& placement,
+                             std::span<const Entity> selectionBefore);
+
+    bool redo(CommandContext& context) override;  // 1st: Prefab::instantiate; later: restoreStructuralState
+    bool undo(CommandContext& context) override;  // captureAndDestroySubtrees + restore the old selection
+    [[nodiscard]] std::string_view label() const noexcept override;
+
+    // Entity{} until the FIRST redo. The member behind it is `rootEntity`, the accessor's name taking no suffix.
+    [[nodiscard]] Entity createdRoot() const noexcept;
+
+private:
+    Prefab prefab;
+    Entity parentTarget{};  // Entity{} == a scene-root drop
+    Transform rootPlacement{};
+    Entity rootEntity{};        // filled by the FIRST redo; the identity every later cycle restores
+    StructuralUndoState state;  // filled by undo, consumed by every later redo
     std::vector<Entity> selectionBefore;
 };
 
