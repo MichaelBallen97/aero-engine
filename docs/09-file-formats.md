@@ -3477,7 +3477,8 @@ of a selected entity is saved once, under its ancestor.
   **world** position minus the mean of the selected roots' finite world positions, so the group is centred on the
   wrapper and keeps its layout. A child's `rotation` and `scale` are its local values, unchanged. A root whose world
   position is NaN or infinite on any axis is not refused: it takes no part in the mean and stores the literal zero,
-  as one selected root does. So does a root whose offset does not fit a float. With no finite root the mean is zero.
+  as one selected root does. A root whose offset does not fit a float still counts toward the mean and stores the
+  literal zero. With no finite root the mean is zero.
 - **Everything below a root** is copied as it is: names, the parent/child order, and every component's payload.
   Asset references in a payload stay the GUIDs they are (17.5).
 - A saved root with no `Transform` is stored without one and has no position to write.
