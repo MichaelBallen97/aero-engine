@@ -85,6 +85,8 @@ public:
     // open set, the current directory and the selection, so no stale row can survive it (E18).
     void setRoot(std::string rootPath);
     [[nodiscard]] const std::string& root() const noexcept { return rootUtf8; }
+    // task 4.4.4: the folder the browser shows, relative to root(); "" is the assets root. Save as Prefab writes here.
+    [[nodiscard]] const std::string& currentDirectory() const noexcept { return currentDir; }
 
     // task 3.2.1 (D17/F11): the ONE line this task adds to the Asset Browser. A data member and a
     // member function may not share a name (the databasePtr/database() and recordList/records()

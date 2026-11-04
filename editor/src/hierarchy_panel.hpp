@@ -16,7 +16,8 @@
 //                 -- and the badge's count -- is built ahead of that gate)
 //   5. apply      one switch over `pending` -- where the panel's World and Selection gestures apply (Create Child
 //                 included), except Create Empty, the typed creates (`pendingCreate`) and the asset drop
-//                 (`pendingAssetDrop`): one-shots EditorApp::tick drains and applies, never here. Phase 1's ended
+//                 (`pendingAssetDrop`) and Save as Prefab (`pendingSavePrefab`): one-shots EditorApp::tick drains and
+//                 applies, never here. Phase 1's ended
 //                 rename is the panel's one other push, and it lands before the walk
 // Phases 1 and 5 bracket the ImGui work so that mutating mid-walk (which would invalidate
 // eachChild's cursor -- world.hpp:157-163 -- and unbalance TreeNodeEx/TreePop) is impossible by
@@ -60,6 +61,16 @@ public:
     void requestAssetDrop(AssetDragPayload payload, Entity targetRow) noexcept {
         pendingAssetDrop = HierarchyAssetDrop{.payload = payload, .targetRow = targetRow};
     }
+
+    // ---- task 4.4.4: the Save as Prefab one-shot, drained by tick() -- takeAssetDropRequest's shape --------------
+    // The THIRD one-shot beside the asset drop and the create. The item records the row it was opened on and nothing
+    // else: the write needs the Asset Browser's folder and the project's assets root, which a panel does not have, and
+    // `ActionKind` is not extended for the reason the asset drop's comment gives. std::exchange RESETS the member.
+    [[nodiscard]] std::optional<Entity> takeSavePrefabRequest() noexcept {
+        return std::exchange(pendingSavePrefab, std::nullopt);
+    }
+    // The SEAM: it writes the SAME member the menu item writes, so a test and a click are indistinguishable downstream.
+    void requestSavePrefab(Entity row) noexcept { pendingSavePrefab = row; }
 
     // ---- task E.5.2: the create one-shot, drained by tick() -- takeAssetDropRequest's shape ----------
     // The panel RECORDS a kind; EditorApp places, pushes, frames and reveals (D1), because a create needs the
@@ -183,6 +194,7 @@ private:
     PendingAction pending{};
     std::optional<HierarchyAssetDrop> pendingAssetDrop;  // task 3.1.5 -- drained by tick(), never here
     std::optional<CreateKind> pendingCreate;             // task E.5.2 -- drained by tick(), never here
+    std::optional<Entity> pendingSavePrefab;             // task 4.4.4 -- drained by tick(), never here
     // task E.6.3 (D6): the search and the header row.
     std::string searchText;                         // the field's buffer; non-empty = the flat match list
     std::optional<std::string> pendingSearchQuery;  // requestSearchQuery's one-shot, drained in onDraw
