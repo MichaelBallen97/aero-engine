@@ -257,6 +257,16 @@ session 4.7.4's, and `spawn(asset, transform)` is 4.4.4's.
 Subtasks:
 - Keyboard/mouse state + edge queries exposed to scripts
 - Gamepad support (P2) via SDL3 gamepad API
+**Outcome:** a script reads input through the frozen `engine.input`, from an `engine::platform::InputState` its caller
+binds with `Vm::bindInput` and owns: `keyDown`, `keyPressed` and `keyReleased`; `mouseButtonDown`,
+`mouseButtonPressed` and `mouseButtonReleased`; `mousePosition`, `mouseDelta` and `mouseWheel`, each a new `Vec3`; and,
+for four player slots, `gamepadConnected`, `gamepadButtonDown`, `gamepadButtonPressed`, `gamepadButtonReleased`,
+`gamepadAxis` (raw) and `gamepadStick` (through a round deadzone). Keys, buttons, axes and sticks are named by strings
+spelt as the platform enumerators, and the prelude types each set as a string-literal union, so a misspelt name is a
+TypeScript error. Gamepads come through the platform layer behind an opt-in `ContextConfig::gamepads` switch (`Off` by
+default, `System`, or `VirtualOnly` for headless tests); a pad takes the lowest free slot, and a fifth waits for one.
+Nothing in the editor binds input yet: the viewport's routing, game focus and the editor's gamepad switch are 4.7.1's,
+the play session's binding 4.7.4's, the runtime's Phase 5's, and touch 6.1.2's.
 
 ### 4.4.4 Prefab-lite spawn · P1 · M · depends: 4.4.2, 2.5.1
 **Goal:** *(audit D5)* the Phase 5 game must spawn bullets/pickups — instantiate a saved entity-tree.

@@ -198,6 +198,14 @@ never vacuously. **Tile widths are font multiples, so E.6.1's body 16 made five 
 roughly 324 on the runner** — `I233` now also hides the side panels (green at width 985 with the hide, red
 without it). **Re-derive every tile-count fixture at a font change.**
 
+**A TEST THAT NEEDS A GAMEPAD RUNS `GamepadDrivers::VirtualOnly` AND SDL'S VIRTUAL DRIVER, NEVER `System` (4.4.3).**
+`VirtualOnly` refuses every real device and skips the slow drivers, so no controller on the machine and no OS driver
+(Windows' DirectInput can stall start-up for a minute, R38) can change a result. `input_pump_test.cpp` attaches pads
+with `SDL_AttachVirtualJoystick` and primes every axis at rest with one pump after the open (`openAndPrime`), because
+the first value SDL sees on an axis becomes its rest. `System` runs only in GP22, on macOS alone. SDL defers a GUIDE
+release that comes less than 250 ms after its press (`SDL_gamepad.c:44`, read, not measured), so a GUIDE edge test in
+consecutive pumps sees no release.
+
 
 ## Sabotage method
 

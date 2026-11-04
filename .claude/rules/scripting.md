@@ -25,6 +25,8 @@ Each rule here was earned by a defect, a green-and-wrong test or a measurement t
   (`vm_modules.cpp`, with the format's byte arithmetic in `bytecode_format.{hpp,cpp}`).
   Since 4.3.4 it maps stack frames through source maps (`source_map.cpp`, the internal `source_map.hpp`) and links
   `aero::reflect` PRIVATE for `engine::parseJson`, which also arrives PUBLIC through `aero::scene`.
+  Since 4.4.3 it links `aero::platform` PRIVATE for `InputState`, which `vm.hpp` only forward-declares; the edge adds
+  no library to any binary, because every executable that links `aero::script` already links `aero::platform`.
 
 
 ## Scripting
@@ -107,11 +109,13 @@ the probe), `add` on a present component resets it to the defaults like `World::
 entity throws the value's error first. Every `bindWorld` invalidates script-held entities, which 4.4.1 and 4.7.2 must
 account for.
 
-**THE `engine` NAMESPACE IS COUNTED AGAINST THE BUDGET (4.2.1).** An empty VM costs 166,821 B in Debug and 154,357 B
-in Release with the namespace bound (eleven built-ins and `engine.Script`; 135,274 B Debug and 124,810 B Release with
-an empty table), and a fresh VM binds 778 atoms (653 empty). ML68
-derives its window from a scan, so it follows the atom count; ML76's `ATOM_PRELUDE` (272 names) is typed in and was
-re-measured at three steps, so a task that adds script-visible names re-measures it. BN50 sweeps 512 heap limits for the one that
+**THE `engine` NAMESPACE IS COUNTED AGAINST THE BUDGET (4.2.1; the figures re-measured at 4.4.3).** An empty VM costs
+182,321 B in Debug and 169,105 B in Release with the namespace bound (eleven built-ins, `engine.Script`, the world
+functions and `engine.input`; 149,351 B Debug with an empty table), and a fresh VM binds 825 atoms (696 with an empty
+table). `vm.hpp` types those heap figures in, so a task that grows the namespace re-measures them. ML68 derives its
+window from a scan, so it follows the atom count; ML76 interns however many names bring the fresh VM's count to
+`ATOM_TARGET` (1050) and requires the fresh count below 986, so a task that adds script-visible names edits it only
+when that count nears 986. BN50 sweeps 512 heap limits for the one that
 refuses the vector's opaque block (87 of 512 in Debug, 58 in Release on macOS), asserts only that at least two exist,
 and is a layout-dependent arm: Windows and Linux CI are its witnesses.
 
@@ -260,8 +264,18 @@ detached object.
 
 **A NEW NAMESPACE FUNCTION IS A RESERVED COMPONENT SCRIPT NAME (4.4.2).** `component_bindings.cpp` refuses a component
 whose script name collides with an `engine` member: `Vec3`, `Quat`, `Entity`, `Script`, `spawn`, `destroy`, `find`,
-`findAll` and `query`. A task that adds a namespace function adds it there, to the prelude, and to the binding cases
-that list the namespace's members.
+`findAll`, `query` and, since 4.4.3, `input`. A task that adds a namespace member adds it there, to the prelude, and to
+the binding cases that list the namespace's members. A function inside a nested object such as `engine.input` is not a
+namespace member and is not reserved: 6.1.2's touch functions join `engine.input` without joining the list.
+
+**`engine.input` READS A BORROWED STATE AT THE MOMENT OF THE CALL (4.4.3).** `Vm::bindInput` borrows a
+`platform::InputState` until `unbindInput`, the next `bindInput` or shutdown, independent of `bindWorld`, and the caller
+owns its frame (`newFrame()` and the events). Every input function checks its arguments before it reads the state
+(rule 9; SI4, SI16), so a bad name or slot throws the same error bound or not. A key, button, axis or stick is a string
+matched by content against `input_names.hpp`'s constexpr tables after `JS_IsString`: no atom is made per name, no error
+echoes the text, and SI1, SI2 and DT32 keep each table, its platform enum and its declared union in step, so a new
+enumerator reaches all three. A new input function joins `INPUT_FUNCTIONS` (`script_api.hpp`), the prelude's
+`namespace input` block and SI9's test-local list.
 
 **A TEST'S SLOPPY-MODE ARM BUILDS ITS FUNCTION WITH `Function` (4.4.2).** `evaluateScript` compiles strict (`vm.cpp`),
 so a "sloppy" arm run through it is strict. quickjs-ng 0.15.1 ignores a sloppy write to a getter-only accessor and
@@ -302,3 +316,10 @@ field initializer beside R35, and D9, which closes the `bindWorld` handoff, in `
 list. 4.4.4 adds `spawn(asset, transform)` as an overload of `spawn()`, which refuses any argument today (WA17). 4.7.4's
 play session binds once per Play, so the entity table lives for one Play, and its `update` calls run the flush. A
 `getOrAdd` stays open in `docs/08`.
+
+**What 4.4.3 leaves for later tasks.** 4.7.1 feeds a game `InputState` from the viewport, with points from its
+top-left, releases what the game holds when the viewport loses game focus, and turns on the editor's gamepad switch;
+ImGui's SDL3 backend then opens the first pad itself, with its own fixed 8000 deadzone. 4.7.4 calls `bindInput` at Play
+and `unbindInput` at Stop and owns the `newFrame()` cadence under Pause and Step: an edge made while paused is dropped
+by the next `newFrame()`. Phase 5's runtime binds `ctx.input()` and opts in to `System`. 6.1.2's touch joins
+`engine.input`. The three handoffs and R38 (Windows' DirectInput stall) are in `docs/08`.

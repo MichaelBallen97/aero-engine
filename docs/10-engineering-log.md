@@ -70,6 +70,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | 4.3.4 Source-mapped errors | #131 | `4d9d1ef` | **2 / 2**, nothing failed (terminal rows, no editor UI: SR1–SR30, CS11–CS16, ST43 and ST44 under `leaks`, 0 leaks; SR9's first mapping of 120 000 segments in 2.9–3.2 ms in Release and 79–80 ms in Debug, the second in 0 µs and 13–17 µs). Two code-review rounds (two should-fix findings, a cooked read keeping the map a failed JavaScript compile left under its name and the VM-tier arms no case reached, and two minors, all closed); a 99-row sabotage matrix whose ten holes SR22–SR30 and CS16 closed and re-ran red; R35 (quickjs's recorded positions) and R36 (nothing of a generation freed before teardown) recorded; CI green on the first push (`41252762043`) and on `main`'s push run (`41259313081`), 6 / 6 each |
 | 4.4.1 ScriptComponent + lifecycle | #132 | `63ca43a` | **12 / 12**, nothing failed (the editor GUI driven on macOS: the Script kind's colour and filter, `.d.ts` and `.TS` staying Text, Add Component, attaching by drop and by picker, Undo and Redo, a saved and reopened scene naming the `.meta` guid, refused drops on the Hierarchy and the Viewport; the lifecycle cases under `leaks`, 0 leaks; BN57's 1 000-instance update at a median of 0.563–0.574 ms in Release; LC31's `stop()` over 10 000 instances in 53.0–54.1 ms in Debug). Two code-review rounds (one should-fix, the suspension WARN counting over half-moved run-order entries during a detach, and one minor, both closed); a 92-row sabotage matrix whose nine holes LC34–LC39, I369 and VM82 closed and re-ran red; R37 (the Debug recursion depth from a hook) recorded and the `bindWorld` handoff's 4.4.1 half closed; CI green on the first push (`41307754224`, 6 / 6) and on `main`'s push run (`41314380171`, 6 / 6) |
 | 4.4.2 Entity/world API | #133 | `1094266` | **3 / 3**, nothing failed (terminal rows, no editor UI: the 81 new cases under `leaks`, 0 leaks; LC48's update spawning and destroying 1 000 entities at a median of 0.671–0.677 ms in Release against 1.94 ms; WA27's `find` / `findAll` / `query` over 10 000 entities at most 29.1 / 44.0 / 129.2 µs in Release against 90.9 / 134.4 / 405.1 µs, both bounds 3 × the Release medians measured afterwards at the commits that added the cases). Three code-review rounds (four should-fix in round 1: a strict "sloppy" arm, a commuting `lookAt` sample, a missing `<ostream>`, and an attach failure counted for an entity the flush destroyed; one in round 2, the flushed subtree's erase untested; all closed, round 3 approved); a 135-row sabotage matrix whose seven predicted holes WA29–WA34 and VM88 closed and re-ran red; no new risk or handoff; CI green on the first push (`41544399893`, 6 / 6) and on `main`'s push run (`41553547614`, 6 / 6) |
+| 4.4.3 Input API for scripts | #134 | `c852d42` | **2 / 2**, nothing failed (terminal rows, no editor UI: the 49 new cases under `leaks`, 0 leaks; GP13's `VirtualOnly` Context construction at a median of 2.35 ms in Release against 7.14 ms, 3 × the Release median at the commit that added the case; one row NOT EXECUTABLE: a physical pad and the play-in-editor rows). One code-review round (one minor: the frame-model comments lacked the gamepad sentences, fixed); an 86-row sabotage matrix whose four holes, three of them predicted, closed with GP23–GP26 and re-ran red; R38 (Windows' DirectInput stall) and three unowned handoffs (4.7.1, 4.7.4, Phase 5); CI green on the first push (`41728157319`, 6 / 6) and on `main`'s push run (`41745107998`, 6 / 6) |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -21356,3 +21357,182 @@ and DT26–DT28 (DT29).
 `component_bindings.cpp` and `prelude.d.ts` grow. `aero_tests` gains `script_world_test.cpp`, `script_math_test.cpp` and
 `script_transform_test.cpp`, the committed bundle under `tests/fixtures/scripts/world/`, and two `tsc` fixtures. Docs:
 `docs/08` (4.4.2's validation debt, and the `getOrAdd` handoff no longer naming 4.4.2 as its home), the phase file, and the scripting rule file.
+
+### 4.4.3 — Input API for scripts — a script reads the keyboard, the mouse and up to four gamepads through the frozen `engine.input`, from an `InputState` its caller binds to the VM, and the `.d.ts` types every input name
+
+A script now reads input: `engine.input` holds the keyboard, the mouse and four gamepad slots, read from a
+`platform::InputState` the caller binds with `Vm::bindInput`. The platform layer gains gamepads behind an opt-in
+`ContextConfig::gamepads` switch, four player slots with a waiting queue, and a round stick deadzone. Merged as PR #134
+(`c852d42`, a true merge commit): ten commits on `3b8020c` — the plan's six steps, step 6's lint fix, round 1's
+comment fix, the commit that closed the sabotage holes and its CMake-comment follow-up. CI: run `41728157319` at
+`7040e15`, 6 / 6 green on the first push; `main`'s push run `41745107998` on the merged head, 6 / 6 green. This is the engine side of
+Story 3's second line and this task's part of its fourth line (the `.d.ts`); nothing in the editor binds input before
+4.7.1 and 4.7.4, and Story 3 also waits on 4.4.4.
+
+**What shipped.**
+- **Gamepads in `engine::platform`, opt-in per Context** (`context.hpp`, `platform.cpp`; GP12, GP13, GP22):
+  `ContextConfig::gamepads` is a `GamepadDrivers` — `Off`, the default, starts no gamepad subsystem and models no
+  gamepad event; `System` starts SDL's default drivers; `VirtualOnly` refuses every real device
+  (`SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT` at the unassigned `0xFFFF/0xFFFF`, which every real driver asks
+  through `SDL_ShouldIgnoreJoystick`) and turns the HIDAPI, IOKit, MFI and DirectInput drivers off, so only a virtual
+  pad connects. Its hints are set at `SDL_HINT_OVERRIDE`, which beats an environment variable, before every `SDL_Init`,
+  because `SDL_Quit` clears every hint. The slots' backend handles live in `Context::GamepadTable`, defined in
+  `platform.cpp` behind a `unique_ptr` that stays null unless the subsystem started.
+- **Four player slots and a waiting queue** (GP14–GP21, GP24–GP26): a pad takes the lowest free slot when SDL adds it
+  and frees the slot when SDL removes it; a fifth waits unopened, oldest first, and the longest waiter takes the next
+  freed slot, even when a newcomer arrives in the same drain (GP24). A removed waiter leaves the queue (GP25), and a
+  second `GAMEPAD_ADDED` for a slotted or a waiting pad changes nothing (GP26). Slots are engine numbers, never SDL
+  instance ids, which are unique but not dense.
+- **The vocabulary and the events** (`event.hpp`; GP16): `MAX_GAMEPADS` is 4; `GamepadButton` holds 26 buttons named
+  by position as SDL 3.4.12 names them (`South` is Xbox A, PlayStation Cross and Switch B), `GamepadAxis` six and
+  `GamepadStick` two; five `EventType`s (`GamepadConnected`, `GamepadDisconnected`, `GamepadButtonDown`,
+  `GamepadButtonUp`, `GamepadAxisMoved`) carry engine-owned payloads keyed by slot, and GP16 maps every backend button
+  and axis to the enumerator of the same position.
+- **The per-slot fold** (`input.hpp`, `input.cpp`; GP1–GP11, GP23): `gamepadConnected`, `gamepadButtonDown` /
+  `Pressed` / `Released`, `gamepadAxis` — raw, a stick in −1..1 (exactly −1 at −32768 and +1 at 32767, down
+  positive), a trigger in 0..1 — and `gamepadStick` through `radialDeadzone`: zero at or inside 8000 / 32767 and for
+  any non-finite input, else rescaled so the deadzone's edge reads 0 and full tilt length 1, the direction kept.
+  `newFrame()` clears every slot's edges. A focus loss clears keys and mouse buttons only, because SDL keeps a held pad
+  button held and always delivers its release (GP9). A disconnect releases what was held and zeroes the axes (GP7). An
+  out-of-range slot, button or axis reads false or 0, and an event for a slot that is not connected changes nothing
+  (GP8).
+- **`Vm::bindInput` / `Vm::unbindInput`** (`vm.hpp`, `script_api_input.cpp`; SI3, SI4, SI10, LC54): the state is
+  borrowed until `unbindInput`, the next `bindInput` or shutdown, independent of `bindWorld`; binding a temporary is a
+  deleted overload. An invalid VM or another thread is refused with one ERROR and the binding kept. A function reads the
+  state at the moment of the call wherever the script runs — module code, a constructor, a hook, `onDestroy` at
+  `stop()`, a reload (LC54) — and with nothing bound throws `no input is bound` after its arguments are checked (SI4).
+  `aero_script` links `aero::platform` PRIVATE; `vm.hpp` forward-declares `InputState`. `ScriptSystem`'s API is
+  unchanged.
+- **The frozen `engine.input` and its 15 functions** (SI5–SI9, SI11–SI17): `keyDown`, `keyPressed`, `keyReleased`,
+  `mouseButtonDown`, `mouseButtonPressed`, `mouseButtonReleased`, `mousePosition`, `mouseDelta` and `mouseWheel` (each
+  of the last three a new detached `Vec3` with z 0, SI7), and `gamepadConnected`, `gamepadButtonDown`,
+  `gamepadButtonPressed`, `gamepadButtonReleased`, `gamepadAxis` and `gamepadStick` (a new `Vec3` with z 0, SI15), each
+  gamepad function taking the slot last, an integer 0 to 3 defaulting to 0 (SI16). An empty slot reads false, 0 or
+  (0, 0, 0) and never throws (SI12). The object and its functions are frozen on the frozen namespace (SI9). The natives
+  are made in `script_api.cpp`, still the one file that makes natives (VM65); the handlers live in
+  `script_api_input.cpp`.
+- **Names are strings, matched by content** (`input_names.hpp`; SI1, SI2, SI8): five constexpr tables (keys, mouse
+  buttons, gamepad buttons, axes, sticks) spell the platform enums' enumerators in order (SI1). A name is matched after
+  `JS_IsString` with no atom made, a non-string is a `TypeError` and a name outside its table a `RangeError`, both
+  without running script code (SI8), and no error echoes the name's text, whose length and bytes a script controls.
+- **The prelude** (`prelude.d.ts`; DT29–DT32): a nested `namespace input { … }` holds five string-literal unions and the
+  15 functions, and DT32 pins the unions to the tables in table order. The declarations reader in
+  `tests/script_declarations_test.cpp` reads a nested block (DT29) and refuses what it cannot read there, naming the line
+  (DT30). `input` joins the reserved component script names (`component_bindings.cpp`).
+- **End to end** (SI18): a real Context with `VirtualOnly`, a virtual pad and synthetic keyboard and mouse SDL events
+  feeds a bound VM frame by frame. `typescript.broken` gains nine tagged lines (TS2345 for a misspelt key, a lower-case
+  key, a mouse button, a pad button, an axis, a stick and a string slot; TS2551 for `keyDwon`; TS2322 for `"Unknown"`
+  as a `Key`), and `prelude_only/input.ts` calls all 15 functions.
+
+**Code-review rounds.** Round 1 (on `3b8020c..20c8218`, the six steps and step 6's lint fix): no blocking, no
+should-fix, one minor. `input.hpp`'s FRAME MODEL comment and `context.hpp`'s `newFrame` comment lacked the two gamepad
+sentences step 1 planned: `newFrame()` also clears every slot's edges, and a focus loss leaves the pads alone. Fixed in
+`458c1f9`, comment-only. The loop closed at round 1. The round left to CI the Windows and Linux virtual-pad runs,
+Linux's leak checker over the gamepad subsystem, MSVC's `hypot(x, 0)` exactness (GP10, GP11, SI15) and the Linux
+clang-tidy lane.
+
+**The sabotage matrix.** 86 doctest rows in `aero_tests` through `macos-debug`, run at `458c1f9`: 79 RED, 3 COMPILE-RED
+and 4 HOLE. Each hole got a case, and its row, re-recorded with the grown selector, came back RED at `b9bc72a`:
+- S17 (GP1's button-index bound dropped) → GP23, row S87. GP1 reads `gamepadButtonDown(Count)` on a default state,
+  where the read past `down` lands on `pressed[0]`, still false, and stays inside the slot struct, so ASan cannot see
+  it. GP23 presses `South` and asserts `down(Count)` false while `pressed[0]` is true, then the same for `released`.
+- S44 (a newcomer takes a freed slot before the longest waiter) → GP24, row S88. GP19 only detaches, and its drain
+  order is the same whether the waiter is promoted before or after the newcomer is queued.
+- S48 (a removed waiter never leaves the queue) → GP25, row S89. The stale id cost only a WARN.
+- S49 (a second `GAMEPAD_ADDED` not ignored) → GP26, row S90. No case delivered one.
+
+After the matrix only `tests/CMakeLists.txt`'s comments and the two gamepad test files changed, so no row was owed a
+re-run. Not seeded: GP21's teardown order (unobservable), a failing `SDL_InitSubSystem(SDL_INIT_GAMEPAD)` (no case
+reaches it), the probes' `static_assert`s (compile-time), the TypeScript fixtures' tags (`tsc`'s, not doctest's) and the
+VM's unbind at shutdown.
+
+**Traps found, each measured.**
+- **`SDL_Quit` clears every hint** (spike S1, `SDL.c:740`): a second `SDL_Init` in one process came up on Cocoa instead
+  of the dummy driver until the hint was set again. Any hint the engine sets is set before every `SDL_Init`; GP13 pins
+  that `VirtualOnly`'s are, and that an `Off` Context after it carries none.
+- **A gamepad event is queued before the joystick event that produced it** (S2): `SDL_PushEvent` runs the event
+  watchers, the gamepad layer among them, before adding the event; removal is `GAMEPAD_REMOVED` then
+  `JOYSTICK_REMOVED`.
+- **SDL's rest for an axis is the first value it sees on that axis** (S3, `SDL_joystick.c:2512-2520`): a virtual pad
+  whose first reported axis value is not zero teaches SDL a wrong rest. The tests prime every axis at rest with one pump
+  after the pad opens.
+- **Instance ids are shared with every other SDL object** (S7): the id gap across `SDL_Quit` / `SDL_Init` was +2 under
+  the dummy driver and +3 under Cocoa. Nothing can index an array by them, hence engine slots.
+- **A virtual pad attaches with the HIDAPI, IOKit and MFI drivers off** (plan G1, settled by GP14 at step 2), so
+  `VirtualOnly` drops none of its hints.
+- **`VirtualOnly` costs a Context about 1 ms in Release:** GP13's Context construction at step 2 read Off 1.38 ms and
+  `VirtualOnly` 2.38 ms (Release medians of three runs); the validation pass read 2.35 ms against the 7.14 ms bound.
+- Read, not measured: the GUIDE button's release is held back 250 ms after its press (S4,
+  `SDL_gamepad.c:44`, `:4430-4445`), so a test of GUIDE in consecutive pumps sees no release; Windows' DirectInput
+  start-up can take a minute with no controller (S6, `SDL_dinputjoystick.c:407-411`), R38; ImGui's SDL3 backend opens
+  the first pad once anything starts the subsystem, with its own fixed 8000 deadzone (S8, `imgui_impl_sdl3.cpp:913`).
+- **CI settled the plan's three open items on the first push** (run `41728157319`). GP22's `System` start and stop
+  passed on CI's macOS runner. The Linux lane's Debug run under ASan and LSan logged no `LeakSanitizer` report, and
+  `tests/lsan.supp` covers nothing of SDL's gamepad code. GP10, GP11 and SI15, which lean on `hypot(x, 0)`, passed under
+  MSVC in both configurations.
+
+**Where the implementation departed from the plan.**
+- Step 1: a disconnect for a slot that is not connected changes nothing, which extends GP8's rule.
+- Step 2: GP21 tears down four slotted pads and one waiting, because a pad waits only when all four slots are taken, so
+  the plan's two slotted and one waiting cannot occur. GP20 checks a failed open first, while a slot is free, and the
+  waiting pad's events after the slots fill, because with every slot taken a bogus `GAMEPAD_ADDED` would only join the
+  queue. GP13 also checks that an `Off` Context after a `VirtualOnly` one carries none of its hints.
+- Step 3: a union name repeated inside a nested block is not refused (only a repeated namespace name is, reported at its
+  own line), and an unclosed nested block is reported at the last line read.
+- Step 4: names matched by content cost 9 atoms where the plan said 16. SI9 keeps a test-local name list, because
+  `INPUT_FUNCTIONS` lives in `script_api.hpp`, which includes `quickjs.h`. `callInputFunction` returns a `TypeError`
+  after its exhaustive switch.
+- Step 5: SI14, SI15 and SI17 compare floats inside the script through `Math.fround`.
+- Step 6 re-measured `vm.hpp`'s heap figures for all three builds, and `20c8218` const-qualified the input states and
+  reserved the namespace list that clang-tidy flagged in steps 3 and 4's test files.
+- The validation page's `leaks` row runs 49 cases, the plan's 45 plus GP23–GP26.
+
+**What was deliberately left out, and which task holds each.**
+- Feeding a game `InputState` from the viewport, with points from its top-left; releasing what the game holds when the
+  viewport loses game focus; turning on the editor's gamepad switch; the background-events hint, if Play-in-editor must
+  read pads while another window has focus: 4.7.1 (an unowned handoff in `docs/08`).
+- `bindInput` at Play and `unbindInput` at Stop, and the `newFrame()` cadence under Pause and Step: 4.7.4 (an unowned
+  handoff in `docs/08`).
+- The runtime binding `ctx.input()` and opting in to `System`: Phase 5 (an unowned handoff in `docs/08`).
+- Touch: 6.1.2, whose functions join `engine.input`.
+- Input action mapping: v2 (`docs/future-roadmap.md`).
+- A physical pad on any OS, and `System` with real drivers off macOS: the Windows and Linux validation pages
+  (`docs/08`'s validation debt).
+- A failing `SDL_InitSubSystem(SDL_INIT_GAMEPAD)` and the close-before-`SDL_Quit` order are not tested.
+
+**The sentences that govern new work.** A script reads input only through `engine.input`, from a state its caller
+binds and owns; a function checks its arguments before it reads the state, and reads it at the moment of the call. A
+key, button, axis or stick is named by a string matched by content against a constexpr table derived from its platform
+enum, so no atom is made per name and each table, its enum and its declared union stay in step. A member a task puts
+on `engine` itself joins the reserved component script names; a function inside `engine.input` does not. Gamepads are
+opt-in per Context, and a test that needs a pad uses `VirtualOnly` and SDL's virtual driver. These live in
+`.claude/rules/scripting.md` and `.claude/rules/tests.md`.
+
+**Validation and sabotage status — macOS 2 / 2 (2026-11-03), Windows and Linux unrun.** `macos-release` at `7040e15`.
+Row 1: `leaks --atExit` over the 49 new cases read `49 | 49 passed` and `0 leaks for 0 total leaked bytes`. Row 2:
+GP13's Context construction over three runs read `VirtualOnly` 2.95646 / 2.35046 / 2.05758 ms and `Off` 1.35342 /
+1.19762 / 1.19258 ms, a `VirtualOnly` median of 2.35 ms against the bound of 7.14 ms, 3 × the Release median at the
+commit that added GP13. One row is NOT EXECUTABLE on macOS: a physical gamepad (none is attached) and the
+play-in-editor rows (4.7.x). Off macOS, row 1 is NOT EXECUTABLE (`leaks`), row 2 and `System` with real drivers are
+owed by hand; CI is the only witness there: PR #134's run `41728157319` ran the 49 new cases in Debug under the
+sanitizers and in Release on the Windows and Linux lanes, and clang-tidy found nothing on the Linux lane.
+
+Measured at `7040e15` on fresh build directories:
+- `aero_tests` **1964** (+49), and `aero_editor_shell_test` **2517**, `aero_editor_imgui_test` **375**,
+  `aero_scene_serialize_test` **43**, `aero_editor_inspector_test` **74**, **14 / 28** unchanged; reflect-tools-OFF
+  `aero_tests` 1932, shell 2475 and ImGui 375; shader-tools-OFF `aero_tests` 1824, shell 2517 and ImGui 356.
+- `ctest -N` **233 / 220 / 107**, with `cooker.*` 81 in all three; no entry added.
+- The guards read math **655**, platform **98**, rhi **197**, scene **98**, golden-rule **199**,
+  project-no-delete **A=8 B=113**, audio **11-3-62**, probes **7-64** and script **180-98-19**.
+- An empty VM: 182 321 B Debug and 169 105 B Release with the eleven built-ins bound, 149 351 B Debug with none; a
+  fresh VM holds 825 atoms (696 with reflect tools off), under ML76's limit of 986.
+
+**Case ids claimed:** GP1–GP26 (next free: GP27), SI1–SI18 (SI19), DT29–DT32 (DT33) and LC54 (LC55).
+
+**Build & dependency impact:** no vcpkg port and no new target. `aero_script` links `aero::platform` PRIVATE, which adds
+no library to any binary: every executable that links `aero::script` already links `aero::platform`. `engine/script`
+gains `src/script_api_input.cpp` and `internal/aero/script/internal/input_names.hpp`; `vm.hpp`, `script_api.{hpp,cpp}`,
+`component_bindings.cpp`, `prelude.d.ts` and the CMake file grow. `engine/platform`'s `context.hpp`, `event.hpp`,
+`input.hpp`, `input.cpp` and `platform.cpp` grow. `aero_tests` gains `gamepad_input_test.cpp`, `input_pump_test.cpp` and
+`script_input_test.cpp`, and the `tsc` fixture `prelude_only/input.ts`. Docs: `docs/08` (R38, three unowned handoffs
+and the validation debt), the phase file, and the scripting and tests rule files.

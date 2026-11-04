@@ -45,6 +45,7 @@
 | **R35** | **A source-mapped frame can name the wrong line, because quickjs records a position only at some operations** (raised by task 4.3.4's spike, 2026-10-31) — quickjs-ng 0.15.1 records a frame's position only at `new`, a call, a binary operator, `throw`, an expression statement and a destructuring or `for-of` close, so a frame can name its function's first line or the previous loop iteration (five of the spike's measured frames did, before any map). The source map translates that position faithfully, so the `.ts` line is as wrong as the JavaScript one; the file and the function name stay right. A stack also holds at most 10 frames (the VM fixes `Error.stackTraceLimit`), so a deeper one loses its outermost frames | Med | Low | **Accepted and documented, not fixed (4.3.4).** The validation page lists both under "known and expected". A fix is a quickjs-ng patch that records more positions (R21's family), owned by no task. **A sibling, found by 4.4.1's spike (Q6):** a frame inside a throwing class-field initializer names line 0, a shape apart from the positions above; recorded, not fixed |
 | **R36** | **Nothing of a script generation is freed before its VM is torn down** (raised by task 4.3.4's plan, 2026-10-31; the module half measured by 4.3.3) — every reload keeps the old generation's module, about 4.3–4.5× its bundle plus about 3 KB of heap (4.3.3, in Release: a 64 MiB VM held 8 632, 1 532 and 165 reloads of 1, 9.4 and 93 KB bundles), and since 4.3.4 its source map, outside the heap: the map's bytes (about 2.4× the bundle) until the generation's first error, then 16–20 bytes per decoded segment. The heap limit refuses one map larger than itself, never the sum, so a long hot-reload session grows with its reload count and nothing else bounds it | Med | Low | **Accepted and documented (4.3.3, 4.3.4).** A new VM is the full reset, and `ScriptLoadResult`'s heap figures let 4.7.4 warn before a full heap. A `VmStats` figure for map bytes is 4.7.4's to ask for if its play loop shows pressure |
 | **R37** | **A script recursing past about 50 levels from a hook fails in Debug builds only** (decided by task 4.4.1, 2026-11-01) — from `onUpdate` the deepest recursion is 56 calls in Debug and 535 in Release at the 512 KiB default stack. The engine's frames below a hook cost nothing measurable, and a realistic hook chain uses 4 / 5 frames' worth. Release recursion from global code reads 536 against 4.1.1's 544; the cause was not investigated | Low | Low | **Accepted (4.4.1, D8):** no larger default stack (above 512 KiB, Windows' 1 MiB main thread needs `/STACK`), no `/STACK`, and no optimised Debug backend (it would cross MSVC's Debug and Release runtimes for one port, unmeasured). Editors and exported games run Release builds. Revisit when a real script needs deeper recursion in Debug |
+| **R38** | **Windows' DirectInput driver can stall a real-driver gamepad start-up for up to a minute** (raised by task 4.4.3's spike, 2026-11-03) — SDL's own comment (`joystick/windows/SDL_dinputjoystick.c:407-411`) warns that DirectInput's initialisation can take a minute with no controller attached. A Context with `GamepadDrivers::System` starts that driver; `VirtualOnly` sets `SDL_HINT_JOYSTICK_DIRECTINPUT` to `0` and skips it, and no CI lane runs `System` on Windows (GP22 runs it on macOS only). Not measured: no Windows host has run it | Med | Med | Time `System`'s Context construction on the Windows validation pass, with and without a pad. If it stalls, the editor (4.7.1) and the runtime (Phase 5) can turn DirectInput off through the hint, at the cost of the pads only DirectInput reads |
 
 ---
 
@@ -71,7 +72,7 @@ Decisions deliberately deferred until there is data or the relevant phase arrive
 Work a task found, measured or declined that no task in `docs/tasks/` owns yet. The list moved here from
 `CLAUDE.md`'s state block on 2026-10-26, where a pointer to this section remains.
 
-**EIGHTY-SIX UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**EIGHTY-NINE UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs in `CLAUDE.md`'s state block (fact
 4's four permitted cases, the inspector-row gap, the closed `File` section, E.1.1's fired thick-line handoff) are
@@ -268,6 +269,16 @@ not repeated here.
   hook is written with `override` (TS4117), and the template keeps `noImplicitOverride` off because it would demand
   `override` on every hook (TS4114). Nothing at run time reports a method that looks like a misspelt hook. No task owns
   it.
+- **Feeding the game's input in the editor** (4.4.3) — for 4.7.1, whose text names only the routing: feeding a game
+  `InputState` from the viewport, with points from the viewport's top-left; releasing what the game holds when the
+  viewport loses game focus; turning on the editor's gamepad switch (`ContextConfig::gamepads`, `Off` today); and the
+  background-events hint, if Play-in-editor must read pads while another window has focus. Facts it can use: ImGui's
+  SDL3 backend opens the first pad once anything starts the subsystem, with its own fixed 8000 deadzone
+  (`imgui_impl_sdl3.cpp:913`), and an unfocused window drops a pad's presses but never its releases.
+- **Binding input to the play session** (4.4.3) — for 4.7.4: `Vm::bindInput` at Play and `unbindInput` at Stop, and the
+  `newFrame()` cadence under Pause and Step; an edge made while paused is dropped by the next `newFrame()`.
+- **The runtime's input** (4.4.3) — for Phase 5's runtime loop: bind `ctx.input()` to the game's VM and opt in to
+  `GamepadDrivers::System` (R38 on Windows).
 
 ---
 
@@ -393,6 +404,14 @@ in both configurations on PR #132's run (`41307754224`), the 100 ms budget cases
 over the 81 new cases) is NOT EXECUTABLE there, and T2 and T3 are owed by hand; their bounds are 3 × this Mac's Release
 medians at the commits that added WA27 and LC48. CI's Windows and Linux lanes ran all 81 new cases green in both
 configurations on PR #133's run (`41544399893`), and clang-tidy found nothing on the Linux lane.
+
+**4.4.3 OWES A WINDOWS PAGE AND A LINUX PAGE.** No manual pass has run off macOS. Of the page's two executable rows,
+row 1 (`leaks` over the 49 new cases) is NOT EXECUTABLE there, and row 2 (`VirtualOnly`'s Context construction cost)
+is owed by hand; its bound is 3 × this Mac's Release median at the commit that added GP13. Owed by hand on both as
+well: `System` with real drivers, its start-up timed on Windows (R38), and a physical pad, which no platform has run.
+CI's Windows and Linux lanes ran all 49 new cases green in both configurations on PR #134's run (`41728157319`), so the
+virtual pads attached headless on both; Linux's leak checker, whose suppressions cover nothing of SDL's gamepad code,
+reported nothing, and clang-tidy found nothing on the Linux lane.
 
 **METHOD TRAPS FOR DRIVING THE EDITOR, ALL MEASURED.** A pending TCC prompt stalls the editor to ~0.2% CPU
 with a window that **NEVER RENDERS** (a black capture); the prompts **CASCADE**, one per bundle identity, and
