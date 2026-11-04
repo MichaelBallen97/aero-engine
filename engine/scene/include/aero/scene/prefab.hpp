@@ -30,9 +30,10 @@ class Prefab {
 public:
     // A flat copy of `roots`, which the caller has already made disjoint (the editor's topMost). Saved roots keep
     // their local rotation and scale; a position becomes its world position relative to the pivot, the mean of the
-    // roots' world positions. One root is the pivot, so its position is exactly zero. Several roots go under one
-    // new root at the pivot, an identity Transform named `wrapperName`. nullopt: `roots` is empty or holds a dead
-    // or null handle. A component type the Prefab's World does not register is skipped with one WARN per type.
+    // finite roots' world positions. One root is the pivot, so its position is exactly zero. Several roots go under
+    // one new root at the pivot, an identity Transform named `wrapperName`. A root whose world position is NaN or
+    // infinite, or whose offset does not fit a float, stores zero. nullopt: `roots` is empty or holds a dead or null
+    // handle. A component type the Prefab's World does not register is skipped with one WARN per type.
     [[nodiscard]] static std::optional<Prefab> capture(const World& source, std::span<const Entity> roots,
                                                        std::string_view wrapperName);
     // Takes a World holding exactly one root and refuses anything else (zero, several, moved-from). The World is

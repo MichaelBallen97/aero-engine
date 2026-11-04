@@ -10,6 +10,9 @@
 #include <aero/scene/prefab.hpp>
 
 #include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -110,6 +113,30 @@ Transform placedRoot(const Transform& stored, const Transform& placement) {
     return transformPoint(worldMatrix(world, entity), Vec3{});
 }
 
+[[nodiscard]] bool isFinite(Vec3 v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
+
+// The mean of the finite world positions, zero with none. In double: finite floats can sum past FLT_MAX, no count of
+// them reaches a double's limit, and a mean lies between its extremes, so the result is always a finite float.
+[[nodiscard]] Vec3 meanOfFinitePositions(const World& world, std::span<const Entity> roots) {
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    std::size_t count = 0;
+    for (const Entity root : roots) {
+        if (const Vec3 p = worldPosition(world, root); isFinite(p)) {
+            x += p.x;
+            y += p.y;
+            z += p.z;
+            ++count;
+        }
+    }
+    if (count == 0U) {
+        return Vec3{};
+    }
+    const auto n = static_cast<double>(count);
+    return Vec3{static_cast<float>(x / n), static_cast<float>(y / n), static_cast<float>(z / n)};
+}
+
 }  // namespace
 
 Prefab::Prefab(World&& world, Entity root) noexcept : store(std::move(world)), rootEntity(root) {}
@@ -126,13 +153,7 @@ std::optional<Prefab> Prefab::capture(const World& source, std::span<const Entit
     }
 
     const bool single = roots.size() == 1U;
-    Vec3 pivot{};  // the mean of the roots' world positions; unused when single
-    if (!single) {
-        for (const Entity root : roots) {
-            pivot = pivot + worldPosition(source, root);
-        }
-        pivot = pivot / static_cast<float>(roots.size());
-    }
+    const Vec3 pivot = meanOfFinitePositions(source, roots);  // always finite; one root ignores it
 
     Prefab result{World{}, Entity{}};
     World& store = result.store;
@@ -159,9 +180,11 @@ std::optional<Prefab> Prefab::capture(const World& source, std::span<const Entit
             result.rootEntity = copy;
         }
         if (auto* transform = store.get<Transform>(copy)) {
-            // One root's position is the literal zero, never p - p, which is NaN for a NaN or infinite world
-            // position and must not be written into a file.
-            transform->position = single ? Vec3{} : worldPosition(source, root) - pivot;
+            // No position computed here is non-finite: the file would hold null. One root is the literal zero, never
+            // p - p. With a finite pivot, an offset is non-finite only for a non-finite root or a spread past FLT_MAX:
+            // that root stores zero.
+            const Vec3 offset = worldPosition(source, root) - pivot;
+            transform->position = (single || !isFinite(offset)) ? Vec3{} : offset;
         }
     }
     return std::optional<Prefab>(std::move(result));
