@@ -14,6 +14,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <ostream>
 #include <span>
@@ -31,6 +32,9 @@ using engine::Vec3;
 using engine::World;
 
 namespace {
+
+constexpr float QUIET_NAN = std::numeric_limits<float>::quiet_NaN();
+constexpr float PLUS_INF = std::numeric_limits<float>::infinity();
 
 // Registered only where a case chooses to, so the far World lacks it.
 struct PrefabOnlyTag {};
@@ -138,6 +142,11 @@ struct Tree {
     std::optional<Prefab> prefab = Prefab::fromWorld(std::move(world));
     REQUIRE(prefab.has_value());
     return std::move(*prefab);
+}
+
+// The position capture reads for a root, off the source World.
+[[nodiscard]] Vec3 worldPositionOf(const World& world, Entity entity) {
+    return engine::transformPoint(engine::worldMatrix(world, entity), Vec3{});
 }
 
 [[nodiscard]] Transform rotatedAndScaledPlacement() {
@@ -569,4 +578,158 @@ TEST_CASE("prefab: a moved-from destination yields a null Entity and one ERROR (
     CHECK(log.errorCount() == 1);
     CHECK(log.warnCount() == 0);
     CHECK(taken.entityCount() == 0U);
+}
+
+TEST_CASE("prefab: one root at a NaN position stores the literal zero and keeps its rotation and scale (PW19)") {
+    World source;
+    const Quat turned = about(Vec3{0.0F, 1.0F, 0.0F}, 90.0F);
+    const Vec3 stretched{2.0F, 3.0F, 4.0F};
+    Transform rootTransform = at(Vec3{QUIET_NAN, 1.0F, 2.0F});
+    rootTransform.rotation = turned;
+    rootTransform.scale = stretched;
+    const Entity root = make(source, "Root", Entity{}, rootTransform);
+
+    const Prefab prefab = captureOne(source, root);
+    const Transform saved = transformOf(prefab.world(), prefab.root());
+    CHECK(saved.position == Vec3{});  // y and z are finite in the source and still do not survive: the whole zero
+    CHECK(saved.rotation == turned);
+    CHECK(saved.scale == stretched);
+}
+
+TEST_CASE("prefab: one root at an infinite position stores the literal zero, either sign, any axis (PW20)") {
+    World source;
+    const Entity positive = make(source, "Positive", Entity{}, at(Vec3{PLUS_INF, 0.0F, 0.0F}));
+    const Entity negative = make(source, "Negative", Entity{}, at(Vec3{0.0F, -PLUS_INF, 0.0F}));
+
+    const Prefab first = captureOne(source, positive);
+    CHECK(transformOf(first.world(), first.root()).position == Vec3{});
+    const Prefab second = captureOne(source, negative);
+    CHECK(transformOf(second.world(), second.root()).position == Vec3{});
+}
+
+TEST_CASE("prefab: a root non-finite on one axis leaves the mean of the others whole and stores zero (PW21)") {
+    World source;
+    const Entity nanRoot = make(source, "NanRoot", Entity{}, at(Vec3{100.0F, QUIET_NAN, 0.0F}));
+    const Entity first = make(source, "First", Entity{}, at(Vec3{2.0F, 0.0F, 0.0F}));
+    const Entity infRoot = make(source, "InfRoot", Entity{}, at(Vec3{PLUS_INF, 100.0F, 0.0F}));
+    const Entity second = make(source, "Second", Entity{}, at(Vec3{4.0F, 2.0F, 0.0F}));
+
+    const std::array<Entity, 4> roots{nanRoot, first, infRoot, second};
+    const std::optional<Prefab> prefab = Prefab::capture(source, roots, "Group");
+    REQUIRE(prefab.has_value());
+    const World& stored = prefab->world();
+
+    CHECK(transformOf(stored, prefab->root()) == Transform{});
+    const std::vector<Entity> kids = childrenOf(stored, prefab->root());
+    REQUIRE(kids.size() == 4U);
+    // The mean is (3, 1, 0): the x = 100 and y = 100 of the two left out reach no one.
+    CHECK(transformOf(stored, kids[0]).position == Vec3{});
+    CHECK(transformOf(stored, kids[1]).position == Vec3{-1.0F, -1.0F, 0.0F});
+    CHECK(transformOf(stored, kids[2]).position == Vec3{});
+    CHECK(transformOf(stored, kids[3]).position == Vec3{1.0F, 1.0F, 0.0F});
+}
+
+TEST_CASE("prefab: with every root non-finite the capture succeeds and each child stores zero (PW22)") {
+    World source;
+    const Entity first = make(source, "First", Entity{}, at(Vec3{QUIET_NAN, 0.0F, 0.0F}));
+    const Entity second = make(source, "Second", Entity{}, at(Vec3{0.0F, PLUS_INF, 0.0F}));
+    const Entity third = make(source, "Third", Entity{}, at(Vec3{0.0F, 0.0F, -PLUS_INF}));
+
+    const std::array<Entity, 3> roots{first, second, third};
+    const std::optional<Prefab> prefab = Prefab::capture(source, roots, "Group");
+    REQUIRE(prefab.has_value());
+    const World& stored = prefab->world();
+
+    CHECK(transformOf(stored, prefab->root()) == Transform{});
+    const std::vector<Entity> kids = childrenOf(stored, prefab->root());
+    REQUIRE(kids.size() == 3U);
+    for (const Entity kid : kids) {
+        CHECK(transformOf(stored, kid).position == Vec3{});
+    }
+}
+
+TEST_CASE("prefab: finite roots whose float sum overflows still centre on their exact mean (PW23)") {
+    World source;
+    const Entity first = make(source, "First", Entity{}, at(Vec3{0x3p126F, 0.0F, 0.0F}));
+    const Entity second = make(source, "Second", Entity{}, at(Vec3{0x2p126F, 0.0F, 0.0F}));
+
+    const std::array<Entity, 2> roots{first, second};
+    const std::optional<Prefab> prefab = Prefab::capture(source, roots, "Group");
+    REQUIRE(prefab.has_value());
+    const std::vector<Entity> kids = childrenOf(prefab->world(), prefab->root());
+    REQUIRE(kids.size() == 2U);
+    CHECK(transformOf(prefab->world(), kids[0]).position == Vec3{0x1p125F, 0.0F, 0.0F});
+    CHECK(transformOf(prefab->world(), kids[1]).position == Vec3{-0x1p125F, 0.0F, 0.0F});
+}
+
+TEST_CASE("prefab: a root whose offset passes FLT_MAX stores zero on every axis, its siblings keep theirs (PW24)") {
+    World source;
+    const Entity first = make(source, "First", Entity{}, at(Vec3{0x3p126F, 1.0F, 0.0F}));
+    const Entity second = make(source, "Second", Entity{}, at(Vec3{0x3p126F, 1.0F, 0.0F}));
+    const Entity third = make(source, "Third", Entity{}, at(Vec3{-0x3p126F, 4.0F, 0.0F}));
+
+    const std::array<Entity, 3> roots{first, second, third};
+    const std::optional<Prefab> prefab = Prefab::capture(source, roots, "Group");
+    REQUIRE(prefab.has_value());
+    const std::vector<Entity> kids = childrenOf(prefab->world(), prefab->root());
+    REQUIRE(kids.size() == 3U);
+    // The mean is (0x1p126, 2, 0). The third's x would be -0x1p128, past FLT_MAX; its finite y of 2 goes with it.
+    CHECK(transformOf(prefab->world(), kids[0]).position == Vec3{0x1p127F, -1.0F, 0.0F});
+    CHECK(transformOf(prefab->world(), kids[1]).position == Vec3{0x1p127F, -1.0F, 0.0F});
+    CHECK(transformOf(prefab->world(), kids[2]).position == Vec3{});
+}
+
+TEST_CASE("prefab: the finiteness test reads the WORLD position, Transform or not (PW25)") {
+    World source;
+    Transform huge;
+    huge.scale = Vec3{1e30F, 1e30F, 1e30F};
+    const Entity hugeParent = make(source, "HugeParent", Entity{}, huge);
+    const Entity distant = make(source, "Distant", hugeParent, at(Vec3{1e30F, 0.0F, 0.0F}));
+    const Entity nanParent = make(source, "NanParent", Entity{}, at(Vec3{QUIET_NAN, 0.0F, 0.0F}));
+    const Entity bare = make(source, "Bare", nanParent, std::nullopt);
+    const Entity first = make(source, "First", Entity{}, at(Vec3{2.0F, 0.0F, 0.0F}));
+    const Entity second = make(source, "Second", Entity{}, at(Vec3{4.0F, 0.0F, 0.0F}));
+
+    // Each sample is what the case claims: a finite local position at +inf in the world, a bare root at NaN.
+    REQUIRE(worldPositionOf(source, distant) == Vec3{PLUS_INF, 0.0F, 0.0F});
+    REQUIRE(std::isnan(worldPositionOf(source, bare).x));
+
+    const std::array<Entity, 4> roots{distant, bare, first, second};
+    const std::optional<Prefab> prefab = Prefab::capture(source, roots, "Group");
+    REQUIRE(prefab.has_value());
+    const World& stored = prefab->world();
+    const std::vector<Entity> kids = childrenOf(stored, prefab->root());
+    REQUIRE(kids.size() == 4U);
+    CHECK(transformOf(stored, kids[0]).position == Vec3{});
+    CHECK_FALSE(stored.has<Transform>(kids[1]));
+    CHECK(transformOf(stored, kids[2]).position == Vec3{-1.0F, 0.0F, 0.0F});
+    CHECK(transformOf(stored, kids[3]).position == Vec3{1.0F, 0.0F, 0.0F});
+}
+
+TEST_CASE("prefab: capture fixes the positions it computes, never a value it only copies (PW26)") {
+    World source;
+    const Entity first = make(source, "First", Entity{}, at(Vec3{2.0F, 0.0F, 0.0F}));
+    make(source, "Child", first, at(Vec3{QUIET_NAN, 0.0F, 0.0F}));
+    const Entity second = make(source, "Second", Entity{}, at(Vec3{4.0F, 0.0F, 0.0F}));
+    Transform stretched = at(Vec3{9.0F, 0.0F, 0.0F});
+    stretched.scale = Vec3{QUIET_NAN, 1.0F, 1.0F};
+    const Entity third = make(source, "Third", Entity{}, stretched);
+
+    // A NaN scale puts the third out through its world position, though its local x of 9 is finite.
+    REQUIRE(std::isnan(worldPositionOf(source, third).x));
+
+    const std::array<Entity, 3> roots{first, second, third};
+    const std::optional<Prefab> prefab = Prefab::capture(source, roots, "Group");
+    REQUIRE(prefab.has_value());
+    const World& stored = prefab->world();
+    const std::vector<Entity> kids = childrenOf(stored, prefab->root());
+    REQUIRE(kids.size() == 3U);
+    CHECK(transformOf(stored, kids[0]).position == Vec3{-1.0F, 0.0F, 0.0F});
+    CHECK(transformOf(stored, kids[1]).position == Vec3{1.0F, 0.0F, 0.0F});
+    CHECK(transformOf(stored, kids[2]).position == Vec3{});
+
+    const std::vector<Entity> grand = childrenOf(stored, kids[0]);
+    REQUIRE(grand.size() == 1U);
+    CHECK(std::isnan(transformOf(stored, grand[0]).position.x));
+    CHECK(std::isnan(transformOf(stored, kids[2]).scale.x));
 }

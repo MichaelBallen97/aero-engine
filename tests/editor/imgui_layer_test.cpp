@@ -31016,8 +31016,16 @@ TEST_CASE("editor: a saved prefab dropped on the void reads back as the tree tha
     const engine::Entity crate = makeNamedEntity(
         world, "Crate",
         engine::Transform{.position = {4.0F, 5.0F, 6.0F}, .rotation = turned, .scale = {2.0F, 2.0F, 2.0F}});
-    static_cast<void>(makeNamedEntity(world, "Lid", engine::Transform{.position = {0.0F, 1.0F, 0.0F}}, crate));
+    const engine::Entity lid = makeNamedEntity(world, "Lid", engine::Transform{.position = {0.0F, 1.0F, 0.0F}}, crate);
     static_cast<void>(makeNamedEntity(world, "Latch", engine::Transform{.position = {0.5F, 0.0F, 0.0F}}, crate));
+    // The component payload the file has to carry: two different GUIDs, neither nil, and a non-default index.
+    constexpr engine::Guid LID_MESH{.hi = 0x4440000000000375ULL, .lo = 0x11ULL};
+    constexpr engine::Guid LID_MATERIAL{.hi = 0x4440000000000375ULL, .lo = 0x22ULL};
+    engine::MeshRenderer lidRenderer;
+    lidRenderer.mesh = LID_MESH;
+    lidRenderer.meshIndex = 3U;
+    lidRenderer.material = LID_MATERIAL;
+    REQUIRE(world.add<engine::MeshRenderer>(lid, lidRenderer) != nullptr);
 
     app->requestHierarchySavePrefab(crate);
     REQUIRE(app->tick());
@@ -31054,15 +31062,24 @@ TEST_CASE("editor: a saved prefab dropped on the void reads back as the tree tha
     CHECK(placed->position == engine::Vec3{});
     CHECK((placed->rotation == turned));
     CHECK(placed->scale == engine::Vec3{2.0F, 2.0F, 2.0F});
+    std::vector<engine::Entity> copiedChildren;
     std::vector<engine::Vec3> childPositions;
     world.eachChild(copy, [&](engine::Entity child) {
         const engine::Transform* local = world.get<engine::Transform>(child);
         REQUIRE(local != nullptr);
+        copiedChildren.push_back(child);
         childPositions.push_back(local->position);
     });
     REQUIRE(childPositions.size() == 2);
     CHECK(childPositions[0] == engine::Vec3{0.0F, 1.0F, 0.0F});
     CHECK(childPositions[1] == engine::Vec3{0.5F, 0.0F, 0.0F});
+    // The components: what Lid held, on Lid alone, read off the copy the file produced.
+    const engine::MeshRenderer* copiedRenderer = world.get<engine::MeshRenderer>(copiedChildren[0]);
+    REQUIRE(copiedRenderer != nullptr);
+    CHECK(copiedRenderer->mesh == LID_MESH);
+    CHECK(copiedRenderer->meshIndex == 3U);
+    CHECK(copiedRenderer->material == LID_MATERIAL);
+    CHECK_FALSE(world.has<engine::MeshRenderer>(copiedChildren[1]));
 
     app->requestQuit();
     CHECK(app->tick() == false);
