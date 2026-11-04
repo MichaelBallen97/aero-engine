@@ -3432,7 +3432,187 @@ and configuration. They carry quickjs-ng's own bytecode, so a port bump that cha
 Function source text (stripped), a source map, `STRIP_DEBUG` output, and imports: a module's specifiers stay in its
 bytecode and resolve at load exactly as they would in its JavaScript.
 
-## 17. Reserved for future formats
+## 17. Prefab asset v1 (`.aeroprefab`)
+
+> Task 4.4.4. Code: `engine/scene`'s `engine::Prefab` (`prefab.hpp`, `prefab.cpp`), the editor's `savePrefabFile`
+> (`prefab_asset.cpp`) and the read behind `engine.spawn(path, ...)` (`engine/script/src/script_api_prefab.cpp`);
+> the batteries are `tests/scene_prefab_test.cpp`, `tests/script_prefab_test.cpp` and
+> `tests/editor/prefab_asset_test.cpp`.
+
+### 17.1 Scope
+
+A `.aeroprefab` file is a **scene v1 document** (section 2) in every byte: the same envelope, the same canonical
+form (section 1 and 2.4), the same reader and writer (`scene_serialize`'s `loadSceneText` and `saveWorldText`), the
+same tolerance policy (an unknown envelope key, an unknown payload key and an unresolvable component name are each
+a WARN, and the name is skipped, section 1 and 2.6) and the same version policy (section 3). It adds exactly one rule, 17.2.
+
+The extension tells the asset browser what the file means (a prefab kind, its own tile and its drag action) and
+tells nobody else anything: **a loader never sniffs it**. Handed a `.scene.json` that happens to hold one root, the
+prefab reader accepts it, and handed a `.aeroprefab` with two roots it refuses, whatever either is called. The file
+is text, as `.aeromat` is, until cooked scenes exist (17.6).
+
+### 17.2 The one-root rule
+
+Exactly one entity has no `parent`. A loader refuses a document with no root and a document with several roots,
+with the message `a prefab has exactly one root` (the script path prefixes the path it was given, the editor
+prefixes nothing). An empty `entities` array is the zero-root case. The scene stage's own errors (section 2.6)
+come first, so a cyclic or unresolved `parent` is reported as the scene error it is.
+
+`parent` is forward-legal here as it is in a scene (2.2), so the root need not be first in the array. The editor's
+writer does emit it first: a prefab is captured into a fresh `World`, whose entities are created root first and in
+preorder, and a save lists entities in that order, so file ids run `1..N` in preorder. That is the writer's habit,
+not a rule a reader may rely on.
+
+### 17.3 What the writer stores
+
+**Save as Prefab** (the Hierarchy row's context menu) captures the whole selection when the row is part of it, and
+the row alone otherwise, each with its descendants. Only the topmost entities count as roots: a selected descendant
+of a selected entity is saved once, under its ancestor.
+
+- **One selected root.** The file's root is a copy of that entity. Its stored `position` is the literal zero, so a
+  spawn lands the prefab where it was told to, not where the original stood. Its `rotation` and `scale` are the
+  original's local values, unchanged.
+- **Several selected roots.** The writer adds a wrapper entity as the file's root: a `Transform` at the identity,
+  named like the file (the file's stem), with each selected root as its child. Each child's stored `position` is its
+  **world** position minus the mean of the selected roots' world positions, so the group is centred on the wrapper
+  and keeps its layout. A child's `rotation` and `scale` are its local values, unchanged.
+- **Everything below a root** is copied as it is: names, the parent/child order, and every component's payload.
+  Asset references in a payload stay the GUIDs they are (17.5).
+- A saved root with no `Transform` is stored without one and has no position to write.
+
+The saved root's `position` is therefore **a stored offset, not a scene position**; it means "relative to wherever the
+placement puts this", and 17.4 is how it is used.
+
+The file name is the first root's name plus `.aeroprefab` (and the wrapper of several roots is named after the file's stem). A
+name the asset-name rules refuse, or an empty one, falls back to `Prefab`; a name that is taken in the folder gets
+`-2`, `-3`, ... up to 64 attempts, compared case-insensitively. A write never overwrites a file.
+
+### 17.4 What an instance is
+
+An instance is a **flat copy**: new entities, one per entity of the file, with the same names, the same hierarchy
+and a copy of every component. It keeps **no link back** to the file or to its sibling instances, so editing the
+file later changes nothing already spawned, and editing an instance changes nothing in the file. A component whose
+type the destination `World` has not registered is skipped with one WARN per type per copy.
+
+The placement is a `Transform` P (position, rotation, scale; the identity when none is given), and the instance's
+root, with stored transform S, becomes:
+
+```
+position = P.position + normalize(P.rotation) * (P.scale * S.position)     // scale componentwise
+rotation = normalize(P.rotation) * S.rotation
+scale    = P.scale * S.scale                                               // componentwise
+```
+
+`normalize` is the identity quaternion for a rotation with no length, so a zero quaternion places the prefab
+unrotated instead of collapsing it; a NaN stays NaN. An identity placement leaves S exactly as stored. The stored
+rotation is the file's value and is not normalized. Descendants keep their local transforms, so they follow the root.
+
+A non-uniform placement scale over a rotated stored root is the one case where this is not the matrix product
+`P * S`: a `Transform` is translation, rotation and scale and cannot hold the shear (`Transform`'s standing rule).
+
+A saved root **without** a `Transform` takes the placement itself, with its rotation as given (not normalized). The
+copy may also be linked under a live entity of the destination, which the editor's drop does; the root keeps its
+place among that entity's children, at the end.
+
+### 17.5 Addressing
+
+A script names a file by its `res://` path. The read goes through the VM's virtual file system, so the editor's
+play session and 5.1.1's pak swap the backend under the same path. The path is normalized first, so two spellings
+of one file are one entry. The read is capped at the VM's heap limit, checked from the file's size before a byte
+is read and again after, and a prefab is **parsed once per World binding** and kept until the binding ends: an edit
+to the file reaches the next binding, and a failed read is not kept, so a file made good is read again. A build
+without the reflect tools has no component serializers; it refuses a path-taking `spawn` after checking its
+arguments.
+
+A prefab's references are a scene's: asset references are GUID strings (a `MeshRenderer`'s `mesh` and `material`
+in the example below), resolved by the same resolver a scene uses. A prefab carries no path to another asset.
+
+### 17.6 Non-goals
+
+No per-instance override, no nested prefab and no variant: an instance is a flat copy (17.4), and a prefab inside a
+prefab is two files and two spawns. There is no binary form until cooked scenes exist (section 18): a prefab ships
+in the pak as the text it is, and the cooker's scene work is its trigger.
+
+### 17.7 Worked example
+
+A crate with a lid, saved from the editor with the crate as the one selected root (canonical form, key order of
+section 2.4; the crate's stored position is zero, the lid's offset is local to the crate, and the mesh and material
+are GUIDs):
+
+```json
+{
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "name": "Crate",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "name": "Lid",
+      "parent": 1,
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 0.5,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        },
+        "engine::MeshRenderer": {
+          "primitive": 2,
+          "color": {
+            "x": 0.5,
+            "y": 0.5,
+            "z": 0.55
+          },
+          "mesh": "00000000000000000000000000000000",
+          "meshIndex": 0,
+          "material": "00000000000000000000000000000000"
+        }
+      }
+    }
+  ]
+}
+```
+
+Entity 1 has no `parent`, so it is the file's one root; entity 2 names it. Spawned at position `(4, 0, 2)` with a
+quarter turn about Y and unit scale, the copy of entity 1 sits at `(4, 0, 2)` turned a quarter turn, and its lid
+sits half a unit above it, turned with it. Adding a second root with no `parent` would make the file a scene and
+no longer a prefab.
+
+## 18. Reserved for future formats
 
 - **Cooked / `.pak` binary formats** — Phase 3+, owned by the cooker; own version field, docs/04:51
   applies unchanged. Section appends here. Still unowned: the `.pak` container itself and cooked
