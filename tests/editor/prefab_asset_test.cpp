@@ -14,6 +14,7 @@
 #include <aero/editor/asset_actions.hpp>
 #include <aero/editor/asset_commands.hpp>
 #include <aero/editor/asset_database.hpp>
+#include <aero/editor/asset_meta.hpp>
 #include <aero/editor/asset_view.hpp>
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/entity_commands.hpp>
@@ -830,4 +831,54 @@ TEST_CASE(
         CHECK(result.relativePath.empty());
         CHECK(namesIn(assetsRoot).empty());
     }
+}
+
+TEST_CASE("prefab_asset: a document the scene layer refuses is named by its message alone, with no position (PE18)") {
+    // Valid JSON, so the parse stage passes; the next stage finds a parent that no entity has.
+    constexpr std::string_view DANGLING =
+        R"({"version": 1, "entities": [{"id": 1, "name": "A", "parent": 99, "components": {}}]})";
+    if (!sceneIoAvailable()) {
+        const PrefabReadResult refused = prefabFromText(DANGLING);
+        CHECK_FALSE(refused.prefab.has_value());
+        CHECK_FALSE(refused.message.empty());
+        return;
+    }
+
+    const LogCount log;
+    const PrefabReadResult dangling = prefabFromText(DANGLING);
+    CHECK_FALSE(dangling.prefab.has_value());
+    CHECK(dangling.message.starts_with("entities[0] (id 1): parent 99"));
+    CHECK(dangling.message.find("line ") == std::string::npos);
+    CHECK(dangling.message.find("column ") == std::string::npos);
+    CHECK(log.count() == 0);
+}
+
+TEST_CASE("prefab_asset: a write that fails is refused with its reason and leaves no prefab behind (PE19)") {
+    const TempDir tmp;
+    const std::string assetsRoot = tmp.utf8() + "/assets";
+    makeDirectory(assetsRoot);
+    World world;
+    const Entity crate = addNamedRoot(world, "Crate");
+    const std::array<Entity, 1> roots{crate};
+    if (refusedWithoutSceneIo(world, roots, assetsRoot)) {
+        return;
+    }
+
+    // A folder stands where the write puts its temporary file. Opening a folder for writing fails on every OS and under
+    // every account, an elevated one included, and the name does not collide with the file the save would choose.
+    const std::string blocker = assetsRoot + "/Crate.aeroprefab" + std::string(engine::editor::ATOMIC_TEMP_SUFFIX);
+    makeDirectory(blocker);
+    const PrefabSaveResult refused = savePrefabFile(world, roots, assetsRoot, "");
+    CHECK_FALSE(refused.error.empty());
+    CHECK(refused.relativePath.empty());
+    CHECK_FALSE(existsOnDisk(assetsRoot + "/Crate.aeroprefab"));
+    CHECK(namesIn(assetsRoot) == std::vector<std::string>{"Crate.aeroprefab.aero-tmp"});
+
+    // The folder was the only obstacle: with it gone the same call writes the file.
+    std::error_code ec;
+    REQUIRE(std::filesystem::remove(pathOf(blocker), ec));
+    const PrefabSaveResult saved = savePrefabFile(world, roots, assetsRoot, "");
+    CHECK(saved.error.empty());
+    CHECK(saved.relativePath == "Crate.aeroprefab");
+    CHECK(existsOnDisk(assetsRoot + "/Crate.aeroprefab"));
 }

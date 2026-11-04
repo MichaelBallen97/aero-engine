@@ -31190,3 +31190,316 @@ TEST_CASE(
         CHECK(app->tick() == false);
     }
 }
+
+// ---- task 4.4.4 (I378-I383): the prefab drop's and Save as Prefab's remaining arms
+namespace {
+
+// makeSavePrefabProject with crate.aeroprefab in assets/, for the cases that open it through openSavePrefabApp: the
+// watcher is off there, so a file changed after the open stays unscanned and its record stays live.
+[[nodiscard]] std::string makeCrateOnDiskProject() {
+    const std::string root = makeSavePrefabProject();
+    REQUIRE(engine::editor::writeTextFileAtomic(root + "/assets/crate.aeroprefab", CRATE_PREFAB_TEXT).empty());
+    return root;
+}
+
+// The text of every WARN record that starts "assets: ", in order.
+class PrefabDropWarnTexts {
+public:
+    PrefabDropWarnTexts() {
+        engine::setLogCallback([this](const engine::LogRecord& record) {
+            if (record.level == engine::LogLevel::Warn && record.message.starts_with("assets: ")) {
+                texts.emplace_back(record.message);
+            }
+        });
+    }
+    PrefabDropWarnTexts(const PrefabDropWarnTexts&) = delete;
+    PrefabDropWarnTexts& operator=(const PrefabDropWarnTexts&) = delete;
+    PrefabDropWarnTexts(PrefabDropWarnTexts&&) = delete;
+    PrefabDropWarnTexts& operator=(PrefabDropWarnTexts&&) = delete;
+    ~PrefabDropWarnTexts() { engine::setLogCallback({}); }
+
+    [[nodiscard]] const std::vector<std::string>& all() const noexcept { return texts; }
+
+private:
+    std::vector<std::string> texts;
+};
+
+}  // namespace
+
+TEST_CASE("editor: a prefab dropped in the viewport over an entity stays a scene root (task 4.4.4, I378)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "prefab drop i378", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makePrefabDropProject();
+    std::optional<engine::editor::EditorApp> app = openPrefabDropApp(ctx, *window, *device, root);
+    REQUIRE(app.has_value());
+    const std::optional<engine::Guid> prefab = app->assetGuidForPath("crate.aeroprefab");
+    REQUIRE(prefab.has_value());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    const engine::editor::EditorCamera* const camera = app->viewportCamera();
+    REQUIRE(camera != nullptr);
+
+    // An entity on the ray through a point off to the side, three units from the eye, and nearer than anything the new
+    // project holds there: the pick under the cursor finds it.
+    const engine::Vec2 ndc{0.6F, -0.3F};
+    const engine::editor::Ray ray = engine::editor::viewportRay(*camera, ndc, viewport->aspect());
+    const engine::Entity under =
+        makeNamedEntity(app->world(), "Under", engine::Transform{.position = ray.origin + ray.direction * 3.0F});
+    REQUIRE(viewport->pickAt(app->world(), ndc) == under);
+    const engine::Vec3 expected =
+        engine::editor::dropPlacementPoint(engine::editor::viewportRay(*camera, ndc, viewport->aspect()));
+
+    const std::size_t before = app->world().entityCount();
+    app->requestViewportAssetDrop(*prefab, PREFAB_KIND, ndc);
+    REQUIRE(app->tick());
+
+    if (engine::editor::sceneIoAvailable()) {
+        REQUIRE(app->world().entityCount() == before + 2);
+        const engine::Entity crate = entityNamed(app->world(), "Crate");
+        REQUIRE(crate.valid());
+        // A viewport drop is a scene root at the ray's point, whatever lies under the cursor.
+        CHECK_FALSE(app->world().parent(crate).valid());
+        CHECK(app->world().childCount(under) == 0U);
+        const engine::Transform* placed = app->world().get<engine::Transform>(crate);
+        REQUIRE(placed != nullptr);
+        CHECK(placed->position == expected);
+    } else {
+        CHECK(app->world().entityCount() == before);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a prefab drop whose file has gone warns once and creates nothing (task 4.4.4, I379)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "prefab drop i379", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makeCrateOnDiskProject();
+    std::optional<engine::editor::EditorApp> app = openSavePrefabApp(ctx, *window, *device, root);
+    REQUIRE(app.has_value());
+    const std::optional<engine::Guid> prefab = app->assetGuidForPath("crate.aeroprefab");
+    REQUIRE(prefab.has_value());
+
+    // The record stays; the file under it goes.
+    std::error_code ec;
+    REQUIRE(std::filesystem::remove(root + "/assets/crate.aeroprefab", ec));
+    const engine::editor::FileReadResult gone = engine::editor::readTextFile(root + "/assets/crate.aeroprefab");
+    REQUIRE_FALSE(gone.text.has_value());
+    REQUIRE_FALSE(gone.error.empty());
+    const std::size_t before = app->world().entityCount();
+    const std::size_t entriesBefore = app->commands().count();
+    {
+        const PrefabDropWarnTexts log;
+        app->requestHierarchyAssetDrop(*prefab, PREFAB_KIND, engine::Entity{});
+        REQUIRE(app->tick());
+        // One WARN, and it names the failed read: the parser is never handed text that was not read.
+        REQUIRE(log.all().size() == 1);
+        CHECK(log.all().front() == "assets: this prefab could not be read -- " + gone.error);
+    }
+    CHECK(app->assetGuidForPath("crate.aeroprefab").has_value());  // the refusal is the read's, not a missing record
+    CHECK(app->world().entityCount() == before);
+    CHECK(app->commands().count() == entriesBefore);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a prefab drop whose file does not parse warns once and creates nothing (task 4.4.4, I380)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "prefab drop i380", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makeCrateOnDiskProject();
+    std::optional<engine::editor::EditorApp> app = openSavePrefabApp(ctx, *window, *device, root);
+    REQUIRE(app.has_value());
+    const std::optional<engine::Guid> prefab = app->assetGuidForPath("crate.aeroprefab");
+    REQUIRE(prefab.has_value());
+    const std::string file = root + "/assets/crate.aeroprefab";
+
+    const std::size_t before = app->world().entityCount();
+    const std::size_t entriesBefore = app->commands().count();
+    constexpr std::string_view TWO_ROOTS =
+        R"({"version": 1, "entities": [{"id": 1, "name": "A", "components": {}}, {"id": 2, "name": "B", "components": {}}]})";
+    for (const std::string_view text : {std::string_view{"{ not json"}, TWO_ROOTS}) {
+        CAPTURE(text);
+        REQUIRE(engine::editor::writeTextFileAtomic(file, text).empty());
+        const PrefabDropWarnCount log;
+        app->requestHierarchyAssetDrop(*prefab, PREFAB_KIND, engine::Entity{});
+        REQUIRE(app->tick());
+        CHECK(log.count() == 1);
+        CHECK(app->world().entityCount() == before);
+        CHECK(app->commands().count() == entriesBefore);
+    }
+
+    if (engine::editor::sceneIoAvailable()) {
+        // The same record drops once the file is good again: what refused it was the file.
+        REQUIRE(engine::editor::writeTextFileAtomic(file, CRATE_PREFAB_TEXT).empty());
+        const PrefabDropWarnCount log;
+        app->requestHierarchyAssetDrop(*prefab, PREFAB_KIND, engine::Entity{});
+        REQUIRE(app->tick());
+        CHECK(log.count() == 0);
+        CHECK(app->world().entityCount() == before + 2);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: undoing a prefab drop restores the selection the drop replaced (task 4.4.4, I381)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "prefab drop i381", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makePrefabDropProject();
+    std::optional<engine::editor::EditorApp> app = openPrefabDropApp(ctx, *window, *device, root);
+    REQUIRE(app.has_value());
+    const std::optional<engine::Guid> prefab = app->assetGuidForPath("crate.aeroprefab");
+    REQUIRE(prefab.has_value());
+
+    const engine::Entity other = makeNamedEntity(app->world(), "Other", engine::Transform{});
+    app->selection().set(other);
+    const std::size_t before = app->world().entityCount();
+
+    app->requestHierarchyAssetDrop(*prefab, PREFAB_KIND, engine::Entity{});
+    REQUIRE(app->tick());
+    if (engine::editor::sceneIoAvailable()) {
+        REQUIRE(app->world().entityCount() == before + 2);
+        const engine::Entity crate = entityNamed(app->world(), "Crate");
+        REQUIRE(crate.valid());
+        REQUIRE(app->selection().count() == 1);
+        REQUIRE(app->selection().primary() == crate);  // the drop selects its root
+
+        app->requestUndo();
+        REQUIRE(app->tick());
+        CHECK(app->world().entityCount() == before);
+        CHECK(app->selection().count() == 1);
+        CHECK(app->selection().primary() == other);  // and the undo gives the earlier selection back
+    } else {
+        CHECK(app->world().entityCount() == before);
+        CHECK(app->selection().primary() == other);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a refused Save as Prefab with no project open scans nothing (task 4.4.4, I382)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "save prefab i382", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE_FALSE(app->projectIsOpen());
+    const engine::Entity crate = makeNamedEntity(app->world(), "Crate", engine::Transform{});
+
+    // A scan with no project open warns ("assets: ... scan aborted"), which makes a scan visible here.
+    const PrefabDropWarnCount scans;
+    app->requestHierarchySavePrefab(crate);
+    REQUIRE(app->tick());
+    CHECK(scans.count() == 0);
+    app->requestAssetRescan();
+    REQUIRE(app->tick());
+    CHECK(scans.count() == 1);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a Save as Prefab the write refuses warns once and scans nothing (task 4.4.4, I383)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "save prefab i383", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makeSavePrefabProject();
+    std::optional<engine::editor::EditorApp> app = openSavePrefabApp(ctx, *window, *device, root);
+    REQUIRE(app.has_value());
+    const engine::Entity crate = makeNamedEntity(app->world(), "Crate", engine::Transform{});
+
+    // A folder stands where the write puts its temporary file, so the write fails on every OS and under every account.
+    std::error_code ec;
+    std::filesystem::create_directories(
+        root + "/assets/Crate.aeroprefab" + std::string(engine::editor::ATOMIC_TEMP_SUFFIX), ec);
+    REQUIRE_FALSE(ec);
+    // A file that appears after the open is found by a scan and by nothing else, since the watcher is off.
+    REQUIRE(engine::editor::writeTextFileAtomic(root + "/assets/late.aeroprefab", CRATE_PREFAB_TEXT).empty());
+    REQUIRE_FALSE(app->assetGuidForPath("late.aeroprefab").has_value());
+
+    {
+        const SavePrefabWarnCount log;
+        app->requestHierarchySavePrefab(crate);
+        REQUIRE(app->tick());
+        CHECK(log.count() == 1);  // exactly one WARN for the refusal
+    }
+    CHECK_FALSE(std::filesystem::exists(root + "/assets/Crate.aeroprefab"));
+    CHECK(app->assetBrowserSelection().empty());
+    CHECK_FALSE(app->assetGuidForPath("late.aeroprefab").has_value());  // and no scan followed it
+
+    // The probe does see a scan: once one is requested, the app finds the file.
+    app->requestAssetRescan();
+    REQUIRE(app->tick());
+    CHECK(app->assetGuidForPath("late.aeroprefab").has_value());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

@@ -733,3 +733,75 @@ TEST_CASE("prefab: capture fixes the positions it computes, never a value it onl
     CHECK(std::isnan(transformOf(stored, grand[0]).position.x));
     CHECK(std::isnan(transformOf(stored, kids[2]).scale.x));
 }
+
+TEST_CASE("prefab: a type the prefab World lacks warns once per capture, however many roots carry it (PW27)") {
+    World source;
+    engine::scene::internal::registerComponent<PrefabOnlyTag>(source, "test::PrefabOnlyTag");
+    const Entity first = make(source, "First", Entity{}, at(Vec3{1.0F, 0.0F, 0.0F}));
+    const Entity second = make(source, "Second", Entity{}, at(Vec3{3.0F, 0.0F, 0.0F}));
+    const Entity third = make(source, "Third", Entity{}, at(Vec3{5.0F, 0.0F, 0.0F}));
+    for (const Entity tagged : {first, second, third}) {
+        source.add<PrefabOnlyTag>(tagged);
+    }
+
+    const LogCount log;
+    const std::array<Entity, 3> roots{first, second, third};
+    const std::optional<Prefab> prefab = Prefab::capture(source, roots, "Trio");
+    REQUIRE(prefab.has_value());
+    // The wrapper and three roots; the skipped type is one WARN for the whole walk, not one per root.
+    CHECK(prefab->entityCount() == 4U);
+    CHECK(log.warnCount() == 1);
+    CHECK(log.errorCount() == 0);
+}
+
+TEST_CASE("prefab: fromWorld refuses a World with several roots and leaves it whole (PW28)") {
+    std::optional<World> held;
+    held.emplace();
+    const Entity first = make(*held, "First", Entity{}, at(Vec3{1.0F, 0.0F, 0.0F}));
+    const Entity second = make(*held, "Second", Entity{}, at(Vec3{2.0F, 0.0F, 0.0F}));
+    const Entity kid = make(*held, "Kid", first, at(Vec3{0.0F, 3.0F, 0.0F}));
+
+    CHECK_FALSE(Prefab::fromWorld(std::move(*held)).has_value());
+
+    // A refusal moves nothing: the caller's World still holds all three, with their names, parents and Transforms.
+    CHECK(held->entityCount() == 3U);
+    CHECK(held->alive(first));
+    CHECK(held->alive(second));
+    CHECK(held->alive(kid));
+    CHECK(nameOf(*held, kid) == "Kid");
+    CHECK(held->parent(kid) == first);
+    CHECK(transformOf(*held, kid).position == Vec3{0.0F, 3.0F, 0.0F});
+}
+
+TEST_CASE("prefab: a moved-from Prefab instantiates nothing and leaves the destination alone (PW29)") {
+    std::optional<Prefab> held(storedByHand(Transform{}));
+    const Prefab taken = std::move(*held);
+    REQUIRE(taken.entityCount() == 4U);
+
+    World destination;
+    const Entity filler = destination.create();
+    const LogCount log;
+    CHECK_FALSE(held->instantiate(destination, Transform{}).valid());
+    CHECK(destination.entityCount() == 1U);
+    CHECK(destination.alive(filler));
+    CHECK(log.errorCount() == 0);
+    CHECK(log.warnCount() == 0);
+}
+
+TEST_CASE("prefab: the placement scales a stored position axis by axis, then rotates it (PW30)") {
+    // A different value on every axis of the stored position and of the placement scale: a uniform scale, or a stored
+    // position on x alone, cannot tell which scale component multiplies which position component.
+    const Prefab prefab = storedByHand(at(Vec3{1.0F, 2.0F, 3.0F}));
+    Transform placement;
+    placement.position = Vec3{10.0F, 20.0F, 30.0F};
+    placement.rotation = about(Vec3{0.0F, 1.0F, 0.0F}, 90.0F);
+    placement.scale = Vec3{2.0F, 3.0F, 5.0F};
+
+    World destination;
+    const Entity root = prefab.instantiate(destination, placement);
+    REQUIRE(root.valid());
+    // S * stored = (2, 6, 15); a +90 degree turn about +Y sends (x, y, z) to (z, y, -x), giving (15, 6, -2).
+    const Transform placed = transformOf(destination, root);
+    CHECK(engine::approxEquals(placed.position, Vec3{25.0F, 26.0F, 28.0F}));
+    CHECK(engine::approxEquals(placed.scale, Vec3{2.0F, 3.0F, 5.0F}));
+}
