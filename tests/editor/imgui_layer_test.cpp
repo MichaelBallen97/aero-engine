@@ -31249,12 +31249,15 @@ TEST_CASE("editor: a prefab dropped in the viewport over an entity stays a scene
     REQUIRE(camera != nullptr);
 
     // An entity on the ray through a point off to the side, three units from the eye, and nearer than anything the new
-    // project holds there: the pick under the cursor finds it.
+    // project holds there, so the pick under the cursor finds it. With no cooked shaders no image is laid out, every
+    // point candidate projects onto the click and the lowest index wins, so the premise is a hit, not which entity.
     const engine::Vec2 ndc{0.6F, -0.3F};
     const engine::editor::Ray ray = engine::editor::viewportRay(*camera, ndc, viewport->aspect());
-    const engine::Entity under =
-        makeNamedEntity(app->world(), "Under", engine::Transform{.position = ray.origin + ray.direction * 3.0F});
-    REQUIRE(viewport->pickAt(app->world(), ndc) == under);
+    static_cast<void>(
+        makeNamedEntity(app->world(), "Under", engine::Transform{.position = ray.origin + ray.direction * 3.0F}));
+    const engine::Entity under = viewport->pickAt(app->world(), ndc);
+    REQUIRE(under.valid());
+    const std::size_t childrenUnder = app->world().childCount(under);
     const engine::Vec3 expected =
         engine::editor::dropPlacementPoint(engine::editor::viewportRay(*camera, ndc, viewport->aspect()));
 
@@ -31268,7 +31271,7 @@ TEST_CASE("editor: a prefab dropped in the viewport over an entity stays a scene
         REQUIRE(crate.valid());
         // A viewport drop is a scene root at the ray's point, whatever lies under the cursor.
         CHECK_FALSE(app->world().parent(crate).valid());
-        CHECK(app->world().childCount(under) == 0U);
+        CHECK(app->world().childCount(under) == childrenUnder);
         const engine::Transform* placed = app->world().get<engine::Transform>(crate);
         REQUIRE(placed != nullptr);
         CHECK(placed->position == expected);
