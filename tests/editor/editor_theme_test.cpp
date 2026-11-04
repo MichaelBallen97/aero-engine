@@ -221,6 +221,7 @@ TEST_CASE("theme: Category B is byte-identical to the branch point (task E.6.1, 
     checkSrgb8(t.assetKind.audio, {0xA0U, 0x60U, 0xC0U, 255U});
     checkSrgb8(t.assetKind.text, {0x90U, 0x90U, 0x90U, 255U});
     checkSrgb8(t.assetKind.material, {0xE0U, 0x70U, 0x45U, 255U});
+    checkSrgb8(t.assetKind.prefab, {0x40U, 0xB0U, 0xA0U, 255U});  // task 4.4.4: a teal
     checkSrgb8(t.assetKind.unknown, {0x50U, 0x50U, 0x50U, 255U});
 
     // The swatch label pair and its rule (asset_tile.cpp:24/:84, material_card.cpp:43-46).

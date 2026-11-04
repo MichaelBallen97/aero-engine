@@ -1988,6 +1988,9 @@ void EditorApp::applyHierarchyDrop(const HierarchyAssetDrop& drop) {
         case DropAction::InstantiateModel:
             instantiateModelDrop(*record, drop.targetRow, Transform{});  // LOCAL identity under the row
             break;
+        case DropAction::InstantiatePrefab:
+            instantiatePrefabDrop(*record, drop.targetRow, Transform{});  // LOCAL identity under the row
+            break;
         case DropAction::AssignMaterial:
             pushMaterialAssign(drop.targetRow, record->guid);
             break;
@@ -2021,6 +2024,12 @@ void EditorApp::applyViewportDrop(const ViewportAssetDrop& drop) {
             // a finite point, including the parallel, behind-the-eye and unbuildable cases.
             const Ray ray = viewportRay(viewportPanel->camera(), drop.ndc, viewportPanel->aspect());
             instantiateModelDrop(*record, Entity{}, Transform{.position = dropPlacementPoint(ray)});
+            break;
+        }
+        case DropAction::InstantiatePrefab: {
+            // The same placement rule as a model: resolved at the drain, from the camera as it is NOW.
+            const Ray ray = viewportRay(viewportPanel->camera(), drop.ndc, viewportPanel->aspect());
+            instantiatePrefabDrop(*record, Entity{}, Transform{.position = dropPlacementPoint(ray)});
             break;
         }
         case DropAction::AssignMaterial:
@@ -2080,6 +2089,24 @@ void EditorApp::pushMaterialAssign(Entity entity, Guid material) {
         cmd, std::make_unique<SetFieldCommand>(entity, meshRendererId, "material", std::string(MESH_RENDERER_TYPE_NAME),
                                                *before, FieldValue{material}));
     commandStack.breakMergeChain();  // AFTER the push
+}
+
+// task 4.4.4: the file is read and parsed HERE, at the drain, so an edit made since the scan is what lands. A failure
+// is one WARN and nothing is created. The command takes the Prefab by value and holds it for its life.
+void EditorApp::instantiatePrefabDrop(const AssetRecord& record, Entity parent, const Transform& placement) {
+    const FileReadResult file = readTextFile(std::string(assetDatabase.root()) + '/' + record.relativePath);
+    if (!file.text.has_value()) {
+        AERO_LOG_WARN("assets: this prefab could not be read -- {}", file.error);
+        return;
+    }
+    PrefabReadResult read = prefabFromText(*file.text);
+    if (!read.prefab.has_value()) {
+        AERO_LOG_WARN("assets: this prefab could not be read -- {}", read.message);
+        return;
+    }
+    CommandContext cmd{sceneWorld, sceneSelection, rootOrder};
+    (void)commandStack.push(cmd, std::make_unique<InstantiatePrefabCommand>(std::move(*read.prefab), parent, placement,
+                                                                            sceneSelection.entities()));
 }
 
 void EditorApp::instantiateModelDrop(const AssetRecord& record, Entity parent, const Transform& placement) {

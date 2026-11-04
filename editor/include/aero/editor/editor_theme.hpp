@@ -233,6 +233,7 @@ struct ThemeAssetKinds {
     Srgb8 text{0x90U, 0x90U, 0x90U, 255U};      // a neutral grey
     Srgb8 material{0xE0U, 0x70U, 0x45U, 255U};  // a warm coral
     Srgb8 script{0xD0U, 0xB0U, 0x40U, 255U};    // task 4.4.1: a gold
+    Srgb8 prefab{0x40U, 0xB0U, 0xA0U, 255U};    // task 4.4.4: a teal
     Srgb8 unknown{0x50U, 0x50U, 0x50U, 255U};   // a darker grey
     Srgb8 folderTab{107U, 118U, 134U, 255U};    // task E.6.3 (D3): the folder's lighter tab, above the body
 };

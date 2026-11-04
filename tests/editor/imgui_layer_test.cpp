@@ -30484,3 +30484,291 @@ TEST_CASE("editor: the ScriptComponent picker offers no asset of another kind be
     CHECK(app->tick() == false);
     app.reset();
 }
+
+// ---- task 4.4.4 (I370-I372): a prefab dropped into the scene is ONE undoable command
+namespace {
+
+// A one-root scene document written by hand: Crate (turned half a circle about Y, doubled) with one child, Lid. The
+// root sits at the origin, so a placement shows up unchanged in the copy's position.
+constexpr std::string_view CRATE_PREFAB_TEXT = R"({
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "name": "Crate",
+      "components": {
+        "engine::Transform": {
+          "position": {"x": 0, "y": 0, "z": 0},
+          "rotation": {"x": 0, "y": 1, "z": 0, "w": 0},
+          "scale": {"x": 2, "y": 2, "z": 2}
+        }
+      }
+    },
+    {
+      "id": 2,
+      "name": "Lid",
+      "parent": 1,
+      "components": {
+        "engine::Transform": {
+          "position": {"x": 0, "y": 1, "z": 0}
+        }
+      }
+    }
+  ]
+})";
+
+constexpr std::uint8_t PREFAB_KIND = static_cast<std::uint8_t>(engine::editor::AssetKind::Prefab);
+
+// A new project holding crate.aeroprefab. Self-contained on purpose: makeDropProject sits inside the shader-tools
+// block above, and a prefab drop needs no shader.
+[[nodiscard]] std::string makePrefabDropProject() {
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/crate.aeroprefab", CRATE_PREFAB_TEXT).empty());
+    return created.root;
+}
+
+// Every WARN record whose text starts "assets: ", counted. Installed after the app is created, because create()
+// installs the Console's own sink.
+class PrefabDropWarnCount {
+public:
+    PrefabDropWarnCount() {
+        engine::setLogCallback([this](const engine::LogRecord& record) {
+            if (record.level == engine::LogLevel::Warn && record.message.starts_with("assets: ")) {
+                ++warns;
+            }
+        });
+    }
+    PrefabDropWarnCount(const PrefabDropWarnCount&) = delete;
+    PrefabDropWarnCount& operator=(const PrefabDropWarnCount&) = delete;
+    PrefabDropWarnCount(PrefabDropWarnCount&&) = delete;
+    PrefabDropWarnCount& operator=(PrefabDropWarnCount&&) = delete;
+    ~PrefabDropWarnCount() { engine::setLogCallback({}); }
+
+    [[nodiscard]] int count() const noexcept { return warns; }
+
+private:
+    int warns = 0;
+};
+
+[[nodiscard]] std::optional<engine::editor::EditorApp> openPrefabDropApp(engine::platform::Context& ctx,
+                                                                         engine::platform::Window& window,
+                                                                         engine::rhi::Device& device,
+                                                                         const std::string& root) {
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(device, window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    return app;
+}
+
+// The live entity of this name, or Entity{}. The first match in creation order.
+[[nodiscard]] engine::Entity entityNamed(const engine::World& world, std::string_view name) {
+    engine::Entity found{};
+    world.eachEntity([&](engine::Entity entity) {
+        if (!found.valid() && world.name(entity) == name) {
+            found = entity;
+        }
+    });
+    return found;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: a prefab dropped in the viewport lands at the ray's point, selected, as one entry (task 4.4.4, I370)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "prefab drop i370", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makePrefabDropProject();
+    std::optional<engine::editor::EditorApp> app = openPrefabDropApp(ctx, *window, *device, root);
+    REQUIRE(app.has_value());
+    const std::optional<engine::Guid> prefab = app->assetGuidForPath("crate.aeroprefab");
+    REQUIRE(prefab.has_value());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    REQUIRE(app->viewportCamera() != nullptr);
+
+    // The point the drain will compute: read BEFORE the tick, from the camera and aspect that tick will see.
+    const engine::Vec2 ndc{0.25F, -0.4F};
+    const engine::Vec3 expected = engine::editor::dropPlacementPoint(
+        engine::editor::viewportRay(*app->viewportCamera(), ndc, viewport->aspect()));
+
+    const std::size_t before = app->world().entityCount();
+    const std::size_t entriesBefore = app->commands().count();
+    app->requestViewportAssetDrop(*prefab, PREFAB_KIND, ndc);
+    REQUIRE(app->tick());
+
+    if (engine::editor::sceneIoAvailable()) {
+        CHECK(app->world().entityCount() == before + 2);  // Crate and Lid
+        CHECK(app->commands().count() == entriesBefore + 1);
+        const engine::Entity crate = entityNamed(app->world(), "Crate");
+        REQUIRE(crate.valid());
+        CHECK_FALSE(app->world().parent(crate).valid());
+        const engine::Transform* placed = app->world().get<engine::Transform>(crate);
+        REQUIRE(placed != nullptr);
+        CHECK(placed->position == expected);  // the saved root sat at the origin, so only the point remains
+        CHECK((placed->rotation == engine::Quat{0.0F, 1.0F, 0.0F, 0.0F}));  // the saved rotation survives
+        CHECK(placed->scale == engine::Vec3{2.0F, 2.0F, 2.0F});             // and so does the saved scale
+        const engine::Entity lid = entityNamed(app->world(), "Lid");
+        REQUIRE(lid.valid());
+        CHECK(app->world().parent(lid) == crate);
+        CHECK(app->selection().count() == 1);
+        CHECK(app->selection().primary() == crate);
+    } else {
+        // Tools OFF: there is no reader, so the drop refuses and creates nothing (I372 counts the WARN).
+        CHECK(app->world().entityCount() == before);
+        CHECK(app->commands().count() == entriesBefore);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a prefab dropped on the Hierarchy is local to its row and each drop undoes whole (task 4.4.4, I371)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "prefab drop i371", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makePrefabDropProject();
+    std::optional<engine::editor::EditorApp> app = openPrefabDropApp(ctx, *window, *device, root);
+    REQUIRE(app.has_value());
+    const std::optional<engine::Guid> prefab = app->assetGuidForPath("crate.aeroprefab");
+    REQUIRE(prefab.has_value());
+
+    if (!engine::editor::sceneIoAvailable()) {
+        const std::size_t count = app->world().entityCount();
+        app->requestHierarchyAssetDrop(*prefab, PREFAB_KIND, engine::Entity{});
+        REQUIRE(app->tick());
+        CHECK(app->world().entityCount() == count);
+        CHECK_FALSE(app->commands().canRedo());
+    } else {
+        // The void: a scene root, with an identity placement, so the saved transform is exactly what lands.
+        const std::size_t before = app->world().entityCount();
+        app->requestHierarchyAssetDrop(*prefab, PREFAB_KIND, engine::Entity{});
+        REQUIRE(app->tick());
+        REQUIRE(app->world().entityCount() == before + 2);
+        const engine::Entity voidCrate = entityNamed(app->world(), "Crate");
+        REQUIRE(voidCrate.valid());
+        CHECK_FALSE(app->world().parent(voidCrate).valid());
+        const engine::Transform* atRoot = app->world().get<engine::Transform>(voidCrate);
+        REQUIRE(atRoot != nullptr);
+        CHECK(atRoot->position == engine::Vec3{});
+        CHECK(atRoot->scale == engine::Vec3{2.0F, 2.0F, 2.0F});
+
+        // ONE undo removes the whole tree, one redo restores it.
+        app->requestUndo();
+        REQUIRE(app->tick());
+        CHECK(app->world().entityCount() == before);
+        CHECK_FALSE(entityNamed(app->world(), "Crate").valid());
+        app->requestRedo();
+        REQUIRE(app->tick());
+        CHECK(app->world().entityCount() == before + 2);
+        CHECK(entityNamed(app->world(), "Crate").valid());
+
+        // A row: the copy is that row's child, and its placement is LOCAL identity, never a world point.
+        engine::Entity row{};
+        app->world().eachEntity([&row, &app](engine::Entity e) {
+            if (!row.valid() && !app->world().parent(e).valid() && app->world().name(e) != "Crate") {
+                row = e;
+            }
+        });
+        REQUIRE(row.valid());
+        const std::size_t beforeRow = app->world().entityCount();
+        app->requestHierarchyAssetDrop(*prefab, PREFAB_KIND, row);
+        REQUIRE(app->tick());
+        REQUIRE(app->world().entityCount() == beforeRow + 2);
+        const engine::Entity selected = app->selection().primary();
+        REQUIRE(selected.valid());
+        CHECK(app->world().name(selected) == "Crate");
+        CHECK(app->world().parent(selected) == row);
+        const engine::Transform* underRow = app->world().get<engine::Transform>(selected);
+        REQUIRE(underRow != nullptr);
+        CHECK(underRow->position == engine::Vec3{});
+        CHECK(underRow->scale == engine::Vec3{2.0F, 2.0F, 2.0F});
+
+        app->requestUndo();
+        REQUIRE(app->tick());
+        CHECK(app->world().entityCount() == beforeRow);
+        app->requestRedo();
+        REQUIRE(app->tick());
+        CHECK(app->world().entityCount() == beforeRow + 2);
+        CHECK(app->world().parent(selected) == row);  // the redo restored the SAME entity under the same row
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a prefab drop with no record, or no reader, warns once and creates nothing (task 4.4.4, I372)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "prefab drop i372", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makePrefabDropProject();
+    std::optional<engine::editor::EditorApp> app = openPrefabDropApp(ctx, *window, *device, root);
+    REQUIRE(app.has_value());
+    const std::optional<engine::Guid> prefab = app->assetGuidForPath("crate.aeroprefab");
+    REQUIRE(prefab.has_value());
+
+    const std::size_t before = app->world().entityCount();
+    const std::size_t entriesBefore = app->commands().count();
+
+    {
+        // A guid no record has: the payload is a hint, the database is the authority (INV-D8).
+        const PrefabDropWarnCount log;
+        const engine::Guid stranger{0xFEEDFACECAFEBEEFULL, 0x0123456789ABCDEFULL};
+        app->requestHierarchyAssetDrop(stranger, PREFAB_KIND, engine::Entity{});
+        REQUIRE(app->tick());
+        CHECK(log.count() == 1);
+        CHECK(app->world().entityCount() == before);
+        CHECK(app->commands().count() == entriesBefore);
+    }
+
+    if (!engine::editor::sceneIoAvailable()) {
+        // Tools OFF: a live record, and no reader. One WARN, and nothing created.
+        const PrefabDropWarnCount log;
+        app->requestHierarchyAssetDrop(*prefab, PREFAB_KIND, engine::Entity{});
+        REQUIRE(app->tick());
+        CHECK(log.count() == 1);
+        CHECK(app->world().entityCount() == before);
+        CHECK(app->commands().count() == entriesBefore);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

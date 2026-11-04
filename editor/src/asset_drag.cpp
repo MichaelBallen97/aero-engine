@@ -71,6 +71,9 @@ bool assetKindIsDraggable(AssetKind kind) noexcept {
         // rows are already None, so nothing outside the new surface changes behaviour.
         case AssetKind::Audio:
             return true;
+        // task 4.4.4: a prefab drags onto a scene surface, and onto an asset field that names one.
+        case AssetKind::Prefab:
+            return true;
         case AssetKind::Folder:
         case AssetKind::Text:
         case AssetKind::Unknown:
@@ -138,6 +141,8 @@ std::string_view dropActionLabel(DropAction action) noexcept {
             return "bind texture slot";
         case DropAction::AssignAssetReference:
             return "assign asset reference";
+        case DropAction::InstantiatePrefab:
+            return "instantiate prefab";
     }
     return "none";  // unreachable; enumerated so a new DropAction is a -Wswitch warning
 }
@@ -163,6 +168,19 @@ DropAction classifyAssetDrop(AssetKind kind, DropSurface surface, bool targetHas
                 case DropSurface::HierarchyVoid:
                 case DropSurface::Viewport:
                     return DropAction::InstantiateModel;
+                case DropSurface::MaterialSlot:
+                    return DropAction::None;
+                case DropSurface::AssetField:
+                    return assetFieldRow();
+            }
+            return DropAction::None;
+        // task 4.4.4: Model's shape -- the three scene surfaces copy the tree, a material slot refuses.
+        case AssetKind::Prefab:
+            switch (surface) {
+                case DropSurface::HierarchyRow:
+                case DropSurface::HierarchyVoid:
+                case DropSurface::Viewport:
+                    return DropAction::InstantiatePrefab;
                 case DropSurface::MaterialSlot:
                     return DropAction::None;
                 case DropSurface::AssetField:

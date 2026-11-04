@@ -268,8 +268,8 @@ TEST_CASE("prefab_asset: under a parent the copy is linked and keeps its place a
     static_cast<void>(makeNamed(world, "B", parent, Vec3{}));
     const Entity loose = makeNamed(world, "C", Entity{}, Vec3{});
 
-    auto command = std::make_unique<InstantiatePrefabCommand>(makeCratePrefab(), parent, Transform{},
-                                                              std::span<const Entity>{});
+    auto command =
+        std::make_unique<InstantiatePrefabCommand>(makeCratePrefab(), parent, Transform{}, std::span<const Entity>{});
     const InstantiatePrefabCommand* raw = command.get();
     REQUIRE(stack.push(ctx, std::move(command)));
     const Entity root = raw->createdRoot();
@@ -309,8 +309,8 @@ TEST_CASE("prefab_asset: a dead parent refuses, changing nothing and recording n
     CHECK(selection.count() == 1);
     CHECK(selection.primary() == keep);
 
-    CHECK_FALSE(stack.push(ctx, std::make_unique<InstantiatePrefabCommand>(makeCratePrefab(), doomed, dropPlacement(),
-                                                                           selectionBefore)));
+    CHECK_FALSE(stack.push(
+        ctx, std::make_unique<InstantiatePrefabCommand>(makeCratePrefab(), doomed, dropPlacement(), selectionBefore)));
     CHECK(liveEntityCount(world) == before);
     CHECK(stack.count() == 0);
     CHECK(selection.count() == 1);

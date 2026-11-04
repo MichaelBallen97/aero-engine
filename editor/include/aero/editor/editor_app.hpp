@@ -892,6 +892,9 @@ private:
     // The import -> plan -> command sequence. `placement` is the ROOT entity's local Transform, so the
     // same plan serves a viewport drop (a world point) and a Hierarchy drop (local identity).
     void instantiateModelDrop(const AssetRecord& record, Entity parent, const Transform& placement);
+    // task 4.4.4: the same sequence for a .aeroprefab -- read, parse, one InstantiatePrefabCommand. `placement` is the
+    // copy's root placement composed with the saved root's own Transform.
+    void instantiatePrefabDrop(const AssetRecord& record, Entity parent, const Transform& placement);
     // A material assignment is a SetFieldCommand on MeshRenderer's "material" field -- no new command
     // type, and undo comes free.
     void pushMaterialAssign(Entity entity, Guid material);

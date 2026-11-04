@@ -59,19 +59,23 @@ namespace {
 
 constexpr Guid SAMPLE_GUID{0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
 
-// The five AssetKinds a payload can legally carry plus the four it cannot -- ALL EIGHT, spelled out,
-// so a future inserted kind is a compile-visible edit here rather than a silently unrouted row.
-constexpr std::array<AssetKind, 8> ALL_KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+// The six AssetKinds a payload can legally carry plus the three it cannot -- ALL NINE (task 4.4.4 added Prefab),
+// spelled out, so a future inserted kind is a compile-visible edit here rather than a silently unrouted row.
+constexpr std::array<AssetKind, 9> ALL_KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
                                              AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
-                                             AssetKind::Script, AssetKind::Unknown};
+                                             AssetKind::Script, AssetKind::Prefab,  AssetKind::Unknown};
 constexpr std::array<DropSurface, 5> ALL_SURFACES{DropSurface::HierarchyRow, DropSurface::HierarchyVoid,
                                                   DropSurface::Viewport, DropSurface::MaterialSlot,
                                                   DropSurface::AssetField};
 // task E.3.3: every DropAction, in enum order -- DR11's second injectivity loop, which had only a
 // surface loop before the fifth action existed.
-constexpr std::array<DropAction, 5> ALL_ACTIONS{DropAction::None, DropAction::InstantiateModel,
-                                                DropAction::AssignMaterial, DropAction::BindTextureSlot,
-                                                DropAction::AssignAssetReference};
+// task 4.4.4 appended InstantiatePrefab: six.
+constexpr std::array<DropAction, 6> ALL_ACTIONS{DropAction::None,
+                                                DropAction::InstantiateModel,
+                                                DropAction::AssignMaterial,
+                                                DropAction::BindTextureSlot,
+                                                DropAction::AssignAssetReference,
+                                                DropAction::InstantiatePrefab};
 
 // The whole file, or "" when it could not be read. Binary mode: the pins below are line- and
 // token-oriented and must not depend on a text-mode CRLF translation the Windows lane would apply.
@@ -277,7 +281,7 @@ TEST_CASE("asset_drag: classifyAssetDrop's whole 35-row matrix (DR7)") {
 }
 
 TEST_CASE("asset_drag: classifyAssetDrop is TOTAL over kind x surface x flag (DR8)") {
-    // Every one of the 80 combinations answers something; nothing is left to a default: arm, and the
+    // Every one of the 90 combinations answers something; nothing is left to a default: arm, and the
     // function never depends on an out-of-range value.
     std::size_t seen = 0;
     for (const AssetKind kind : ALL_KINDS) {
@@ -292,7 +296,8 @@ TEST_CASE("asset_drag: classifyAssetDrop is TOTAL over kind x surface x flag (DR
             }
         }
     }
-    CHECK(seen == 80);  // 8 kinds (task 4.4.1 added Script) x 5 surfaces (task E.3.3 appended AssetField) x 2 flags
+    // 9 kinds (task 4.4.1 added Script, task 4.4.4 Prefab) x 5 surfaces (task E.3.3 appended AssetField) x 2 flags
+    CHECK(seen == 90);
 }
 
 TEST_CASE("asset_drag: targetHasMeshRenderer is consulted ONLY on the two Material rows (DR9)") {
@@ -312,7 +317,7 @@ TEST_CASE("asset_drag: targetHasMeshRenderer is consulted ONLY on the two Materi
     }
 }
 
-TEST_CASE("asset_drag: assetKindIsDraggable answers all eight kinds individually (DR10)") {
+TEST_CASE("asset_drag: assetKindIsDraggable answers all nine kinds individually (DR10)") {
     // Asserted one by one, never through a helper, so a future INSERTED kind reddens here rather than
     // silently defaulting to "not draggable".
     CHECK_FALSE(assetKindIsDraggable(AssetKind::Folder));
@@ -322,13 +327,15 @@ TEST_CASE("asset_drag: assetKindIsDraggable answers all eight kinds individually
     CHECK_FALSE(assetKindIsDraggable(AssetKind::Text));
     CHECK(assetKindIsDraggable(AssetKind::Material));
     CHECK(assetKindIsDraggable(AssetKind::Script));  // task 4.4.1: ScriptComponent::script is a drop target
+    CHECK(assetKindIsDraggable(AssetKind::Prefab));  // task 4.4.4: a prefab drags onto a scene surface
     CHECK_FALSE(assetKindIsDraggable(AssetKind::Unknown));
 
     std::size_t draggable = 0;
     for (const AssetKind kind : engine::editor::ASSET_KIND_FILTER_OPTIONS) {
         draggable += assetKindIsDraggable(kind) ? 1U : 0U;
     }
-    CHECK(draggable == 5);  // Texture, Model, Material, Audio (task E.3.3) and Script (task 4.4.1)
+    // Texture, Model, Material, Audio (task E.3.3), Script (task 4.4.1) and Prefab (task 4.4.4)
+    CHECK(draggable == 6);
 }
 
 TEST_CASE("asset_drag: dropSurfaceLabel and dropActionLabel are total and INJECTIVE (DR11)") {
@@ -345,6 +352,7 @@ TEST_CASE("asset_drag: dropSurfaceLabel and dropActionLabel are total and INJECT
     CHECK(dropActionLabel(DropAction::AssignMaterial) == std::string_view("assign material"));
     CHECK(dropActionLabel(DropAction::BindTextureSlot) == std::string_view("bind texture slot"));
     CHECK(dropActionLabel(DropAction::AssignAssetReference) == std::string_view("assign asset reference"));
+    CHECK(dropActionLabel(DropAction::InstantiatePrefab) == std::string_view("instantiate prefab"));
 
     std::vector<std::string_view> surfaces;
     for (const DropSurface surface : ALL_SURFACES) {
@@ -716,7 +724,7 @@ TEST_CASE("AR5: the vocabulary IS the draggable set -- the derivation, in both d
             ++resolvable;
         }
     }
-    CHECK(resolvable == 5);
+    CHECK(resolvable == 6);  // task 4.4.4: Prefab joined the five
 }
 
 TEST_CASE("AR6: the fifth surface and the fifth action have their own labels") {
@@ -749,7 +757,7 @@ TEST_CASE("AR7: the PICKER's accept predicate is this matrix, stated at the DRAG
     }
     // ANTI-VACUITY: a predicate that always answered false would satisfy none of these.
     CHECK(slotAccepts == 1);
-    CHECK(fieldAccepts == 5);
+    CHECK(fieldAccepts == 6);  // task 4.4.4: Prefab joined the five
     CHECK(audioAccepts == 1);
 }
 
@@ -985,4 +993,48 @@ TEST_CASE("asset_drag: a Script is refused on the four scene surfaces and accept
         CHECK((classifyAssetDrop(AssetKind::Script, DropSurface::AssetField, false, other) == DropAction::None));
     }
     CHECK(assetKindIsDraggable(AssetKind::Script));
+}
+
+TEST_CASE("asset_drag: a Prefab instantiates on the three scene surfaces and is refused on a slot (DR29)") {
+    for (const DropSurface surface : {DropSurface::HierarchyRow, DropSurface::HierarchyVoid, DropSurface::Viewport}) {
+        CAPTURE(dropSurfaceLabel(surface));
+        for (const bool flag : {false, true}) {
+            CHECK((classifyAssetDrop(AssetKind::Prefab, surface, flag, std::nullopt) == DropAction::InstantiatePrefab));
+        }
+    }
+    for (const bool flag : {false, true}) {
+        CHECK(
+            (classifyAssetDrop(AssetKind::Prefab, DropSurface::MaterialSlot, flag, std::nullopt) == DropAction::None));
+    }
+    // The asset field's row is the composed one: unconstrained or naming Prefab assigns, naming another kind refuses.
+    CHECK((classifyAssetDrop(AssetKind::Prefab, DropSurface::AssetField, false, std::nullopt) ==
+           DropAction::AssignAssetReference));
+    CHECK((classifyAssetDrop(AssetKind::Prefab, DropSurface::AssetField, false, AssetKind::Prefab) ==
+           DropAction::AssignAssetReference));
+    CHECK(
+        (classifyAssetDrop(AssetKind::Prefab, DropSurface::AssetField, false, AssetKind::Texture) == DropAction::None));
+    // And no other kind reaches the new action on any surface.
+    for (const AssetKind kind : ALL_KINDS) {
+        if (kind == AssetKind::Prefab) {
+            continue;
+        }
+        for (const DropSurface surface : {DropSurface::HierarchyRow, DropSurface::HierarchyVoid, DropSurface::Viewport,
+                                          DropSurface::MaterialSlot, DropSurface::AssetField}) {
+            CAPTURE(static_cast<int>(kind));
+            CHECK((classifyAssetDrop(kind, surface, true, std::nullopt) != DropAction::InstantiatePrefab));
+        }
+    }
+}
+
+TEST_CASE("asset_drag: the token prefab resolves through the derivation, and nothing near it does (AR9)") {
+    using engine::editor::assetReferenceKindFromToken;
+    for (const std::string_view token : {"prefab", "Prefab", "PREFAB"}) {
+        CAPTURE(token);
+        REQUIRE(assetReferenceKindFromToken(token).has_value());
+        CHECK((*assetReferenceKindFromToken(token) == AssetKind::Prefab));
+    }
+    for (const std::string_view token : {"prefabs", "aeroprefab", "pref", "prefab "}) {
+        CAPTURE(token);
+        CHECK_FALSE(assetReferenceKindFromToken(token).has_value());
+    }
 }
