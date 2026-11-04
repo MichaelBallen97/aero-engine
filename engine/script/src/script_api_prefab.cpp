@@ -10,6 +10,9 @@
 // Nothing here runs script code (script_api.hpp rules 3 and 4), and a refusal at any step leaves the World as it was:
 // a copy that cannot be handed to the script is destroyed whole.
 //
+// A file is read and parsed on a binding's first spawn of it and kept (ScriptApi::prefabs) until the binding ends; an
+// edit to the file reaches the next binding, and a failed read is not kept.
+//
 // The tools-OFF build has no component serializers, so it cannot parse a prefab; the stop sits after the argument
 // checks, so a bad argument draws its own error in either build and spawn() works in both.
 
@@ -68,14 +71,21 @@ JSValue throwForPath(JSContext* ctx, const Site& site, std::string_view path, co
     return prefab;
 }
 
-// The file at `key` (a normalized res:// path) read and parsed, or an exception pending. The size cap is the module
-// loader's: a file larger than the heap limit is refused before a byte of it is read.
-[[nodiscard]] std::optional<Prefab> loadPrefab(JSContext* ctx, const ScriptApi& api, const Site& site,
-                                               const std::string& key, std::string_view path) {
+// The prefab of the file at `key` (a normalized res:// path), read and parsed on the binding's first spawn of it and
+// kept for the rest of the binding, or null with an exception pending. The key is the normalized form, so no spelling
+// makes a second entry, and a failed read inserts nothing, so a file made good later is read again. The size cap is the
+// module loader's: a file larger than the heap limit is refused before a byte of it is read. The pointer stays valid
+// until the cache is emptied: unordered_map nodes do not move, and nothing here inserts while a copy runs.
+[[nodiscard]] const Prefab* loadPrefab(JSContext* ctx, ScriptApi& api, const Site& site, const std::string& key,
+                                       std::string_view path) {
+    const auto cached = api.prefabs.find(key);
+    if (cached != api.prefabs.end()) {
+        return &cached->second;
+    }
     const std::optional<std::uint64_t> size = api.modules->fileSize(key);
     if (!size.has_value()) {
         static_cast<void>(throwForPath(ctx, site, path, "no such file"));
-        return std::nullopt;
+        return nullptr;
     }
     const auto tooLarge = [&](std::uint64_t bytes) {
         return std::to_string(bytes) + " bytes is more than this VM's heap limit of " +
@@ -83,18 +93,22 @@ JSValue throwForPath(JSContext* ctx, const Site& site, std::string_view path, co
     };
     if (!internal::sourceWithinCap(*size, api.heapLimitBytes)) {
         static_cast<void>(throwForPath(ctx, site, path, tooLarge(*size)));
-        return std::nullopt;
+        return nullptr;
     }
     const std::optional<std::string> text = api.modules->readText(key);
     if (!text.has_value()) {
         static_cast<void>(throwForPath(ctx, site, path, "no such file"));
-        return std::nullopt;
+        return nullptr;
     }
     if (!internal::sourceWithinCap(text->size(), api.heapLimitBytes)) {  // the file grew after its size was read
         static_cast<void>(throwForPath(ctx, site, path, tooLarge(text->size())));
-        return std::nullopt;
+        return nullptr;
     }
-    return parsePrefab(ctx, site, path, *text);
+    std::optional<Prefab> prefab = parsePrefab(ctx, site, path, *text);
+    if (!prefab.has_value()) {
+        return nullptr;
+    }
+    return &api.prefabs.emplace(key, std::move(*prefab)).first->second;
 }
 
 // Checks 4 to 13, the placement already read.
@@ -115,8 +129,8 @@ JSValue throwForPath(JSContext* ctx, const Site& site, std::string_view path, co
     if (api.modules == nullptr) {
         return throwForPath(ctx, site, path, "this VM has no file source");
     }
-    const std::optional<Prefab> prefab = loadPrefab(ctx, api, site, "res://" + *normal, path);
-    if (!prefab.has_value()) {
+    const Prefab* const prefab = loadPrefab(ctx, api, site, "res://" + *normal, path);
+    if (prefab == nullptr) {
         return JS_EXCEPTION;
     }
     World& world = *api.world;

@@ -134,6 +134,9 @@ struct ScriptApi {
     // VM was made with none, and the heap limit that caps a file's size as it caps a module's.
     const VirtualFileSystem* modules = nullptr;
     std::size_t heapLimitBytes = 0;
+    // "res://..." (normalized) -> the prefab read from that file under the current binding. Emptied with the entity
+    // table, so a new binding reads the file again; a failed read inserts nothing. It holds no JSValue.
+    std::unordered_map<std::string, Prefab> prefabs;
 };
 
 enum class ClassCheck : std::uint8_t {
@@ -162,8 +165,8 @@ void releaseScriptApi(JSContext* ctx, ScriptApi& api) noexcept;
 // earlier binding, or no World) gets a new non-extensible object the table never holds. JS_EXCEPTION, with an exception
 // pending, when the heap limit refused it.
 [[nodiscard]] JSValue entityObjectFor(JSContext* ctx, ScriptApi& api, const EntityRef& ref);
-// Frees every held object and empties the table, the destroy queue and the marks. noexcept: JS_FreeValue runs only the
-// shared finalizer (finalizeOpaque), never script code.
+// Frees every held object and empties the table, the destroy queue, the marks and the prefab cache. noexcept:
+// JS_FreeValue runs only the shared finalizer (finalizeOpaque), never script code.
 void releaseEntityObjects(JSContext* ctx, ScriptApi& api) noexcept;
 // A new array holding the entity object of each of `entities`, in order, all of the current binding (the array rule: no
 // World access happens while objects are made). JS_EXCEPTION, with an exception pending, when the heap limit refused

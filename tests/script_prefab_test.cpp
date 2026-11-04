@@ -1,5 +1,5 @@
 // tests/script_prefab_test.cpp -- task 4.4.4: engine.spawn(asset, ...), the three forms that copy a .aeroprefab into
-// the bound World (PR1-PR13 and PR15; the cache cases follow). A TU of aero_tests, which supplies main() from
+// the bound World (PR1-PR20). A TU of aero_tests, which supplies main() from
 // test_main.cpp. A prefab is parsed through the generated scene serializer, so a case that needs a parse opens with
 // `if (!prefabsParse()) { return; }` (the reflect-tools-OFF build has no component table and refuses every parse); the
 // argument-order cases run in both configurations.
@@ -18,6 +18,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -37,6 +38,8 @@ using engine::Quat;
 using engine::Transform;
 using engine::Vec3;
 using engine::script::BindStatus;
+using engine::script::EvalResult;
+using engine::script::EvalStatus;
 using engine::script::ScriptSystem;
 using engine::script::ScriptSystemReport;
 using engine::script::Vm;
@@ -575,6 +578,170 @@ TEST_CASE("prefab: the tools decide only what happens after the argument checks 
     REQUIRE(scene.vm.bindWorld(scene.world) == BindStatus::Ok);
     CHECK(script_test::completion(scene.vm, "String(engine.spawn().alive)") == "true");  // spawn() is unchanged
     CHECK(scene.world.entityCount() == 1U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: a spawn the heap refuses leaves no tree behind, at every limit swept (PR14)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;  // holds the log quiet: each refused allocation is a warning
+    constexpr std::size_t MIB = std::size_t{1024} * 1024;
+    constexpr std::size_t LIMITS = 24;
+    std::size_t refusing = 0;
+    for (std::size_t step = 0; step < LIMITS; ++step) {
+        engine::script::VmConfig config;
+        config.heapLimitBytes = MIB + step * 389U;
+        PrefabScene scene{script_test::patient(config)};
+        // The counter is a typed array made before the loop, so counting allocates nothing; the table holds each
+        // spawned root's object, so the heap fills with them.
+        const EvalResult filled = scene.vm.evaluateScript(
+            "globalThis.count = new Int32Array(1); "
+            "for (;;) { engine.spawn('res://assets/prefabs/three.aeroprefab'); count[0]++; }",
+            "pr14.js");
+        REQUIRE(filled.status == EvalStatus::OutOfMemory);
+        refusing += scene.vm.stats().refusedAllocations > 0U ? 1U : 0U;
+        scene.vm.unbindWorld();  // frees the table's objects, so there is room to read the counter
+        INFO("limit " << config.heapLimitBytes);
+        const std::string counted = script_test::completion(scene.vm, "String(count[0])");
+        CHECK(counted != "0");
+        CHECK(scene.world.entityCount() == 3U * std::stoul(counted));
+        script_test::expectCleanShutdown(scene.vm);
+    }
+    CHECK(refusing >= 1U);  // a refused allocation logs; the case checks the World, not the log
+}
+
+TEST_CASE("prefab: a path is read once per binding, whichever way it is spelt (PR16)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const std::size_t start = scene.files->readCount();
+    REQUIRE(script_test::completion(scene.vm,
+                                    "engine.spawn('res://assets/prefabs/three.aeroprefab'); "
+                                    "engine.spawn('res://assets/prefabs/three.aeroprefab'); 'ok'") == "ok");
+    CHECK(scene.files->readCount() == start + 1U);
+    CHECK(scene.world.entityCount() == 6U);
+    // Two spellings of one file share the entry: the key is the normalized path, not the script's text.
+    scene.files->set("a/p.aeroprefab", prefabText());
+    const std::size_t beforeSpellings = scene.files->readCount();
+    REQUIRE(script_test::completion(scene.vm,
+                                    "engine.spawn('res://a/./p.aeroprefab'); "
+                                    "engine.spawn('res://a/b/../p.aeroprefab'); "
+                                    "engine.spawn('res://a/p.aeroprefab'); 'ok'") == "ok");
+    CHECK(scene.files->readCount() == beforeSpellings + 1U);
+    CHECK(scene.world.entityCount() == 15U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: an edit during a binding changes nothing until the next bind (PR17)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const std::string spawn = "engine.spawn('res://assets/prefabs/three.aeroprefab'); 'ok'";
+    REQUIRE(script_test::completion(scene.vm, spawn) == "ok");
+    scene.files->set(std::string{THREE_FILE}, sceneJson({entityJson(1, "Solo", 0, "")}));
+    const std::size_t reads = scene.files->readCount();
+    REQUIRE(script_test::completion(scene.vm, spawn) == "ok");
+    CHECK(scene.files->readCount() == reads);  // not re-read per spawn
+    CHECK(scene.named("Root").size() == 2U);
+    CHECK(scene.named("Solo").empty());
+    // The binding ends and a new one starts: the file is read again.
+    scene.vm.unbindWorld();
+    REQUIRE(scene.vm.bindWorld(scene.world) == BindStatus::Ok);
+    REQUIRE(script_test::completion(scene.vm, spawn) == "ok");
+    CHECK(scene.files->readCount() == reads + 1U);
+    CHECK(scene.named("Root").size() == 2U);
+    CHECK(scene.named("Solo").size() == 1U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: a failed read is not remembered, so a file made good later spawns without a rebind (PR18)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const std::string missing = "engine.spawn('res://later.aeroprefab')";
+    CHECK(scene.thrown(missing) == "TypeError: engine.spawn: 'res://later.aeroprefab': no such file");
+    scene.files->set("later.aeroprefab", prefabText());
+    std::size_t reads = scene.files->readCount();
+    CHECK(scene.thrown(missing) == "none");
+    CHECK(scene.files->readCount() == reads + 1U);
+    CHECK(scene.named("Root").size() == 1U);
+
+    // A bad text reads again on every attempt, and a fixed one spawns.
+    const std::string broken = "engine.spawn('res://fixme.aeroprefab')";
+    scene.files->set("fixme.aeroprefab", "{ not json");
+    reads = scene.files->readCount();
+    CHECK(scene.thrown(broken).starts_with("TypeError: engine.spawn: 'res://fixme.aeroprefab': "));
+    CHECK(scene.thrown(broken).starts_with("TypeError: engine.spawn: 'res://fixme.aeroprefab': "));
+    CHECK(scene.files->readCount() == reads + 2U);
+    scene.files->set("fixme.aeroprefab", prefabText());
+    CHECK(scene.thrown(broken) == "none");
+    CHECK(scene.files->readCount() == reads + 3U);
+    CHECK(scene.thrown(broken) == "none");
+    CHECK(scene.files->readCount() == reads + 3U);
+    CHECK(scene.named("Root").size() == 3U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: every end of a binding empties the cache, and a VM shut down with it full is clean (PR19)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const std::string spawn = "engine.spawn('res://assets/prefabs/three.aeroprefab'); 'ok'";
+    REQUIRE(script_test::completion(scene.vm, spawn) == "ok");
+    std::size_t reads = scene.files->readCount();
+    // bindWorld on the World already bound starts a new binding.
+    REQUIRE(scene.vm.bindWorld(scene.world) == BindStatus::Ok);
+    REQUIRE(script_test::completion(scene.vm, spawn) == "ok");
+    CHECK(scene.files->readCount() == reads + 1U);
+    reads = scene.files->readCount();
+    scene.vm.unbindWorld();
+    REQUIRE(scene.vm.bindWorld(scene.world) == BindStatus::Ok);
+    REQUIRE(script_test::completion(scene.vm, spawn) == "ok");
+    CHECK(scene.files->readCount() == reads + 1U);
+    CHECK(scene.world.entityCount() == 9U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);  // the cache is full: the VM's end frees it with the table
+}
+
+TEST_CASE("prefab: a hundred spawns of a three-entity prefab, cold and warm, are reported (PR20)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    constexpr int SPAWNS = 100;
+    constexpr int WARM_RUNS = 8;
+    PrefabScene scene;
+    const std::string run = std::format(
+        "for (let i = 0; i < {}; ++i) {{ engine.spawn('res://assets/prefabs/three.aeroprefab'); }}", SPAWNS);
+    const auto timed = [&]() {
+        const auto start = std::chrono::steady_clock::now();
+        const EvalResult result = scene.vm.evaluateScript(run, "pr20.js");
+        const auto stop = std::chrono::steady_clock::now();
+        REQUIRE(result.status == EvalStatus::Ok);
+        return std::chrono::duration<double, std::milli>(stop - start).count();
+    };
+    const double cold = timed();  // the first spawn parses the file
+    std::vector<double> warm;
+    for (int i = 0; i < WARM_RUNS; ++i) {
+        warm.push_back(timed());
+    }
+    std::ranges::sort(warm);
+    MESSAGE("PR20: ", SPAWNS, " spawns, cold = ", cold, " ms, warm median of ", WARM_RUNS, " = ", warm[warm.size() / 2],
+            " ms");
+    CHECK(scene.world.entityCount() == static_cast<std::size_t>(3 * SPAWNS * (1 + WARM_RUNS)));
     CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
     script_test::expectCleanShutdown(scene.vm);
 }
