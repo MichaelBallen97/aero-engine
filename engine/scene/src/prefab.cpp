@@ -43,7 +43,7 @@ void copyComponents(const World& from, Entity source, World& to, Entity copy, st
             }
             continue;
         }
-        // A tag has no value: getRaw gives a non-null address anyway, and addRaw stores nothing for an empty type.
+        // A tag has no value: getRaw gives a null source for it, and addRaw stores nothing for an empty type.
         to.addRaw(id, copy, from.getRaw(id, source));
         if (!to.hasRaw(id, copy)) {
             AERO_LOG_WARN("scene: a prefab could not copy component '{}' -- it did not take",

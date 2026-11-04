@@ -4,7 +4,8 @@
 //
 // THE THIRD assets-root writeTextFileAtomic call site, after the scene saves' and the sidecars': the write is in
 // prefab_asset.cpp, from a NAMED LOCAL (`prefabAbsolutePath`), which is what keeps the amended INV-A1 a grep. It is NOT
-// in material_panel.cpp, material_session.cpp or asset_browser_panel.cpp, whose pin (I97) forbids the call.
+// in I97's four files, material_panel.cpp, material_preview.cpp, material_edit.cpp and asset_browser_panel.cpp, whose
+// pin forbids the call.
 //
 // It logs nothing, runs nothing in a draw walk, and never deletes: a refusal writes nothing and names why.
 #include <aero/scene/scene.hpp>
@@ -20,8 +21,8 @@ inline constexpr std::size_t MAX_NEW_PREFAB_ATTEMPTS = 64;
 inline constexpr std::string_view FALLBACK_PREFAB_STEM = "Prefab";
 
 // `rootName`, or FALLBACK_PREFAB_STEM when it is empty or validateAssetName refuses it, alone or with the prefab suffix
-// on. The name is checked both ways because a name can fit as a name and not as a file (a trailing '.', 245 bytes), and
-// the reverse is not possible: a refusal of the bare name is a refusal of the file.
+// on. The name is checked both ways because each check can refuse what the other accepts: "Crate." fails alone and
+// passes with the suffix, and 245 bytes passes alone and fails with it.
 [[nodiscard]] std::string prefabFileStem(std::string_view rootName);
 
 struct PrefabSaveResult {
