@@ -146,6 +146,7 @@ add_library(aero_editor_core STATIC
     src/texture_cook_source.cpp  # task 3.3.2 -- the SECOND stb_image TU; PURE, no disk, no UI
     src/material_edit.cpp        # task 3.4.2 -- the PURE document->render bridge (D8); no ImGui, no GPU
     src/material_session.cpp     # task 3.4.2 -- the target/dirty/apply machine; the ONE .aeromat write
+    src/prefab_asset.cpp         # task 4.4.4 -- Save as Prefab below EditorApp
     src/material_panel.cpp       # task 3.4.2 -- the only new ImGui TU
     src/material_preview.cpp     # task 3.4.2 -- the only new GPU TU: target, renderer, texture cache
     src/material_preview_rig.cpp # task E.2.4 -- the preview's camera rig and view builder; PURE, no GPU
