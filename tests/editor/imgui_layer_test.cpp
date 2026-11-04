@@ -30914,7 +30914,7 @@ TEST_CASE(
         REQUIRE(read.prefab.has_value());
         CHECK(read.prefab->entityCount() == 1);  // the row alone: Other, though selected, is not in the file
         CHECK(read.prefab->world().name(read.prefab->root()) == "Crate");
-        const engine::Transform* stored = read.prefab->world().get<engine::Transform>(read.prefab->root());
+        const auto* stored = read.prefab->world().get<engine::Transform>(read.prefab->root());
         REQUIRE(stored != nullptr);
         CHECK(stored->position == engine::Vec3{});  // one root is its own pivot
 

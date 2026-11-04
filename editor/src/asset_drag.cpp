@@ -70,7 +70,6 @@ bool assetKindIsDraggable(AssetKind kind) noexcept {
         // a drag for a non-draggable kind (asset_browser_panel.cpp). Its four pre-existing matrix
         // rows are already None, so nothing outside the new surface changes behaviour.
         case AssetKind::Audio:
-            return true;
         // task 4.4.4: a prefab drags onto a scene surface, and onto an asset field that names one.
         case AssetKind::Prefab:
             return true;

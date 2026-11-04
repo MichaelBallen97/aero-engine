@@ -158,7 +158,7 @@ std::optional<Prefab> Prefab::capture(const World& source, std::span<const Entit
         if (single) {
             result.rootEntity = copy;
         }
-        if (Transform* transform = store.get<Transform>(copy)) {
+        if (auto* transform = store.get<Transform>(copy)) {
             // One root's position is the literal zero, never p - p, which is NaN for a NaN or infinite world
             // position and must not be written into a file.
             transform->position = single ? Vec3{} : worldPosition(source, root) - pivot;
@@ -195,7 +195,7 @@ Entity Prefab::instantiate(World& destination, Transform placement, Entity paren
     if (!root.valid()) {
         return Entity{};
     }
-    if (Transform* stored = destination.get<Transform>(root)) {
+    if (auto* stored = destination.get<Transform>(root)) {
         *stored = placedRoot(*stored, placement);
     } else {
         destination.add<Transform>(root, placement);

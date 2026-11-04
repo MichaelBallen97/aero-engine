@@ -78,7 +78,7 @@ PrefabSaveResult savePrefabFile(const World& world, std::span<const Entity> root
     const std::string relativePath = joinRelative(directoryRel, fileName);
     // A NAMED LOCAL, exactly as the amended INV-A1 requires of every path handed to the one write path.
     const std::string prefabAbsolutePath = std::string(assetsRoot) + "/" + relativePath;
-    if (std::string error = writeTextFileAtomic(prefabAbsolutePath, *text); !error.empty()) {
+    if (const std::string error = writeTextFileAtomic(prefabAbsolutePath, *text); !error.empty()) {
         return refusal(error);
     }
     PrefabSaveResult saved;

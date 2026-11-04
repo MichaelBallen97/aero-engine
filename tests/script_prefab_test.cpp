@@ -132,7 +132,7 @@ struct PrefabScene {
     }
 
     [[nodiscard]] Transform transformOf(Entity entity) const {
-        const Transform* const held = world.get<Transform>(entity);
+        const auto* const held = world.get<Transform>(entity);
         REQUIRE(held != nullptr);
         return *held;
     }
@@ -735,6 +735,7 @@ TEST_CASE("prefab: a hundred spawns of a three-entity prefab, cold and warm, are
     };
     const double cold = timed();  // the first spawn parses the file
     std::vector<double> warm;
+    warm.reserve(static_cast<std::size_t>(WARM_RUNS));
     for (int i = 0; i < WARM_RUNS; ++i) {
         warm.push_back(timed());
     }

@@ -92,7 +92,7 @@ Entity make(World& world, std::string_view name, Entity parent, std::optional<Tr
 [[nodiscard]] std::string nameOf(const World& world, Entity entity) { return std::string(world.name(entity)); }
 
 [[nodiscard]] Transform transformOf(const World& world, Entity entity) {
-    const Transform* transform = world.get<Transform>(entity);
+    const auto* transform = world.get<Transform>(entity);
     REQUIRE(transform != nullptr);
     return *transform;
 }
@@ -267,11 +267,11 @@ TEST_CASE("prefab: components copy through the table, values intact, one WARN pe
 
     const std::vector<Entity> kids = childrenOf(prefab.world(), prefab.root());
     REQUIRE(kids.size() == 2U);
-    const engine::MeshRenderer* copiedRenderer = prefab.world().get<engine::MeshRenderer>(kids[0]);
+    const auto* copiedRenderer = prefab.world().get<engine::MeshRenderer>(kids[0]);
     REQUIRE(copiedRenderer != nullptr);
     CHECK(*copiedRenderer == renderer);
     const Entity leaf = childrenOf(prefab.world(), kids[0])[0];
-    const engine::ScriptComponent* copiedScript = prefab.world().get<engine::ScriptComponent>(leaf);
+    const auto* copiedScript = prefab.world().get<engine::ScriptComponent>(leaf);
     REQUIRE(copiedScript != nullptr);
     CHECK(copiedScript->script == script.script);
     CHECK_FALSE(prefab.world().registered(engine::componentTypeId<PrefabOnlyTag>()));
@@ -509,7 +509,7 @@ TEST_CASE("prefab: a zero placement rotation acts as identity and a NaN one abor
 }
 
 TEST_CASE("prefab: a live parent takes the root last, a dead parent changes nothing (PW16)") {
-    Transform stored = at(Vec3{0.0F, 0.0F, 2.0F});
+    const Transform stored = at(Vec3{0.0F, 0.0F, 2.0F});
     const Prefab prefab = storedByHand(stored);
 
     World destination;

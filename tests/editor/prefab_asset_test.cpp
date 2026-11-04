@@ -84,7 +84,7 @@ namespace {
 [[nodiscard]] Prefab makeCratePrefab() {
     World source;
     const Entity crate = makeNamed(source, "Crate", Entity{}, Vec3{5.0F, 0.0F, 0.0F});
-    Transform* crateTransform = source.get<Transform>(crate);
+    auto* crateTransform = source.get<Transform>(crate);
     REQUIRE(crateTransform != nullptr);
     crateTransform->rotation = engine::fromAxisAngle(Vec3{0.0F, 1.0F, 0.0F}, engine::radians(30.0F));
     crateTransform->scale = Vec3{2.0F, 2.0F, 2.0F};
@@ -404,8 +404,8 @@ TEST_CASE("prefab_asset: the text bridge round-trips one root, and the text is a
     CHECK(after.name(again.root()) == before.name(prefab.root()));
     CHECK(childNames(after, again.root()) == childNames(before, prefab.root()));
 
-    const Transform* storedRoot = before.get<Transform>(prefab.root());
-    const Transform* readRoot = after.get<Transform>(again.root());
+    const auto* storedRoot = before.get<Transform>(prefab.root());
+    const auto* readRoot = after.get<Transform>(again.root());
     REQUIRE(storedRoot != nullptr);
     REQUIRE(readRoot != nullptr);
     CHECK(readRoot->position == storedRoot->position);
@@ -414,7 +414,7 @@ TEST_CASE("prefab_asset: the text bridge round-trips one root, and the text is a
 
     const Entity lid = childNamed(after, again.root(), "Lid");
     REQUIRE(lid.valid());
-    const Transform* readLid = after.get<Transform>(lid);
+    const auto* readLid = after.get<Transform>(lid);
     REQUIRE(readLid != nullptr);
     CHECK(readLid->position == Vec3{0.0F, 1.0F, 0.0F});
     CHECK(childNamed(after, lid, "Hinge").valid());
@@ -428,7 +428,7 @@ TEST_CASE("prefab_asset: a bad file is named by position or by the one-root rule
         return;
     }
 
-    World none;
+    const World none;
     World two;
     static_cast<void>(makeNamed(two, "One", Entity{}, Vec3{}));
     static_cast<void>(makeNamed(two, "Two", Entity{}, Vec3{}));
@@ -625,7 +625,7 @@ TEST_CASE("prefab_asset: one root is saved into the chosen folder and reads back
     CHECK(read.message.empty());
     CHECK(read.prefab->entityCount() == 2);
     CHECK(read.prefab->world().name(read.prefab->root()) == "Crate");
-    const Transform* rootTransform = read.prefab->world().get<Transform>(read.prefab->root());
+    const auto* rootTransform = read.prefab->world().get<Transform>(read.prefab->root());
     REQUIRE(rootTransform != nullptr);
     CHECK(rootTransform->position == Vec3{});  // one root is its own pivot, written as the literal zero
 

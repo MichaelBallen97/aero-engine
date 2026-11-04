@@ -234,9 +234,12 @@ bool readSpawnPlacement(JSContext* ctx, const ScriptApi& api, JSValueConst* argv
     if (view != nullptr) {
         for (int slot = 2; slot <= 3; ++slot) {
             if (!JS_IsUndefined(argv[slot])) {
-                const std::string name{api.table->components()[api.transformComponent].scriptName};
-                static_cast<void>(throwTypeError(ctx, site + ": expected no argument after an engine." + name +
-                                                          ", got " + describeValue(ctx, argv[slot], api)));
+                std::string message = site;
+                message += ": expected no argument after an engine.";
+                message += api.table->components()[api.transformComponent].scriptName;
+                message += ", got ";
+                message += describeValue(ctx, argv[slot], api);
+                static_cast<void>(throwTypeError(ctx, message));
                 return false;
             }
         }
