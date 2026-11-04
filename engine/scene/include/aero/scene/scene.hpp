@@ -15,6 +15,7 @@
 #include <aero/scene/environment.hpp>       // task E.2.1
 #include <aero/scene/light.hpp>             // task 1.3.3
 #include <aero/scene/mesh_renderer.hpp>     // task 1.4.1
+#include <aero/scene/prefab.hpp>            // task 4.4.4
 #include <aero/scene/script_component.hpp>  // task 4.4.1
 #include <aero/scene/spot_light.hpp>        // task E.2.2
 #include <aero/scene/transform.hpp>
