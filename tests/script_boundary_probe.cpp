@@ -102,3 +102,8 @@ static_assert(script::COOK_HEAP_LIMIT_BYTES == std::size_t{1024} * 1024U * 1024U
 static_assert(!std::is_copy_constructible_v<script::ScriptSystem>);
 static_assert(!std::is_move_constructible_v<script::ScriptSystem>);
 static_assert(noexcept(script::scriptEntityStateLabel(script::ScriptEntityState::None)));
+
+// ---- the input binding (task 4.4.3) ----
+// This TU sees no platform header, so vm.hpp compiling here is the proof that the seam needs none: it only names
+// engine::platform::InputState by reference.
+static_assert(noexcept(std::declval<script::Vm&>().unbindInput()));

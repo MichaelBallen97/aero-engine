@@ -8,11 +8,17 @@
 
 #include <SDL3/SDL.h>  // the ONLY place SDL is included in engine/ (boundary rule)
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace engine::platform {
 namespace {
@@ -161,6 +167,104 @@ MouseButton fromSdlButton(std::uint8_t button) {
     }
 }
 
+// SDL gamepad button -> engine GamepadButton, one case per enumerator in SDL's order (SDL_gamepad.h:152-182).
+// Explicit like fromSdlButton: SDL's numbering is the backend's, not a contract. Unknown returns Count (dropped).
+GamepadButton fromSdlGamepadButton(Uint8 button) {
+    switch (button) {
+        case SDL_GAMEPAD_BUTTON_SOUTH:
+            return GamepadButton::South;
+        case SDL_GAMEPAD_BUTTON_EAST:
+            return GamepadButton::East;
+        case SDL_GAMEPAD_BUTTON_WEST:
+            return GamepadButton::West;
+        case SDL_GAMEPAD_BUTTON_NORTH:
+            return GamepadButton::North;
+        case SDL_GAMEPAD_BUTTON_BACK:
+            return GamepadButton::Back;
+        case SDL_GAMEPAD_BUTTON_GUIDE:
+            return GamepadButton::Guide;
+        case SDL_GAMEPAD_BUTTON_START:
+            return GamepadButton::Start;
+        case SDL_GAMEPAD_BUTTON_LEFT_STICK:
+            return GamepadButton::LeftStick;
+        case SDL_GAMEPAD_BUTTON_RIGHT_STICK:
+            return GamepadButton::RightStick;
+        case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
+            return GamepadButton::LeftShoulder;
+        case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:
+            return GamepadButton::RightShoulder;
+        case SDL_GAMEPAD_BUTTON_DPAD_UP:
+            return GamepadButton::DpadUp;
+        case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
+            return GamepadButton::DpadDown;
+        case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
+            return GamepadButton::DpadLeft;
+        case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
+            return GamepadButton::DpadRight;
+        case SDL_GAMEPAD_BUTTON_MISC1:
+            return GamepadButton::Misc1;
+        case SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1:
+            return GamepadButton::RightPaddle1;
+        case SDL_GAMEPAD_BUTTON_LEFT_PADDLE1:
+            return GamepadButton::LeftPaddle1;
+        case SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2:
+            return GamepadButton::RightPaddle2;
+        case SDL_GAMEPAD_BUTTON_LEFT_PADDLE2:
+            return GamepadButton::LeftPaddle2;
+        case SDL_GAMEPAD_BUTTON_TOUCHPAD:
+            return GamepadButton::Touchpad;
+        case SDL_GAMEPAD_BUTTON_MISC2:
+            return GamepadButton::Misc2;
+        case SDL_GAMEPAD_BUTTON_MISC3:
+            return GamepadButton::Misc3;
+        case SDL_GAMEPAD_BUTTON_MISC4:
+            return GamepadButton::Misc4;
+        case SDL_GAMEPAD_BUTTON_MISC5:
+            return GamepadButton::Misc5;
+        case SDL_GAMEPAD_BUTTON_MISC6:
+            return GamepadButton::Misc6;
+        default:
+            return GamepadButton::Count;
+    }
+}
+
+// SDL gamepad axis -> engine GamepadAxis, explicit for the same reason. Unknown returns Count (dropped).
+GamepadAxis fromSdlGamepadAxis(Uint8 axis) {
+    switch (axis) {
+        case SDL_GAMEPAD_AXIS_LEFTX:
+            return GamepadAxis::LeftX;
+        case SDL_GAMEPAD_AXIS_LEFTY:
+            return GamepadAxis::LeftY;
+        case SDL_GAMEPAD_AXIS_RIGHTX:
+            return GamepadAxis::RightX;
+        case SDL_GAMEPAD_AXIS_RIGHTY:
+            return GamepadAxis::RightY;
+        case SDL_GAMEPAD_AXIS_LEFT_TRIGGER:
+            return GamepadAxis::LeftTrigger;
+        case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER:
+            return GamepadAxis::RightTrigger;
+        default:
+            return GamepadAxis::Count;
+    }
+}
+
+// VirtualOnly (task 4.4.3): refuse every real device and skip the slow drivers, so only a virtual pad connects.
+// SDL_HINT_OVERRIDE beats an environment variable (SDL_hints.c:106-109), so a shell cannot let a real pad into a
+// test. SDL_Quit clears every hint, so this runs on every construction, before SDL_Init.
+void setOverrideHint(const char* name, const char* value) {
+    if (!SDL_SetHintWithPriority(name, value, SDL_HINT_OVERRIDE)) {
+        AERO_LOG_WARN("platform: could not set hint {}", name);
+    }
+}
+void setVirtualOnlyHints() {
+    // USB VID 0xFFFF is unassigned; every real driver asks SDL_ShouldIgnoreJoystick, which then refuses everything.
+    setOverrideHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT, "0xFFFF/0xFFFF");
+    setOverrideHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
+    setOverrideHint(SDL_HINT_JOYSTICK_IOKIT, "0");
+    setOverrideHint(SDL_HINT_JOYSTICK_MFI, "0");
+    setOverrideHint(SDL_HINT_JOYSTICK_DIRECTINPUT, "0");  // skips the DirectInput init SDL warns can take a minute
+}
+
 // SDL modifier bitmask -> engine KeyMods. Accumulate in `unsigned` and narrow once (a per-bit `|=`
 // on a uint16 would trip bugprone-narrowing-conversions under --warnings-as-errors).
 KeyMods fromSdlMod(SDL_Keymod mod) {
@@ -284,7 +388,7 @@ std::optional<Event> translate(const SDL_Event& e) {
             return ev;
         }
         default:
-            return std::nullopt;  // still-unmodeled events (display, text, gamepad…) are drained, dropped
+            return std::nullopt;  // still-unmodeled events (display, text…) are drained, dropped
     }
 }
 
@@ -363,6 +467,148 @@ void internal::RawEventAccessor::setRawEventSink(Context& ctx, void (*sink)(void
     ctx.rawEventSinkUser = user;
 }
 
+// ---- Context::GamepadTable ------------------------------------------------------------------
+// The gamepad slots (task 4.4.3). Four player slots hold the pads the Context opened; a pad that arrives with every
+// slot taken waits in a queue, oldest first, and is never opened. No SDL_JoystickID or SDL_Gamepad* leaves this file.
+
+struct Context::GamepadTable {
+    struct Slot {
+        SDL_JoystickID id = 0;
+        SDL_Gamepad* pad = nullptr;  // nullptr: the slot is free
+    };
+    std::array<Slot, MAX_GAMEPADS> slots{};
+    std::vector<SDL_JoystickID> waiting;  // pads with no slot, oldest first; never opened
+
+    GamepadTable() = default;
+    GamepadTable(const GamepadTable&) = delete;
+    GamepadTable& operator=(const GamepadTable&) = delete;
+    GamepadTable(GamepadTable&&) = delete;
+    GamepadTable& operator=(GamepadTable&&) = delete;
+    ~GamepadTable() {
+        for (const Slot& slot : slots) {
+            if (slot.pad != nullptr) {
+                SDL_CloseGamepad(slot.pad);
+            }
+        }
+    }
+
+    // MAX_GAMEPADS when the id holds no slot.
+    [[nodiscard]] std::size_t slotOf(SDL_JoystickID id) const noexcept {
+        for (std::size_t i = 0; i < slots.size(); ++i) {
+            if (slots[i].pad != nullptr && slots[i].id == id) {
+                return i;
+            }
+        }
+        return MAX_GAMEPADS;
+    }
+    // MAX_GAMEPADS when every slot is taken.
+    [[nodiscard]] std::size_t lowestFreeSlot() const noexcept {
+        for (std::size_t i = 0; i < slots.size(); ++i) {
+            if (slots[i].pad == nullptr) {
+                return i;
+            }
+        }
+        return MAX_GAMEPADS;
+    }
+    [[nodiscard]] bool isWaiting(SDL_JoystickID id) const noexcept {
+        return std::find(waiting.begin(), waiting.end(), id) != waiting.end();
+    }
+
+    // Opens `id` into the free slot `slot`. A failed open is one WARN and leaves the slot free.
+    std::optional<Event> open(SDL_JoystickID id, std::size_t slot) {
+        SDL_Gamepad* pad = SDL_OpenGamepad(id);
+        if (pad == nullptr) {
+            AERO_LOG_WARN("platform: gamepad {} could not be opened: {}", id, SDL_GetError());
+            return std::nullopt;
+        }
+        slots[slot] = Slot{id, pad};
+        Event ev;
+        ev.type = EventType::GamepadConnected;
+        ev.gamepad = GamepadDeviceData{static_cast<std::uint8_t>(slot)};
+        return ev;
+    }
+
+    std::optional<Event> onAdded(SDL_JoystickID id) {
+        if (slotOf(id) != MAX_GAMEPADS || isWaiting(id)) {
+            return std::nullopt;
+        }
+        const std::size_t slot = lowestFreeSlot();
+        if (slot == MAX_GAMEPADS) {
+            waiting.push_back(id);
+            return std::nullopt;
+        }
+        return open(id, slot);
+    }
+
+    std::optional<Event> onRemoved(SDL_JoystickID id) {
+        const std::size_t slot = slotOf(id);
+        if (slot == MAX_GAMEPADS) {
+            waiting.erase(std::remove(waiting.begin(), waiting.end(), id), waiting.end());
+            return std::nullopt;
+        }
+        SDL_CloseGamepad(slots[slot].pad);
+        slots[slot] = Slot{};
+        Event ev;
+        ev.type = EventType::GamepadDisconnected;
+        ev.gamepad = GamepadDeviceData{static_cast<std::uint8_t>(slot)};
+        return ev;
+    }
+
+    // Gamepad events only; nullopt for every other type.
+    std::optional<Event> translate(const SDL_Event& e) {
+        switch (e.type) {
+            case SDL_EVENT_GAMEPAD_ADDED:
+                return onAdded(e.gdevice.which);
+            case SDL_EVENT_GAMEPAD_REMOVED:
+                return onRemoved(e.gdevice.which);
+            case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+            case SDL_EVENT_GAMEPAD_BUTTON_UP: {
+                const std::size_t slot = slotOf(e.gbutton.which);
+                const GamepadButton button = fromSdlGamepadButton(e.gbutton.button);
+                if (slot == MAX_GAMEPADS || button == GamepadButton::Count) {
+                    return std::nullopt;  // an unslotted pad, or a button outside the modeled set
+                }
+                Event ev;
+                ev.type = (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) ? EventType::GamepadButtonDown
+                                                                    : EventType::GamepadButtonUp;
+                ev.gamepadButton = GamepadButtonData{static_cast<std::uint8_t>(slot), button};
+                return ev;
+            }
+            case SDL_EVENT_GAMEPAD_AXIS_MOTION: {
+                const std::size_t slot = slotOf(e.gaxis.which);
+                const GamepadAxis axis = fromSdlGamepadAxis(e.gaxis.axis);
+                if (slot == MAX_GAMEPADS || axis == GamepadAxis::Count) {
+                    return std::nullopt;
+                }
+                Event ev;
+                ev.type = EventType::GamepadAxisMoved;
+                ev.gamepadAxis = GamepadAxisData{static_cast<std::uint8_t>(slot), axis, e.gaxis.value};
+                return ev;
+            }
+            default:
+                return std::nullopt;  // REMAPPED, touchpad, sensor, UPDATE_COMPLETE, the joystick events
+        }
+    }
+
+    // While a pad waits and a slot is free, the pad that has waited longest takes the lowest free slot. A pad that
+    // fails to open is dropped from the queue after its WARN and the next one is tried.
+    bool promoteWaiting(Event& out) {
+        while (!waiting.empty()) {
+            const std::size_t slot = lowestFreeSlot();
+            if (slot == MAX_GAMEPADS) {
+                return false;
+            }
+            const SDL_JoystickID id = waiting.front();
+            waiting.erase(waiting.begin());
+            if (std::optional<Event> ev = open(id, slot)) {
+                out = *ev;
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
 // ---- Context --------------------------------------------------------------------------------
 
 Context::Context(const ContextConfig& config) {
@@ -376,6 +622,9 @@ Context::Context(const ContextConfig& config) {
         // no display server — the headless path for tests/CI (SDL_hints.h:3743).
         SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
     }
+    if (config.gamepads == GamepadDrivers::VirtualOnly) {
+        setVirtualOnlyHints();  // before SDL_Init, and again for every Context: SDL_Quit clears every hint
+    }
     // SDL3's SDL_Init returns bool (true == success) — NOT SDL2's 0-on-success (SDL_init.h:238).
     if (!SDL_Init(SDL_INIT_VIDEO)) {  // implies SDL_INIT_EVENTS (SDL_init.h:81)
         AERO_LOG_CRITICAL("platform: SDL_Init(VIDEO) failed: {}", SDL_GetError());
@@ -384,9 +633,18 @@ Context::Context(const ContextConfig& config) {
     initialized = true;
     ownerThread = std::this_thread::get_id();
     AERO_LOG_INFO("platform initialized (video driver: {})", SDL_GetCurrentVideoDriver());
+    if (config.gamepads != GamepadDrivers::Off) {
+        // Pads present now are queued by SDL as GAMEPAD_ADDED and reach the first pollEvent.
+        if (SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
+            gamepadTable = std::make_unique<GamepadTable>();
+        } else {
+            AERO_LOG_ERROR("platform: SDL_InitSubSystem(GAMEPAD) failed: {}; gamepads are off", SDL_GetError());
+        }
+    }
 }
 
 Context::~Context() {
+    gamepadTable.reset();  // a pad must be closed while SDL is still up
     if (initialized) {
         SDL_Quit();
     }
@@ -422,17 +680,28 @@ bool Context::pollEvent(Event& out) {
         return false;
     }
     assert(std::this_thread::get_id() == ownerThread && "pollEvent() off the main thread");
+    // A slot freed by the previous call's GamepadDisconnected goes to the pad that has waited longest BEFORE any new
+    // backend event is read, so "a waiting pad exists => every slot is taken" holds at every SDL_PollEvent, and a
+    // GAMEPAD_ADDED that finds a free slot never jumps the queue.
+    if (gamepadTable != nullptr && gamepadTable->promoteWaiting(out)) {
+        inputState.process(out);
+        return true;
+    }
     SDL_Event e;
     while (SDL_PollEvent(&e)) {  // SDL_PollEvent implicitly pumps (SDL_events.h:1088)
         if (rawEventSink != nullptr) {
             rawEventSink(rawEventSinkUser, &e);  // task 2.1.1: tee every raw event to the observer first
         }
-        if (std::optional<Event> ev = translate(e)) {
-            inputState.process(*ev);  // task 0.3.2: fold key/mouse/focus into the polled state
+        std::optional<Event> ev = translate(e);
+        if (!ev && gamepadTable != nullptr) {
+            ev = gamepadTable->translate(e);  // task 4.4.3: gamepad events, only when the subsystem runs
+        }
+        if (ev) {
+            inputState.process(*ev);  // tasks 0.3.2 and 4.4.3: fold key/mouse/gamepad/focus into the polled state
             out = *ev;
             return true;  // a modeled event: hand it out
         }
-        // else: still-unmodeled — already dequeued, keep draining.
+        // else: still-unmodeled -- already dequeued, keep draining.
     }
     return false;
 }

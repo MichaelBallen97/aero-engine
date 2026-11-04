@@ -52,6 +52,7 @@ add_library(aero_script STATIC
     src/script_api_entity.cpp
     src/script_api_world.cpp
     src/script_api_transform.cpp
+    src/script_api_input.cpp
     src/script_system.cpp
 )
 add_library(aero::script ALIAS aero_script)
@@ -59,8 +60,11 @@ add_library(aero::script ALIAS aero_script)
 target_include_directories(aero_script PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # aero::assets is PRIVATE: the cooked-script container format and the byte primitives, never a public dependency.
 # aero::reflect is PRIVATE too: the source-map decoder calls engine::parseJson directly; it also arrives PUBLIC through
-# aero::scene.
-target_link_libraries(aero_script PUBLIC aero::core aero::scene PRIVATE qjs aero::script_internal aero::assets aero::reflect)
+# aero::scene. Since task 4.4.3 the target links aero::platform PRIVATE for InputState, which vm.hpp only
+# forward-declares; the edge adds no library to any binary (every executable that links aero::script already links
+# aero::platform).
+target_link_libraries(aero_script PUBLIC aero::core aero::scene PRIVATE qjs aero::script_internal aero::assets aero::reflect
+                      aero::platform)
 
 # The parse-side -I's both generators use: the set aero_scene_serialize uses.
 set(_aero_script_parse_dirs "${CMAKE_SOURCE_DIR}/engine/core/include" "${CMAKE_SOURCE_DIR}/engine/scene/include"

@@ -194,6 +194,7 @@ TEST_CASE("script: ComponentBindingTable::add refuses each invalid entry with on
     refusals.push_back({component("find", fabricated(storage, 1)), "find", "reserved"});
     refusals.push_back({component("findAll", fabricated(storage, 1)), "findAll", "reserved"});
     refusals.push_back({component("query", fabricated(storage, 1)), "query", "reserved"});
+    refusals.push_back({component("input", fabricated(storage, 1)), "input", "reserved"});
     refusals.push_back({component("Good", fabricated(storage, 1)), "Good", "name is already bound"});
     refusals.push_back({component("Other", fabricated(storage, 0)), "Other", "type is already bound"});
     refusals.push_back({component("Other", ComponentTypeId{}), "Other", "type is invalid"});
@@ -319,20 +320,20 @@ TEST_CASE("script: engine, its classes and their prototypes are frozen, and engi
         out.push(typeof engine.Vec3, Object.keys(engine).length, new engine.Vec3(1, 2, 3).x);
         return out.join();
     )js"));
-    CHECK(completion == "true,false,false,false,TypeError,TypeError,TypeError,TypeError,TypeError,function,11,1");
+    CHECK(completion == "true,false,false,false,TypeError,TypeError,TypeError,TypeError,TypeError,function,12,1");
     CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
     expectCleanShutdown(vm);
 }
 
 TEST_CASE(
-    "script: Object.keys(engine) is the table's script names, then Vec3, Quat, Entity, Script and the five functions "
-    "(BN8)") {
+    "script: Object.keys(engine) is the table's script names, then Vec3, Quat, Entity, Script, the five functions and "
+    "input (BN8)") {
     const LogCapture log;
     {
         const auto table = probeTable();
         Vm vm = makeProbeVm(table);
         CHECK(evalOk(vm, "Object.keys(engine).join()") ==
-              "ScriptProbe,ScriptTag,Vec3,Quat,Entity,Script,spawn,destroy,find,findAll,query");
+              "ScriptProbe,ScriptTag,Vec3,Quat,Entity,Script,spawn,destroy,find,findAll,query,input");
         // Nothing leaked onto the global object beside the namespace.
         CHECK(evalOk(vm,
                      "[typeof Vec3, typeof Quat, typeof Entity, typeof Script, typeof ScriptProbe, typeof "
@@ -344,7 +345,7 @@ TEST_CASE(
          engine::script::internal::builtinComponentBindings().components()) {
         expected += std::string{binding.scriptName} + ",";
     }
-    expected += "Vec3,Quat,Entity,Script,spawn,destroy,find,findAll,query";
+    expected += "Vec3,Quat,Entity,Script,spawn,destroy,find,findAll,query,input";
     Vm vm = makeBuiltinVm();
     CHECK(evalOk(vm, "Object.keys(engine).join()") == expected);
     CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
@@ -365,7 +366,7 @@ TEST_CASE("script: a VM created over a module source binds the built-in componen
     for (const ComponentBinding& binding : engine::script::internal::builtinComponentBindings().components()) {
         expected += std::string{binding.scriptName} + ",";
     }
-    expected += "Vec3,Quat,Entity,Script,spawn,destroy,find,findAll,query";
+    expected += "Vec3,Quat,Entity,Script,spawn,destroy,find,findAll,query,input";
     CHECK(evalOk(vm, "Object.keys(engine).join()") == expected);
     // The table's size is not what is pinned: the ten built-ins are bound, named as a script reads them. With
     // AERO_REFLECT_TOOLS=OFF the table is empty and the namespace holds Vec3, Quat, Entity and Script only, which the

@@ -3,7 +3,7 @@
 // why it lives under src/: the side of the boundary .github/scripts/check-script-boundary.sh permits.
 //
 // The API is `globalThis.engine`: one class per bound component (named by its descriptor), Vec3, Quat, Entity and
-// Script.
+// Script, the namespace functions, and the frozen object `input` (task 4.4.3).
 // Every host function that implements it keeps these nine rules, in this order. Each answers a measurement or a rule
 // the tree already had, and a new host function inherits all of them.
 //
@@ -55,6 +55,10 @@ namespace engine {
 class World;
 }  // namespace engine
 
+namespace engine::platform {
+class InputState;  // ScriptApi::input borrows one; script_api_input.cpp includes <aero/platform/input.hpp>
+}  // namespace engine::platform
+
 namespace engine::script {
 
 struct InstanceSlot;  // vm_impl.hpp: a host function reaches the slots through ScriptApi::instanceSlots only
@@ -96,6 +100,7 @@ struct ScriptApi {
     const internal::ComponentBindingTable* table = nullptr;  // borrowed
     World* world = nullptr;                                  // borrowed; null when none is bound
     std::uint64_t binding = 0;                               // +1 on every bindWorld
+    const platform::InputState* input = nullptr;             // borrowed; null when none is bound (task 4.4.3)
     // Each id starts at 0 and is allocated by THIS runtime (JS_NewClassID): never a static, which every VM on every
     // thread would share.
     JSClassID entityClass = 0;
@@ -183,6 +188,53 @@ inline constexpr std::size_t MAX_QUERY_CLASSES = 8;
 [[nodiscard]] JSValue findEntity(JSContext* ctx, ScriptApi& api, JSValueConst value);
 [[nodiscard]] JSValue findAllEntities(JSContext* ctx, ScriptApi& api, JSValueConst value);
 [[nodiscard]] JSValue queryEntities(JSContext* ctx, ScriptApi& api, int argc, JSValueConst* argv);
+
+// ---- engine.input (script_api_input.cpp) --------------------------------------------------------------------------
+// The functions of the frozen object `engine.input`. One host function (script_api.cpp) serves them all; its magic is
+// the op.
+enum class InputOp : std::uint8_t {
+    KeyDown,
+    KeyPressed,
+    KeyReleased,
+    MouseButtonDown,
+    MouseButtonPressed,
+    MouseButtonReleased,
+    MousePosition,
+    MouseDelta,
+    MouseWheel,
+    GamepadConnected,
+    GamepadButtonDown,
+    GamepadButtonPressed,
+    GamepadButtonReleased,
+    GamepadAxis,
+    GamepadStick,
+};
+struct InputFunction {
+    std::string_view name;
+    InputOp op;
+    int length;  // counts an optional slot argument (rule 2)
+};
+// In op order, which is the definition order on engine.input.
+inline constexpr std::array<InputFunction, 15> INPUT_FUNCTIONS{
+    {{"keyDown", InputOp::KeyDown, 1},
+     {"keyPressed", InputOp::KeyPressed, 1},
+     {"keyReleased", InputOp::KeyReleased, 1},
+     {"mouseButtonDown", InputOp::MouseButtonDown, 1},
+     {"mouseButtonPressed", InputOp::MouseButtonPressed, 1},
+     {"mouseButtonReleased", InputOp::MouseButtonReleased, 1},
+     {"mousePosition", InputOp::MousePosition, 0},
+     {"mouseDelta", InputOp::MouseDelta, 0},
+     {"mouseWheel", InputOp::MouseWheel, 0},
+     {"gamepadConnected", InputOp::GamepadConnected, 1},
+     {"gamepadButtonDown", InputOp::GamepadButtonDown, 2},
+     {"gamepadButtonPressed", InputOp::GamepadButtonPressed, 2},
+     {"gamepadButtonReleased", InputOp::GamepadButtonReleased, 2},
+     {"gamepadAxis", InputOp::GamepadAxis, 2},
+     {"gamepadStick", InputOp::GamepadStick, 2}}};
+// The handlers, behind one exhaustive switch over `op`. Not noexcept (they build strings on their throw paths); the one
+// noexcept host function that calls them is in script_api.cpp, the worldFunction shape (bugprone-exception-escape).
+// `argv` holds at least the function's length of values.
+[[nodiscard]] JSValue callInputFunction(JSContext* ctx, ScriptApi& api, InputOp op, JSValueConst* argv);
 
 // ---- the one source that names the Transform component (script_api_transform.cpp) -------------------------------
 [[nodiscard]] ComponentTypeId transformTypeId() noexcept;

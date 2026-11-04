@@ -2,8 +2,9 @@
 // Aero Engine -- the JavaScript VM (task 4.1.1; ADR-007). One Vm = one quickjs-ng runtime + one context,
 // created together, used on ONE thread, torn down together. A VM offers the ECMAScript language, the backend's
 // core globals and, since task 4.2.1, one frozen global of the engine's own: `engine`, holding a class per bound
-// component plus Vec3, Quat, Entity and Script (the base class a script's class extends), and since task 4.4.2 the
-// functions spawn, destroy, find, findAll and query. Nothing else is
+// component plus Vec3, Quat, Entity and Script (the base class a script's class extends), since task 4.4.2 the
+// functions spawn, destroy, find, findAll and query, and since task 4.4.3 the frozen object `input`, the keyboard,
+// mouse and gamepad functions. Nothing else is
 // script-visible -- no file, process or timer access. Since task 4.1.2 a VM given a VirtualFileSystem also loads ES
 // modules through it (evaluateModule, and import() from any code). Since task 4.3.3 a VM loads a script class (an ES
 // module whose default export is a class) and holds its instances behind handles, and a changed file re-creates every
@@ -31,6 +32,10 @@ class VirtualFileSystem;  // forward-declared: create() borrows one; src/vm_modu
 class World;              // bindWorld borrows one; src/script_api_entity.cpp includes <aero/scene/world.hpp>
 }  // namespace engine
 
+namespace engine::platform {
+class InputState;  // bindInput borrows one; src/script_api_input.cpp includes <aero/platform/input.hpp>
+}  // namespace engine::platform
+
 namespace engine::script {
 
 namespace internal {
@@ -43,8 +48,8 @@ struct BytecodeCook;          // the cook (src/bytecode_cook.cpp): two VMs of it
 // The JavaScript heap: every byte the backend allocates, header included, is charged against it. There
 // is deliberately no "unlimited": 0 is refused rather than read as the backend's own "no limit".
 inline constexpr std::size_t DEFAULT_HEAP_LIMIT_BYTES = std::size_t{64} * 1024U * 1024U;  // 64 MiB
-// The smallest heap a VM may be given. An empty VM needs about 177 KB (163 792 B Release, 176 768 B Debug, with the
-// eleven built-in components bound; 143 702 B Debug with none -- the `engine` namespace is built in every VM). That
+// The smallest heap a VM may be given. An empty VM needs about 180 KB (169 105 B Release, 182 321 B Debug, with the
+// eleven built-in components bound; 149 351 B Debug with none -- the `engine` namespace is built in every VM). That
 // includes the three builtins the backend builds lazily on a first read, which create reads once so that no later
 // read can fail, so no create runs out of heap at or above this; below it the backend's context-creation
 // failure path is not safe to take, so such a limit is refused up front instead of being tried.
@@ -120,7 +125,8 @@ enum class EvalStatus : std::uint8_t {
 };
 [[nodiscard]] std::string_view evalStatusLabel(EvalStatus status) noexcept;
 
-// The outcome of bindWorld and defineEntityGlobal. Every refusal is also logged once, at ERROR, and changes nothing.
+// The outcome of bindWorld, bindInput and defineEntityGlobal. Every refusal is also logged once, at ERROR, and changes
+// nothing.
 enum class BindStatus : std::uint8_t {
     Ok = 0,
     InvalidVm,              // a failed create's Vm, or a moved-from one
@@ -396,6 +402,19 @@ public:
     // Every later access through an entity object throws "no World is bound". It also empties the VM's entity table
     // and destroy queue (task 4.4.2). Idempotent; an invalid VM or another thread is one ERROR and no change.
     void unbindWorld() noexcept;
+
+    // ---- the input engine.input reads (task 4.4.3) ------------------------------------------------------------
+    // The state is BORROWED until unbindInput, the next bindInput or shutdown. The caller owns the frame (newFrame()
+    // and the events): every engine.input function reads the state as it is at that moment, wherever the script runs
+    // (module code, a constructor, a hook, onDestroy at stop(), a reload). It is independent of bindWorld. Refused
+    // with InvalidVm or WrongThread and one ERROR, the previous binding kept. Success logs nothing. Never from
+    // inside a call.
+    BindStatus bindInput(const platform::InputState& input);
+    BindStatus bindInput(const platform::InputState&& input) = delete;  // no temporary
+
+    // Every later engine.input call throws "no input is bound". Idempotent; an invalid VM or another thread is one
+    // ERROR and no change.
+    void unbindInput() noexcept;
 
     // Defines globalThis[name] as an engine.Entity for `entity`: writable, configurable and enumerable, through a
     // define that runs no script setter; the same name again replaces it. Refusals, each one ERROR and no change, in

@@ -38,5 +38,14 @@ engine.find(3); // expect TS2345
 engine.spawn("bullet"); // expect TS2554
 e.script = null; // expect TS2540
 e.parent = 3; // expect TS2322
+engine.input.keyDown("Spcae"); // expect TS2345
+engine.input.keyDown("w"); // expect TS2345
+engine.input.keyDwon("W"); // expect TS2551
+engine.input.mouseButtonDown("Back"); // expect TS2345
+engine.input.gamepadButtonDown("A"); // expect TS2345
+engine.input.gamepadAxis("LeftZ"); // expect TS2345
+engine.input.gamepadStick("Up"); // expect TS2345
+engine.input.gamepadConnected("0"); // expect TS2345
+const notAKey: engine.input.Key = "Unknown"; // expect TS2322
 const helper: Helper | undefined = undefined;
-export { pattern, helper, Hack, listener, mustExist, WrongSig, Assign, NoBase, Typo, direct };
+export { pattern, helper, Hack, listener, mustExist, WrongSig, Assign, NoBase, Typo, direct, notAKey };

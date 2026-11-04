@@ -35,7 +35,8 @@ namespace {
     }
     if (binding.scriptName == "Vec3" || binding.scriptName == "Quat" || binding.scriptName == "Entity" ||
         binding.scriptName == "Script" || binding.scriptName == "spawn" || binding.scriptName == "destroy" ||
-        binding.scriptName == "find" || binding.scriptName == "findAll" || binding.scriptName == "query") {
+        binding.scriptName == "find" || binding.scriptName == "findAll" || binding.scriptName == "query" ||
+        binding.scriptName == "input") {
         return "the script name is reserved for a class the namespace already holds";
     }
     if (!binding.type.valid()) {

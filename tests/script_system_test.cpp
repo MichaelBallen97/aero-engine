@@ -1,5 +1,6 @@
 // tests/script_system_test.cpp -- task 4.4.1: engine::script::ScriptSystem over one World (LC1-LC25, LC27, LC31-LC38)
-// and task 4.4.2's flush and entity.script (LC40-LC49, LC51-LC53). The system is written against the Vm's public API,
+// and task 4.4.2's flush and entity.script (LC40-LC49, LC51-LC53), and task 4.4.3's input reads in the hooks (LC54).
+// The system is written against the Vm's public API,
 // so every case drives it through a VM over the built-in table, a World, and a resolver from a script Guid to a
 // res:// path.
 // Scripts observe through `globalThis.log`, instance fields and `this.entity.alive`, so none of these cases needs a
@@ -8,6 +9,8 @@
 #include <aero/core/guid.hpp>
 #include <aero/core/log.hpp>
 #include <aero/core/vfs.hpp>
+#include <aero/platform/event.hpp>
+#include <aero/platform/input.hpp>
 #include <aero/scene/script_component.hpp>
 #include <aero/scene/transform.hpp>
 #include <aero/scene/world.hpp>
@@ -1761,5 +1764,59 @@ TEST_CASE("system: an entity an onDestroy moves out of a destroyed subtree keeps
     CHECK(next.failedAttaches == 1U);
     CHECK(recordsNaming(capture, "boom") == 0U);  // a kept failure is not attached, and so not logged, again
     CHECK(label(fx.system->stateOf(freed)) == "AttachFailed");
+    fx.finish();
+}
+
+TEST_CASE("system: every hook reads the input state as it is at that moment, onDestroy at stop included (LC54)") {
+    namespace platform = engine::platform;
+    const script_test::LogCapture capture;
+    platform::InputState input;  // declared first: it outlives the fixture's VM
+    SystemFixture fx;
+    const std::string reads =
+        "[engine.input.keyDown('W'), engine.input.keyPressed('W'), engine.input.keyReleased('W'),"
+        " engine.input.mousePosition().x].join()";
+    fx.publish(guidOf(1), "in.js",
+               classSource("  onInit() { log.push('i:' + " + reads + "); }\n  onUpdate() { log.push('u:' + " + reads +
+                           "); }\n  onDestroy() { log.push('d:' + " + reads + "); }"));
+    REQUIRE(fx.vm.bindInput(input) == engine::script::BindStatus::Ok);
+    static_cast<void>(fx.attachScript(guidOf(1)));
+
+    const auto keyEvent = [](platform::EventType type, platform::Key key) {
+        platform::Event event;
+        event.type = type;
+        event.key = platform::KeyData{key, {}, false};
+        return event;
+    };
+    const auto moveTo = [&input](float x) {
+        platform::Event event;
+        event.type = platform::EventType::MouseMoved;
+        event.mouseMotion = platform::MouseMotionData{x, 0.0F, 0.0F, 0.0F};
+        input.process(event);
+    };
+
+    input.newFrame();  // update 1: W pressed this frame
+    input.process(keyEvent(platform::EventType::KeyDown, platform::Key::W));
+    moveTo(7.0F);
+    static_cast<void>(fx.tick());
+    CHECK(fx.log() == "i:true,true,false,7|u:true,true,false,7");
+
+    fx.clearLog();
+    input.newFrame();  // update 2: W held
+    static_cast<void>(fx.tick());
+    CHECK(fx.log() == "u:true,false,false,7");
+
+    fx.clearLog();
+    input.newFrame();  // update 3: W released this frame
+    input.process(keyEvent(platform::EventType::KeyUp, platform::Key::W));
+    moveTo(8.0F);
+    static_cast<void>(fx.tick());
+    CHECK(fx.log() == "u:false,false,true,8");
+
+    fx.clearLog();
+    input.newFrame();  // the frame stop() runs in
+    moveTo(11.0F);
+    static_cast<void>(fx.system->stop());
+    CHECK(fx.log() == "d:false,false,false,11");
+    CHECK(capture.countAtLeast(LogLevel::Warn) == 0U);
     fx.finish();
 }
