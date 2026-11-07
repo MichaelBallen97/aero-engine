@@ -9,6 +9,7 @@
 #include <aero/core/vfs.hpp>
 #include <aero/scene/transform.hpp>
 #include <aero/scene/world.hpp>
+#include <aero/script/internal/component_binding.hpp>
 #include <aero/script/script.hpp>
 
 #include "script_binding_support.hpp"
@@ -552,16 +553,21 @@ TEST_CASE("world: with no World bound every namespace function throws, destroy a
     script_test::expectCleanShutdown(scene.vm);
 }
 
-TEST_CASE("world: engine.spawn takes no argument and creates nothing when it throws (WA17)") {
+TEST_CASE("world: engine.spawn refuses a wrong argument and creates nothing when it throws (WA17)") {
     const script_test::LogCapture log;
     WorldScene scene;
     REQUIRE(script_test::completion(scene.vm, std::string{THROWN_HELPER} + " 'ok'") == "ok");
     CHECK(script_test::completion(scene.vm, "thrown(() => engine.spawn(1))") ==
-          "TypeError: engine.spawn: expected no arguments, got 1");
-    CHECK(script_test::completion(scene.vm, "thrown(() => engine.spawn('bullet'))") ==
-          "TypeError: engine.spawn: expected no arguments, got 1");
+          "TypeError: engine.spawn: expected a string, got a number");
     CHECK(script_test::completion(scene.vm, "thrown(() => engine.spawn(undefined, undefined))") ==
-          "TypeError: engine.spawn: expected no arguments, got 2");
+          "TypeError: engine.spawn: expected a string, got undefined");
+    CHECK(script_test::completion(scene.vm, "thrown(() => engine.spawn('a', 1, 2, 3, 4))") ==
+          "TypeError: engine.spawn: expected at most 4 arguments, got 5");
+    // A string that is no res:// path: the parse arm names the path, the tools-OFF build stops after the checks above.
+    const bool parses = !engine::script::internal::builtinComponentBindings().components().empty();
+    CHECK(script_test::completion(scene.vm, "thrown(() => engine.spawn('bullet'))") ==
+          (parses ? "TypeError: engine.spawn: 'bullet' is not a res:// file path"
+                  : "TypeError: engine.spawn: built without AERO_REFLECT_TOOLS"));
     CHECK(scene.world.entityCount() == 0U);
     CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
     script_test::expectCleanShutdown(scene.vm);

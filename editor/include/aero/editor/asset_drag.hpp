@@ -128,7 +128,7 @@ static_assert(std::is_trivially_copyable_v<AssetMoveDragPayload>);
 // nil-guid-is-corrupt posture decodeAssetDragPayload already takes, applied to the other payload.
 [[nodiscard]] std::optional<std::string> decodeAssetMoveDragPayload(const void* data, int sizeBytes);
 
-// Model | Texture | Material | AUDIO (task E.3.3 -- AudioSource::clip is a drop target now, so an
+// Model | Texture | Material | Prefab (task 4.4.4) | AUDIO (task E.3.3 -- AudioSource::clip is a drop target now, so an
 // audio file must be able to START a drag; the source refuses a non-draggable kind). Folder, Text and
 // Unknown are NOT draggable -- and note that a `.mtl` classifies Unknown (asset_view.cpp's table) even
 // though it is importable, so it starts no drag.
@@ -152,7 +152,8 @@ enum class DropAction : std::uint8_t {
     InstantiateModel,
     AssignMaterial,
     BindTextureSlot,
-    AssignAssetReference
+    AssignAssetReference,
+    InstantiatePrefab  // task 4.4.4: appended, so every earlier value is unmoved
 };
 
 // NEVER named toString (.claude/rules/ci-portability.md): DOCTEST_STRINGIFY expands to an UNQUALIFIED
@@ -171,6 +172,7 @@ enum class DropAction : std::uint8_t {
 //   Model          | Instantiate   | Instantiate   | Instantiate   | None         | AssignRef*
 //   Material       | Assign iff MR | None          | Assign iff MR | None         | AssignRef*
 //   Texture        | None          | None          | None          | BindSlot     | AssignRef*
+//   Prefab         | InstPrefab    | InstPrefab    | InstPrefab    | None         | AssignRef*
 //   Audio          | None          | None          | None          | None         | AssignRef*
 //   Folder/Text/Unknown            | None everywhere, AssetField INCLUDED (not draggable)
 //

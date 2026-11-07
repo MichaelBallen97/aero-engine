@@ -12,6 +12,7 @@
 #include <aero/editor/material_from_import.hpp>  // task 3.1.5: reached through the loader; named for clarity
 #include <aero/editor/material_preview_rig.hpp>  // task E.2.4: MaterialPreviewLighting
 #include <aero/editor/picking.hpp>               // task 3.1.5: viewportRay + dropPlacementPoint
+#include <aero/editor/prefab_asset.hpp>          // task 4.4.4: savePrefabFile -- Save as Prefab's write
 #include <aero/editor/text_file.hpp>             // task 3.1.5: readFileBytes, for the drop's own import
                                                  // reconcile block's third one-shot drain
 #include <aero/editor/console_model.hpp>
@@ -787,6 +788,16 @@ bool EditorApp::tick() {
             // the new file and the scan that mints its `.meta` are ONE pass rather than two ticks apart.
             materialCreated = createMaterialAsset(*createMaterialDir);
         }
+        // task 4.4.4 (D11): a FIFTH one-shot in this block, drained as its OWN statement (F9), and written BEFORE the
+        // refresh test, so the new file and the scan that mints its .meta are ONE pass (the orphan-delete posture).
+        std::optional<Entity> savePrefabRow;
+        if (hierarchyPanel != nullptr) {
+            savePrefabRow = hierarchyPanel->takeSavePrefabRequest();
+        }
+        bool prefabSaved = false;
+        if (savePrefabRow.has_value()) {
+            prefabSaved = savePrefabAsset(*savePrefabRow);
+        }
         // task E.4.3: four MORE one-shots in this block, each drained as its OWN statement for the
         // identical F9 reason -- and all four inside ONE `if (assetBrowserPanel != nullptr)` block,
         // none on the right of a `&&`. The existing panelRefresh/panelReimport lines use
@@ -827,6 +838,7 @@ bool EditorApp::tick() {
         // pinned by that task's cases.
         const bool refresh = assetRescanRequested || panelRefresh || orphanHandled || watchFired ||
                              materialCreated      // task 3.1.4
+                             || prefabSaved       // task 4.4.4: a refusal does not rescan, materialCreated's rule
                              || fileOpPerformed;  // task E.4.3
         const bool reimport = assetReimportRequested || panelReimport;
         assetRescanRequested = false;
@@ -1556,6 +1568,9 @@ std::string_view EditorApp::projectName() const noexcept { return project.name()
 std::string_view EditorApp::assetBrowserRoot() const noexcept {
     return assetBrowserPanel != nullptr ? std::string_view(assetBrowserPanel->root()) : std::string_view{};
 }
+std::string_view EditorApp::assetBrowserSelection() const noexcept {
+    return assetBrowserPanel != nullptr ? std::string_view(assetBrowserPanel->selection()) : std::string_view{};
+}
 std::size_t EditorApp::recentProjectCount() const noexcept { return recents.paths.size(); }
 
 std::size_t EditorApp::assetCount() const noexcept { return assetDatabase.size(); }
@@ -1908,6 +1923,11 @@ void EditorApp::requestHierarchyAssetDrop(Guid guid, std::uint8_t kind, Entity t
     requestedHierarchyDrop =
         HierarchyAssetDrop{.payload = AssetDragPayload{.guid = guid, .kind = kind}, .targetRow = targetRow};
 }
+void EditorApp::requestHierarchySavePrefab(Entity row) {
+    if (hierarchyPanel != nullptr) {
+        hierarchyPanel->requestSavePrefab(row);
+    }
+}
 void EditorApp::requestViewportAssetDrop(Guid guid, std::uint8_t kind, Vec2 ndc) {
     requestedViewportDrop = ViewportAssetDrop{.payload = AssetDragPayload{.guid = guid, .kind = kind}, .ndc = ndc};
 }
@@ -1988,6 +2008,9 @@ void EditorApp::applyHierarchyDrop(const HierarchyAssetDrop& drop) {
         case DropAction::InstantiateModel:
             instantiateModelDrop(*record, drop.targetRow, Transform{});  // LOCAL identity under the row
             break;
+        case DropAction::InstantiatePrefab:
+            instantiatePrefabDrop(*record, drop.targetRow, Transform{});  // LOCAL identity under the row
+            break;
         case DropAction::AssignMaterial:
             pushMaterialAssign(drop.targetRow, record->guid);
             break;
@@ -2021,6 +2044,12 @@ void EditorApp::applyViewportDrop(const ViewportAssetDrop& drop) {
             // a finite point, including the parallel, behind-the-eye and unbuildable cases.
             const Ray ray = viewportRay(viewportPanel->camera(), drop.ndc, viewportPanel->aspect());
             instantiateModelDrop(*record, Entity{}, Transform{.position = dropPlacementPoint(ray)});
+            break;
+        }
+        case DropAction::InstantiatePrefab: {
+            // The same placement rule as a model: resolved at the drain, from the camera as it is NOW.
+            const Ray ray = viewportRay(viewportPanel->camera(), drop.ndc, viewportPanel->aspect());
+            instantiatePrefabDrop(*record, Entity{}, Transform{.position = dropPlacementPoint(ray)});
             break;
         }
         case DropAction::AssignMaterial:
@@ -2080,6 +2109,24 @@ void EditorApp::pushMaterialAssign(Entity entity, Guid material) {
         cmd, std::make_unique<SetFieldCommand>(entity, meshRendererId, "material", std::string(MESH_RENDERER_TYPE_NAME),
                                                *before, FieldValue{material}));
     commandStack.breakMergeChain();  // AFTER the push
+}
+
+// task 4.4.4: the file is read and parsed HERE, at the drain, so an edit made since the scan is what lands. A failure
+// is one WARN and nothing is created. The command takes the Prefab by value and holds it for its life.
+void EditorApp::instantiatePrefabDrop(const AssetRecord& record, Entity parent, const Transform& placement) {
+    const FileReadResult file = readTextFile(std::string(assetDatabase.root()) + '/' + record.relativePath);
+    if (!file.text.has_value()) {
+        AERO_LOG_WARN("assets: this prefab could not be read -- {}", file.error);
+        return;
+    }
+    PrefabReadResult read = prefabFromText(*file.text);
+    if (!read.prefab.has_value()) {
+        AERO_LOG_WARN("assets: this prefab could not be read -- {}", read.message);
+        return;
+    }
+    CommandContext cmd{sceneWorld, sceneSelection, rootOrder};
+    (void)commandStack.push(cmd, std::make_unique<InstantiatePrefabCommand>(std::move(*read.prefab), parent, placement,
+                                                                            sceneSelection.entities()));
 }
 
 void EditorApp::instantiateModelDrop(const AssetRecord& record, Entity parent, const Transform& placement) {
@@ -2734,6 +2781,41 @@ bool EditorApp::createMaterialAsset(std::string_view directoryRel) {
     // The SAME action a real click on the new row records, so the material session's own sticky
     // reconcile retargets to it next tick and the Material panel opens on it (AC-5's last clause).
     assetBrowserPanel->requestSelectEntry(relativePath);
+    return true;
+}
+
+// task 4.4.4 (D11): Save as Prefab's whole drain. Called from tick()'s reconcile block and nowhere else, so nothing
+// here runs inside a draw walk. Every refusal logs exactly ONE WARN and writes nothing; the success logs one INFO and
+// selects the new file in the browser. The file is written below EditorApp (prefab_asset.cpp) and the CommandStack is
+// never touched: a save is not an edit, so it neither enters the history nor dirties the scene.
+bool EditorApp::savePrefabAsset(Entity row) {
+    if (assetBrowserPanel == nullptr) {
+        AERO_LOG_WARN("editor: cannot save a prefab -- there is no Asset Browser to save into");
+        return false;
+    }
+    if (!sceneIoAvailable()) {
+        AERO_LOG_WARN("editor: cannot save a prefab -- scene I/O is not available in this build");
+        return false;
+    }
+    if (!project.isOpen()) {
+        AERO_LOG_WARN("editor: cannot save a prefab -- no project is open");
+        return false;
+    }
+    if (!sceneWorld.alive(row)) {
+        AERO_LOG_WARN("editor: cannot save a prefab -- that entity no longer exists");
+        return false;
+    }
+    // The whole selection when the row is inside it, otherwise the row alone, both through topMost: the rule a
+    // Hierarchy drag and Duplicate already use. The PANEL's root and folder, for createMaterialAsset's reason.
+    const std::vector<Entity> roots = reparentTargets(sceneWorld, sceneSelection.entities(), row);
+    const PrefabSaveResult saved =
+        savePrefabFile(sceneWorld, roots, assetBrowserPanel->root(), assetBrowserPanel->currentDirectory());
+    if (!saved.error.empty()) {
+        AERO_LOG_WARN("editor: cannot save a prefab -- {}", saved.error);
+        return false;
+    }
+    AERO_LOG_INFO("editor: saved prefab '{}'", saved.relativePath);
+    assetBrowserPanel->requestSelectEntry(saved.relativePath);
     return true;
 }
 

@@ -1,5 +1,5 @@
 // Aero Engine — the editor's scene_serialize bridge (task 2.5.1, D18/F9/F10). THE ONE editor TU that
-// gates on the reflection-tooling macro below -- four occurrences, matching editor_reflection.cpp's
+// gates on the reflection-tooling macro below -- six occurrences, matching editor_reflection.cpp's
 // established shape. NO <aero/core/log.hpp> -- this TU returns status and never prints it:
 // SceneOpenOutcome deliberately does not carry the path, and a load record that cannot name the file
 // it loaded is useless in the Log panel. The CALLER (scene_session.cpp's openSceneFile/saveSceneFile)
@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #if defined(AERO_EDITOR_REFLECTION)
     #include <aero/scene_serialize/scene_serialize.hpp>  // reachable ONLY in this configuration (F9)
@@ -60,6 +61,39 @@ std::optional<std::string> sceneToText(const World& world) {
 #else
     (void)world;
     return std::nullopt;
+#endif
+}
+
+std::optional<std::string> prefabToText(const Prefab& prefab) {
+#if defined(AERO_EDITOR_REFLECTION)
+    return scene_serialize::saveWorldText(prefab.world());
+#else
+    (void)prefab;
+    return std::nullopt;
+#endif
+}
+
+PrefabReadResult prefabFromText(std::string_view text) {
+#if defined(AERO_EDITOR_REFLECTION)
+    World parsed;
+    const scene_serialize::SceneLoadResult loaded = scene_serialize::loadSceneText(parsed, text);
+    if (loaded.error.has_value()) {
+        const SceneError& error = *loaded.error;
+        // A scene-stage failure carries no position (line 0): its message names the entity instead.
+        std::string where;
+        if (error.line > 0U) {
+            where = "line " + std::to_string(error.line) + ", column " + std::to_string(error.column) + ": ";
+        }
+        return {.prefab = std::nullopt, .message = where + error.message};
+    }
+    std::optional<Prefab> prefab = Prefab::fromWorld(std::move(parsed));
+    if (!prefab.has_value()) {
+        return {.prefab = std::nullopt, .message = "a prefab has exactly one root"};
+    }
+    return {.prefab = std::move(prefab), .message = {}};
+#else
+    (void)text;
+    return {.prefab = std::nullopt, .message = "scene I/O is not available in this build"};
 #endif
 }
 

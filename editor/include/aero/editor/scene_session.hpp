@@ -10,6 +10,8 @@
                                           // every existing call site and every existing test compiles
                                           // unchanged.
 
+#include <aero/scene/prefab.hpp>  // task 4.4.4: engine::Prefab, an aero::scene type, so no serialization type is named
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -177,6 +179,17 @@ struct SceneOpenOutcome {
 [[nodiscard]] SceneOpenOutcome openSceneText(CommandContext& context, CommandStack& commands, std::string_view text);
 // nullopt only when !sceneIoAvailable().
 [[nodiscard]] std::optional<std::string> sceneToText(const World& world);
+
+// task 4.4.4: a Prefab is a scene document with exactly one root, so its file is the scene's text.
+// nullopt when !sceneIoAvailable().
+[[nodiscard]] std::optional<std::string> prefabToText(const Prefab& prefab);
+struct PrefabReadResult {
+    std::optional<Prefab> prefab;
+    std::string message;  // why not, when `prefab` is empty
+};
+// Parses into a fresh World and takes it through Prefab::fromWorld. A parse error reads `line L, column C: <message>`,
+// and a document without exactly one root reads `a prefab has exactly one root`. Never logs (the TU's rule).
+[[nodiscard]] PrefabReadResult prefabFromText(std::string_view text);
 
 // ---- the async dialog boundary (file_dialog.{hpp,cpp}, src-private; D0/D6/D7/D8) -------------------
 

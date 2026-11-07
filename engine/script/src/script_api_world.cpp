@@ -9,7 +9,8 @@
 //
 // The table holds JS references (HELD): releaseEntityObjects frees them, and every bindWorld, unbindWorld and
 // releaseScriptApi calls it, so no object outlives the binding that made it in the table. An object a script kept
-// stays alive through its own reference and reads `alive` false, because its ref names an earlier binding.
+// stays alive through its own reference and reads `alive` false, because its ref names an earlier binding. The same
+// call empties the prefab cache (spawn(asset, ...), task 4.4.4), so a new binding reads each file again.
 
 #include <aero/core/log.hpp>
 #include <aero/scene/world.hpp>
@@ -41,10 +42,10 @@ JSValue throwAtSite(JSContext* ctx, const Site& site, const std::string& reason,
 
 }  // namespace
 
-JSValue spawnEntity(JSContext* ctx, ScriptApi& api, int argc) {
+JSValue spawnEntity(JSContext* ctx, ScriptApi& api, int argc, JSValueConst* argv) {
     const Site site{{}, "spawn", {}};
     if (argc > 0) {
-        return throwAtSite(ctx, site, "expected no arguments, got " + std::to_string(argc));
+        return spawnPrefab(ctx, api, argc, argv);
     }
     if (api.world == nullptr) {
         return throwAtSite(ctx, site, "no World is bound");
@@ -170,6 +171,7 @@ void releaseEntityObjects(JSContext* ctx, ScriptApi& api) noexcept {
     api.entityObjects.clear();
     api.destroyQueue.clear();
     api.destroyMarks.clear();
+    api.prefabs.clear();
 }
 
 JSValue entityArray(JSContext* ctx, ScriptApi& api, const std::vector<Entity>& entities) {

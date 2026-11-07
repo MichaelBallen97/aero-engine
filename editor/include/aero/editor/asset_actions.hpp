@@ -170,6 +170,12 @@ inline constexpr std::size_t MAX_ASSET_NAME_BYTES = 255;
 // name broke -- deterministic, and what the AA battery asserts.
 [[nodiscard]] AssetNameRefusal validateAssetName(std::string_view leaf) noexcept;
 
+// task 4.4.4: `stem` + suffix, `stem-2` + suffix, ... the first name `taken` does not hold, compared ASCII-case-folded,
+// so two names differing only in case cannot collide on a case-insensitive volume. "" on exhaustion. PURE: `taken` is
+// the caller's own UNFILTERED listing of the target directory. New Material's name and Save as Prefab's are both this.
+[[nodiscard]] std::string uniqueAssetFileName(std::string_view stem, std::string_view suffix,
+                                              std::span<const std::string_view> taken, std::size_t maxAttempts);
+
 struct AssetOpInputs {
     std::string_view sourceRelative;          // assets-relative. "" is SourceIsRoot for every kind but
                                               // CreateFolder, where it is the LEGAL parent directory.

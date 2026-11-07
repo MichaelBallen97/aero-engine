@@ -104,12 +104,12 @@ constexpr AssetPickerRules TEXTURE_SLOT{DropSurface::MaterialSlot, std::nullopt}
 
 TEST_CASE("MP1: the filter options ARE the accepted kinds, in enum order") {
     CHECK(assetPickerFilterOptions(TEXTURE_SLOT) == std::vector<AssetKind>{AssetKind::Texture});
-    // ASSET_KIND_FILTER_OPTIONS' order is {Folder, Texture, Model, Audio, Text, Material, Script, Unknown},
-    // so the draggable subset comes out Texture, Model, Audio, Material, Script -- never alphabetical,
+    // ASSET_KIND_FILTER_OPTIONS' order is {Folder, Texture, Model, Audio, Text, Material, Script, Prefab, Unknown},
+    // so the draggable subset comes out Texture, Model, Audio, Material, Script, Prefab -- never alphabetical,
     // never a list of the model's own.
-    CHECK(assetPickerFilterOptions(UNCONSTRAINED_FIELD) == std::vector<AssetKind>{AssetKind::Texture, AssetKind::Model,
-                                                                                  AssetKind::Audio, AssetKind::Material,
-                                                                                  AssetKind::Script});
+    CHECK(assetPickerFilterOptions(UNCONSTRAINED_FIELD) ==
+          std::vector<AssetKind>{AssetKind::Texture, AssetKind::Model, AssetKind::Audio, AssetKind::Material,
+                                 AssetKind::Script, AssetKind::Prefab});
     CHECK(assetPickerFilterOptions(AssetPickerRules{DropSurface::AssetField, AssetKind::Audio}) ==
           std::vector<AssetKind>{AssetKind::Audio});
     CHECK(assetPickerFilterOptions(AssetPickerRules{DropSurface::AssetField, AssetKind::Model}) ==
@@ -419,7 +419,7 @@ TEST_CASE("MP14: assetPickerAccepts IS classifyAssetDrop -- the composition, not
         }
         return rules;
     }();
-    REQUIRE(everyRules.size() == 18);
+    REQUIRE(everyRules.size() == 20);  // two + two per kind, nine kinds (task 4.4.4 added Prefab)
 
     std::size_t accepted = 0;
     for (const AssetPickerRules& rules : everyRules) {

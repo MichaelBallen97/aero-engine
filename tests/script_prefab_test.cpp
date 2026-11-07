@@ -1,0 +1,972 @@
+// tests/script_prefab_test.cpp -- task 4.4.4: engine.spawn(asset, ...), the three forms that copy a .aeroprefab into
+// the bound World (PR1-PR20). A TU of aero_tests, which supplies main() from
+// test_main.cpp. A prefab is parsed through the generated scene serializer, so a case that needs a parse opens with
+// `if (!prefabsParse()) { return; }` (the reflect-tools-OFF build has no component table and refuses every parse); the
+// argument-order cases run in both configurations.
+#include <aero/core/guid.hpp>
+#include <aero/core/log.hpp>
+#include <aero/core/math.hpp>
+#include <aero/core/vfs.hpp>
+#include <aero/scene/script_component.hpp>
+#include <aero/scene/transform.hpp>
+#include <aero/scene/world.hpp>
+#include <aero/script/internal/component_binding.hpp>
+#include <aero/script/script.hpp>
+
+#include "script_binding_support.hpp"
+
+#include <doctest/doctest.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <format>
+#include <map>
+#include <memory>
+#include <optional>
+#include <ostream>  // a CHECK on std::string_view needs the complete std::ostream on MSVC (ci-portability.md)
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace {
+
+using engine::Entity;
+using engine::Guid;
+using engine::Quat;
+using engine::Transform;
+using engine::Vec3;
+using engine::script::BindStatus;
+using engine::script::EvalResult;
+using engine::script::EvalStatus;
+using engine::script::ScriptSystem;
+using engine::script::ScriptSystemReport;
+using engine::script::Vm;
+
+constexpr float HALF_SQRT2 = 0.70710678F;
+constexpr std::string_view THREE_PATH = "res://assets/prefabs/three.aeroprefab";
+constexpr std::string_view THREE_FILE = "assets/prefabs/three.aeroprefab";
+
+// `thrown(() => ...)` reads "<name>: <message>" of what a function throws, or "none".
+constexpr std::string_view THROWN_HELPER =
+    "globalThis.thrown = (f) => { try { f(); return 'none'; } catch (x) { return x.name + ': ' + x.message; } };";
+
+[[nodiscard]] bool prefabsParse() { return !engine::script::internal::builtinComponentBindings().components().empty(); }
+
+[[nodiscard]] std::string transformJson(Vec3 position, Quat rotation, Vec3 scale) {
+    return std::format(
+        R"("engine::Transform": {{"position": {{"x": {}, "y": {}, "z": {}}}, )"
+        R"("rotation": {{"x": {}, "y": {}, "z": {}, "w": {}}}, "scale": {{"x": {}, "y": {}, "z": {}}}}})",
+        position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w, scale.x, scale.y, scale.z);
+}
+
+[[nodiscard]] std::string entityJson(int id, std::string_view name, int parent, const std::string& components) {
+    return std::format(R"({{"id": {}, "name": "{}", {}"components": {{{}}}}})", id, name,
+                       parent == 0 ? std::string{} : std::format(R"("parent": {}, )", parent), components);
+}
+
+[[nodiscard]] std::string sceneJson(const std::vector<std::string>& entities) {
+    std::string text = R"({"version": 1, "entities": [)";
+    for (std::size_t i = 0; i < entities.size(); ++i) {
+        text += (i == 0 ? "" : ",") + entities[i];
+    }
+    return text + "]}";
+}
+
+// Root (90 degrees about +Y, scale 0.5, at (rootX, 0, 0)) with the children Left and Right, each at (1, 0, 0).
+// `leftExtra` is appended to Left's components.
+[[nodiscard]] std::string prefabText(float rootX = 0.0F, const std::string& leftExtra = {}) {
+    const Quat turn{0.0F, HALF_SQRT2, 0.0F, HALF_SQRT2};
+    const std::string child = transformJson(Vec3{1.0F, 0.0F, 0.0F}, Quat::identity(), Vec3::one());
+    return sceneJson({entityJson(1, "Root", 0, transformJson(Vec3{rootX, 0.0F, 0.0F}, turn, Vec3{0.5F, 0.5F, 0.5F})),
+                      entityJson(2, "Left", 1, child + leftExtra), entityJson(3, "Right", 1, child)});
+}
+
+// A World, a VFS holding one in-memory backend with three.aeroprefab, and a VM over the built-in table bound to that
+// World. Members are destroyed in reverse, so the VM goes before the VFS it borrows and the World it is bound to.
+struct PrefabScene {
+    engine::World world;
+    engine::VirtualFileSystem vfs;
+    script_test::MemoryBackend* files = nullptr;
+    Vm vm;
+
+    explicit PrefabScene(const engine::script::VmConfig& config = script_test::patient()) {
+        auto backend = std::make_unique<script_test::MemoryBackend>();
+        files = backend.get();
+        backend->set(std::string{THREE_FILE}, prefabText());
+        vfs.mount(std::move(backend));
+        engine::script::VmCreateResult created = Vm::create(config, vfs);
+        REQUIRE(created.vm.valid());
+        vm = std::move(created.vm);
+        REQUIRE(vm.bindWorld(world) == BindStatus::Ok);
+        REQUIRE(script_test::completion(vm, std::string{THROWN_HELPER} + " 'ok'") == "ok");
+    }
+    PrefabScene(const PrefabScene&) = delete;
+    PrefabScene& operator=(const PrefabScene&) = delete;
+    PrefabScene(PrefabScene&&) = delete;
+    PrefabScene& operator=(PrefabScene&&) = delete;
+    ~PrefabScene() = default;
+
+    void define(std::string_view name, Entity entity) {
+        REQUIRE(vm.defineEntityGlobal(name, entity) == BindStatus::Ok);
+    }
+
+    // A live entity with a Transform.
+    [[nodiscard]] Entity place(Vec3 position, Quat rotation = Quat::identity(), Vec3 scale = Vec3::one()) {
+        const Entity entity = world.create();
+        REQUIRE(world.add<Transform>(entity, Transform{position, rotation, scale}) != nullptr);
+        return entity;
+    }
+
+    // Every live entity named `name`, ascending by index (creation order while nothing is destroyed).
+    [[nodiscard]] std::vector<Entity> named(std::string_view name) const {
+        std::vector<Entity> found;
+        world.eachEntity([&](Entity entity) {
+            if (world.name(entity) == name) {
+                found.push_back(entity);
+            }
+        });
+        std::ranges::sort(found, {}, &Entity::index);
+        return found;
+    }
+
+    [[nodiscard]] Transform transformOf(Entity entity) const {
+        const auto* const held = world.get<Transform>(entity);
+        REQUIRE(held != nullptr);
+        return *held;
+    }
+
+    [[nodiscard]] std::string thrown(std::string_view call) {
+        return script_test::completion(vm, std::format("thrown(() => {})", call));
+    }
+};
+
+void checkVec(Vec3 got, Vec3 want) {
+    CHECK(got.x == doctest::Approx(want.x).epsilon(1e-5));
+    CHECK(got.y == doctest::Approx(want.y).epsilon(1e-5));
+    CHECK(got.z == doctest::Approx(want.z).epsilon(1e-5));
+}
+
+void checkQuat(Quat got, Quat want) {
+    CHECK(got.x == doctest::Approx(want.x).epsilon(1e-5));
+    CHECK(got.y == doctest::Approx(want.y).epsilon(1e-5));
+    CHECK(got.z == doctest::Approx(want.z).epsilon(1e-5));
+    CHECK(got.w == doctest::Approx(want.w).epsilon(1e-5));
+}
+
+}  // namespace
+
+TEST_CASE("prefab: spawn(asset) copies the tree, returns the root's one entity object and keeps the order (PR1)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    CHECK(script_test::completion(scene.vm,
+                                  "globalThis.r = engine.spawn('res://assets/prefabs/three.aeroprefab'); "
+                                  "[r === engine.find('Root'), r.children().map((c) => c.name).join('+'), "
+                                  "r.parent === null].join()") == "true,Left+Right,true");
+    CHECK(scene.world.entityCount() == 3U);
+    const std::vector<Entity> roots = scene.named("Root");
+    REQUIRE(roots.size() == 1U);
+    CHECK_FALSE(scene.world.parent(roots.front()).valid());
+    const Transform root = scene.transformOf(roots.front());
+    checkVec(root.position, Vec3{});
+    CHECK(scene.world.childCount(roots.front()) == 2U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: spawn(asset, position) places the root there and keeps the saved rotation and scale (PR2)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    CHECK(script_test::completion(scene.vm,
+                                  "String(engine.spawn('res://assets/prefabs/three.aeroprefab', "
+                                  "new engine.Vec3(1, 2, 3)).name)") == "Root");
+    const Transform root = scene.transformOf(scene.named("Root").front());
+    checkVec(root.position, Vec3{1.0F, 2.0F, 3.0F});
+    checkQuat(root.rotation, Quat{0.0F, HALF_SQRT2, 0.0F, HALF_SQRT2});
+    checkVec(root.scale, Vec3{0.5F, 0.5F, 0.5F});
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: spawn(asset, position, rotation, scale) composes all three and leaves the children alone (PR3)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    scene.files->set("assets/prefabs/offset.aeroprefab", prefabText(2.0F));
+    const Quat spin{HALF_SQRT2, 0.0F, 0.0F, HALF_SQRT2};  // 90 degrees about +X
+    CHECK(script_test::completion(scene.vm,
+                                  "String(engine.spawn('res://assets/prefabs/offset.aeroprefab', "
+                                  "new engine.Vec3(1, 2, 3), new engine.Quat(0.70710678, 0, 0, 0.70710678), "
+                                  "new engine.Vec3(2, 2, 2)).name)") == "Root");
+    const Entity rootEntity = scene.named("Root").front();
+    const Transform root = scene.transformOf(rootEntity);
+    // position = P + R * (S * stored), rotation = R * stored, scale = S * stored.
+    const Vec3 scaledOffset{4.0F, 0.0F, 0.0F};  // (2, 0, 0) * 2
+    checkVec(root.position, Vec3{1.0F, 2.0F, 3.0F} + spin * scaledOffset);
+    checkQuat(root.rotation, spin * Quat{0.0F, HALF_SQRT2, 0.0F, HALF_SQRT2});
+    checkVec(root.scale, Vec3{1.0F, 1.0F, 1.0F});
+    for (const std::string_view child : {"Left", "Right"}) {
+        CAPTURE(child);
+        const Transform local = scene.transformOf(scene.named(child).front());
+        CHECK(local == Transform{Vec3{1.0F, 0.0F, 0.0F}, Quat::identity(), Vec3::one()});
+    }
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: spawn(asset, transform) reads the Transform's local fields, not its world ones (PR4)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const Entity parent = scene.place(Vec3{10.0F, 0.0F, 0.0F});
+    const Entity child = scene.place(Vec3{1.0F, 2.0F, 3.0F});
+    REQUIRE(scene.world.setParent(child, parent));
+    scene.define("c", child);
+    CHECK(script_test::completion(scene.vm, "String(c.get(engine.Transform).worldPosition().x)") == "11");
+    CHECK(script_test::completion(scene.vm,
+                                  "String(engine.spawn('res://assets/prefabs/three.aeroprefab', "
+                                  "c.get(engine.Transform)).name)") == "Root");
+    const Transform root = scene.transformOf(scene.named("Root").front());
+    checkVec(root.position, Vec3{1.0F, 2.0F, 3.0F});  // the local position; the world one would read x = 11
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE(
+    "prefab: the Transform form equals the position-rotation-scale form, views and detached vectors alike (PR5)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    scene.files->set("assets/prefabs/offset.aeroprefab", prefabText(2.0F));
+    const Entity source = scene.place(Vec3{1.0F, 2.0F, 3.0F}, Quat{0.0F, HALF_SQRT2, 0.0F, HALF_SQRT2}, Vec3{2, 2, 2});
+    scene.define("s", source);
+    CHECK(script_test::completion(
+              scene.vm,
+              "const a = 'res://assets/prefabs/offset.aeroprefab'; const t = s.get(engine.Transform); "
+              "engine.spawn(a, t); engine.spawn(a, t.position, t.rotation, t.scale); "
+              "engine.spawn(a, t.position.clone(), t.rotation.clone(), t.scale.clone()); "
+              "String(engine.findAll('Root').length)") == "3");
+    const std::vector<Entity> roots = scene.named("Root");
+    REQUIRE(roots.size() == 3U);
+    const Transform first = scene.transformOf(roots[0]);
+    CHECK(scene.transformOf(roots[1]) == first);
+    CHECK(scene.transformOf(roots[2]) == first);
+    CHECK(first.scale.x == doctest::Approx(1.0F));  // 2 * 0.5
+    CHECK(first.position.y == doctest::Approx(2.0F));
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: undefined stands for an omitted argument in every slot (PR6)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const Entity source = scene.place(Vec3{4.0F, 0.0F, 0.0F});
+    scene.define("s", source);
+    CHECK(script_test::completion(
+              scene.vm,
+              "const a = 'res://assets/prefabs/three.aeroprefab'; const v = new engine.Vec3(1, 2, 3); "
+              "const q = new engine.Quat(0.70710678, 0, 0, 0.70710678); const sc = new engine.Vec3(2, 2, 2); "
+              "const t = s.get(engine.Transform); engine.spawn(a, undefined); engine.spawn(a, undefined, q); "
+              "engine.spawn(a, v, undefined, sc); engine.spawn(a, t, undefined, undefined); "
+              "String(engine.findAll('Root').length)") == "4");
+    const std::vector<Entity> roots = scene.named("Root");
+    REQUIRE(roots.size() == 4U);
+    const Quat saved{0.0F, HALF_SQRT2, 0.0F, HALF_SQRT2};
+    const Transform bare = scene.transformOf(roots[0]);
+    checkVec(bare.position, Vec3{});
+    checkQuat(bare.rotation, saved);
+    const Transform turned = scene.transformOf(roots[1]);
+    checkVec(turned.position, Vec3{});
+    checkQuat(turned.rotation, Quat{HALF_SQRT2, 0.0F, 0.0F, HALF_SQRT2} * saved);
+    const Transform scaled = scene.transformOf(roots[2]);
+    checkVec(scaled.position, Vec3{1.0F, 2.0F, 3.0F});
+    checkVec(scaled.scale, Vec3{1.0F, 1.0F, 1.0F});  // 2 * 0.5
+    const Transform viewed = scene.transformOf(roots[3]);
+    checkVec(viewed.position, Vec3{4.0F, 0.0F, 0.0F});
+    checkVec(viewed.scale, Vec3{0.5F, 0.5F, 0.5F});
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: two hundred spawns from a Transform view land right while the Transform storage grows (PR7)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const Entity source = scene.place(Vec3{1.0F, 2.0F, 3.0F});
+    scene.define("s", source);
+    CHECK(script_test::completion(scene.vm,
+                                  "const t = s.get(engine.Transform); for (let i = 0; i < 200; i++) { "
+                                  "engine.spawn('res://assets/prefabs/three.aeroprefab', t); } "
+                                  "String(engine.findAll('Root').length)") == "200");
+    CHECK(scene.world.entityCount() == 601U);
+    for (const Entity root : scene.named("Root")) {
+        checkVec(scene.transformOf(root).position, Vec3{1.0F, 2.0F, 3.0F});
+    }
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: every wrong argument is refused in the contract's order, with nothing created (PR8)") {
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    // The values the placement slots receive. t is a Transform view, which exists only when the table binds one.
+    REQUIRE(script_test::completion(scene.vm,
+                                    "globalThis.v = new engine.Vec3(); globalThis.q = new engine.Quat(); "
+                                    "globalThis.t = engine.Transform === undefined ? null : "
+                                    "engine.spawn().get(engine.Transform); 'ok'") == "ok");
+    const std::size_t before = scene.world.entityCount();
+    CHECK(scene.thrown("engine.spawn('a', 1, 2, 3, 4)") ==
+          "TypeError: engine.spawn: expected at most 4 arguments, got 5");
+    CHECK(scene.thrown("engine.spawn(3)") == "TypeError: engine.spawn: expected a string, got a number");
+    CHECK(scene.thrown("engine.spawn(undefined, undefined)") ==
+          "TypeError: engine.spawn: expected a string, got undefined");
+    const std::string vectorKind = "TypeError: engine.spawn: expected an engine.Transform or an engine.Vec3, got ";
+    const std::string bare = "TypeError: engine.spawn: expected an engine.Vec3, got ";
+    const std::string firstKind = prefabsParse() ? vectorKind : bare;
+    CHECK(scene.thrown("engine.spawn('a', 1)") == firstKind + "a number");
+    CHECK(scene.thrown("engine.spawn('a', q)") == firstKind + "an engine.Quat");
+    CHECK(scene.thrown("engine.spawn('a', { position: v })") == firstKind + "an object");
+    CHECK(scene.thrown("engine.spawn('a', v, v)") ==
+          "TypeError: engine.spawn: expected an engine.Quat, got an engine.Vec3");
+    CHECK(scene.thrown("engine.spawn('a', v, q, q)") ==
+          "TypeError: engine.spawn: expected an engine.Vec3, got an engine.Quat");
+    if (prefabsParse()) {
+        const std::string after = "TypeError: engine.spawn: expected no argument after an engine.Transform, got ";
+        CHECK(scene.thrown("engine.spawn('a', t, q)") == after + "an engine.Quat");
+        CHECK(scene.thrown("engine.spawn('a', t, undefined, v)") == after + "an engine.Vec3");
+    }
+    // The one entity above is the only one made; no refusal added another.
+    CHECK(scene.world.entityCount() == before);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: no argument kind is coerced, so no script code runs inside a refusal (PR9)") {
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const std::string outcome = script_test::completion(
+        scene.vm,
+        "globalThis.hits = 0; const traps = {}; "
+        "for (const k of ['get', 'set', 'has', 'ownKeys', 'getPrototypeOf', 'getOwnPropertyDescriptor', "
+        "'defineProperty', 'deleteProperty', 'isExtensible', 'preventExtensions', 'setPrototypeOf']) { "
+        "traps[k] = () => { hits++; return undefined; }; } "
+        "const bads = [new Proxy({}, traps), "
+        "{ get position() { hits++; return 0; }, get rotation() { hits++; return 0; }, "
+        "valueOf() { hits++; return 1; }, toString() { hits++; return 'res://x'; } }, "
+        "{ [Symbol.toPrimitive]() { hits++; return 'res://x'; } }, new String('res://x')]; "
+        "const v = new engine.Vec3(); const q = new engine.Quat(); const out = []; "
+        "for (const bad of bads) { out.push(thrown(() => engine.spawn(bad))); "
+        "out.push(thrown(() => engine.spawn('res://x', bad))); out.push(thrown(() => engine.spawn('res://x', v, "
+        "bad))); "
+        "out.push(thrown(() => engine.spawn('res://x', v, q, bad))); } "
+        "hits + ':' + out.length + ':' + out.every((s) => s.startsWith('TypeError: engine.spawn: expected'))");
+    CHECK(outcome == "0:16:true");
+    CHECK(scene.world.entityCount() == 0U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: the World, the path and the file source are consulted in that order, after every value (PR10)") {
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    scene.vm.unbindWorld();
+    // A bad kind beats an unbound World; good arguments then meet the unbound World.
+    CHECK(scene.thrown("engine.spawn(1)") == "TypeError: engine.spawn: expected a string, got a number");
+    CHECK(scene.thrown("engine.spawn('res://assets/prefabs/three.aeroprefab')") ==
+          (prefabsParse() ? "TypeError: engine.spawn: no World is bound"
+                          : "TypeError: engine.spawn: built without AERO_REFLECT_TOOLS"));
+    REQUIRE(scene.vm.bindWorld(scene.world) == BindStatus::Ok);
+    // A bad path beats a missing file source (the path is checked first).
+    CHECK(scene.thrown("engine.spawn('bullet')") ==
+          (prefabsParse() ? "TypeError: engine.spawn: 'bullet' is not a res:// file path"
+                          : "TypeError: engine.spawn: built without AERO_REFLECT_TOOLS"));
+
+    // A VM made with no module source refuses a good path in its own words.
+    Vm bare = script_test::makeBuiltinVm();
+    engine::World other;
+    REQUIRE(bare.bindWorld(other) == BindStatus::Ok);
+    REQUIRE(script_test::completion(bare, std::string{THROWN_HELPER} + " 'ok'") == "ok");
+    CHECK(script_test::completion(bare, "thrown(() => engine.spawn('bullet'))") ==
+          (prefabsParse() ? "TypeError: engine.spawn: 'bullet' is not a res:// file path"
+                          : "TypeError: engine.spawn: built without AERO_REFLECT_TOOLS"));
+    CHECK(script_test::completion(bare, "thrown(() => engine.spawn('res://x.aeroprefab'))") ==
+          (prefabsParse() ? "TypeError: engine.spawn: 'res://x.aeroprefab': this VM has no file source"
+                          : "TypeError: engine.spawn: built without AERO_REFLECT_TOOLS"));
+    CHECK(scene.world.entityCount() == 0U);
+    CHECK(other.entityCount() == 0U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(bare);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: a path that is not a res:// file, or names no file, is refused with its own text (PR11)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const auto notAPath = [](std::string_view text) {
+        return std::format("TypeError: engine.spawn: '{}' is not a res:// file path", text);
+    };
+    CHECK(scene.thrown("engine.spawn('res://')") == notAPath("res://"));
+    CHECK(scene.thrown("engine.spawn('res://../x')") == notAPath("res://../x"));
+    CHECK(scene.thrown("engine.spawn('assets/x')") == notAPath("assets/x"));
+    CHECK(scene.thrown("engine.spawn('res://a:b')") == notAPath("res://a:b"));
+    CHECK(scene.thrown("engine.spawn('')") == notAPath(""));
+    CHECK(scene.thrown("engine.spawn('res://none.aeroprefab')") ==
+          "TypeError: engine.spawn: 'res://none.aeroprefab': no such file");
+    // A '%' in the script's text is inert: it reaches the message as characters, never as a format string.
+    CHECK(scene.thrown("engine.spawn('%s%n')") == notAPath("%s%n"));
+    CHECK(scene.thrown("engine.spawn('res://%s%n.aeroprefab')") ==
+          "TypeError: engine.spawn: 'res://%s%n.aeroprefab': no such file");
+    CHECK(scene.world.entityCount() == 0U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: a file the VM cannot hold or parse, a wrong root count and a stale view each refuse (PR12)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    constexpr std::size_t MIB = std::size_t{1024} * 1024;
+    engine::script::VmConfig config;
+    config.heapLimitBytes = MIB;
+    PrefabScene scene{script_test::patient(config)};
+    const auto refusal = [&](std::string_view path) {
+        return scene.thrown(std::format("engine.spawn('res://{}')", path));
+    };
+    // Over the heap limit: refused on the size alone, before a byte is read.
+    scene.files->set("big.aeroprefab", std::string(MIB + 1U, ' '));
+    const std::size_t readsBefore = scene.files->readCount();
+    CHECK(refusal("big.aeroprefab") == std::format("TypeError: engine.spawn: 'res://big.aeroprefab': {} bytes is more "
+                                                   "than this VM's heap limit of {}",
+                                                   MIB + 1U, MIB));
+    CHECK(scene.files->readCount() == readsBefore);
+    // A parse error names its line and column.
+    scene.files->set("bad.aeroprefab", "{\n  \"version\": 1,\n  \"entities\": [ x ]\n}\n");
+    const std::string bad = refusal("bad.aeroprefab");
+    CHECK(bad.starts_with("TypeError: engine.spawn: 'res://bad.aeroprefab': line 3, column "));
+    // Exactly one root.
+    scene.files->set("none.aeroprefab", sceneJson({}));
+    scene.files->set("two.aeroprefab", sceneJson({entityJson(1, "A", 0, ""), entityJson(2, "B", 0, "")}));
+    CHECK(refusal("none.aeroprefab") ==
+          "TypeError: engine.spawn: 'res://none.aeroprefab': a prefab has exactly one root");
+    CHECK(refusal("two.aeroprefab") ==
+          "TypeError: engine.spawn: 'res://two.aeroprefab': a prefab has exactly one root");
+    // A view of a destroyed entity draws its own error.
+    const Entity doomed = scene.place(Vec3{1.0F, 0.0F, 0.0F});
+    scene.define("d", doomed);
+    REQUIRE(script_test::completion(
+                scene.vm, "globalThis.t = d.get(engine.Transform); globalThis.pv = t.position; 'ok'") == "ok");
+    REQUIRE(scene.world.destroy(doomed));
+    const std::size_t before = scene.world.entityCount();
+    CHECK(scene.thrown("engine.spawn('res://assets/prefabs/three.aeroprefab', t)") ==
+          "TypeError: engine.spawn: the entity is not alive");
+    CHECK(scene.thrown("engine.spawn('res://assets/prefabs/three.aeroprefab', pv)")
+              .starts_with("TypeError: engine.Transform.position"));
+    CHECK(scene.world.entityCount() == before);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+namespace {
+
+constexpr std::string_view SPAWNER_PATH = "res://s/spawner.js";
+constexpr std::string_view CHILD_PATH = "res://s/child.js";
+
+[[nodiscard]] Guid scriptGuid(std::uint64_t id) { return Guid{0, id}; }
+
+// A VM over a VFS holding one backend, a World with the built-ins and the ScriptSystem over both. Non-movable: the Vm
+// borrows the VFS and the system borrows the Vm and the World; the system is declared last, so it goes first.
+class SystemScene {
+public:
+    SystemScene() {
+        auto backend = std::make_unique<script_test::MemoryBackend>();
+        files = backend.get();
+        vfs.mount(std::move(backend));
+        engine::script::VmCreateResult created = Vm::create(script_test::patient(), vfs);
+        REQUIRE(created.vm.valid());
+        vm = std::move(created.vm);
+        system = std::make_unique<ScriptSystem>(vm, world, [this](const Guid& script) { return resolve(script); });
+        REQUIRE(system->bound());
+    }
+    SystemScene(const SystemScene&) = delete;
+    SystemScene& operator=(const SystemScene&) = delete;
+    SystemScene(SystemScene&&) = delete;
+    SystemScene& operator=(SystemScene&&) = delete;
+    ~SystemScene() = default;
+
+    engine::VirtualFileSystem vfs;
+    script_test::MemoryBackend* files = nullptr;
+    engine::World world;
+    Vm vm;
+    std::unique_ptr<ScriptSystem> system;
+
+private:
+    [[nodiscard]] std::string resolve(const Guid& script) const {
+        if (script == scriptGuid(1)) {
+            return std::string{SPAWNER_PATH};
+        }
+        return script == scriptGuid(2) ? std::string{CHILD_PATH} : std::string{};
+    }
+};
+
+}  // namespace
+
+TEST_CASE(
+    "prefab: a script on a spawned entity attaches at the next update, not during the one that spawned it (PR13)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    SystemScene scene;
+    const std::string leftScript =
+        std::format(R"(, "engine::ScriptComponent": {{"script": "{}"}})", engine::formatGuid(scriptGuid(2)));
+    scene.files->set(std::string{THREE_FILE}, prefabText(0.0F, leftScript));
+    scene.files->set("s/spawner.js",
+                     script_test::classSource("  onUpdate() { if (globalThis.made === undefined) { globalThis.made = "
+                                              "engine.spawn('res://assets/prefabs/three.aeroprefab'); } }"));
+    scene.files->set("s/child.js",
+                     script_test::classSource("  onInit() { globalThis.inits = (globalThis.inits || 0) + 1; }"));
+    REQUIRE(script_test::completion(scene.vm, "globalThis.inits = 0; 'ok'") == "ok");
+    const Entity spawner = scene.world.create();
+    REQUIRE(scene.world.add<engine::ScriptComponent>(spawner, engine::ScriptComponent{scriptGuid(1)}) != nullptr);
+
+    const ScriptSystemReport first = scene.system->update(0.5);
+    CHECK(first.attached == 1U);  // the spawner alone: the snapshot of the update was taken before the spawn
+    CHECK(scene.world.entityCount() == 4U);
+    CHECK(script_test::completion(scene.vm, "String(inits)") == "0");
+    const ScriptSystemReport second = scene.system->update(0.5);
+    CHECK(second.attached == 1U);  // the spawned Left
+    CHECK(script_test::completion(scene.vm, "String(inits)") == "1");
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    scene.system.reset();
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: the tools decide only what happens after the argument checks (PR15)") {
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const bool parses = prefabsParse();
+    CHECK(scene.thrown("engine.spawn('res://none.aeroprefab')") ==
+          (parses ? "TypeError: engine.spawn: 'res://none.aeroprefab': no such file"
+                  : "TypeError: engine.spawn: built without AERO_REFLECT_TOOLS"));
+    scene.vm.unbindWorld();
+    CHECK(scene.thrown("engine.spawn('res://none.aeroprefab')") ==
+          (parses ? "TypeError: engine.spawn: no World is bound"
+                  : "TypeError: engine.spawn: built without AERO_REFLECT_TOOLS"));
+    CHECK(scene.thrown("engine.spawn(1)") == "TypeError: engine.spawn: expected a string, got a number");
+    REQUIRE(scene.vm.bindWorld(scene.world) == BindStatus::Ok);
+    CHECK(script_test::completion(scene.vm, "String(engine.spawn().alive)") == "true");  // spawn() is unchanged
+    CHECK(scene.world.entityCount() == 1U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: a spawn the heap refuses leaves no tree behind, at every limit swept (PR14)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;  // holds the log quiet: each refused allocation is a warning
+    constexpr std::size_t MIB = std::size_t{1024} * 1024;
+    constexpr std::size_t LIMITS = 24;
+    std::size_t refusing = 0;
+    for (std::size_t step = 0; step < LIMITS; ++step) {
+        engine::script::VmConfig config;
+        config.heapLimitBytes = MIB + step * 389U;
+        PrefabScene scene{script_test::patient(config)};
+        // The counter is a typed array made before the loop, so counting allocates nothing; the table holds each
+        // spawned root's object, so the heap fills with them.
+        const EvalResult filled = scene.vm.evaluateScript(
+            "globalThis.count = new Int32Array(1); "
+            "for (;;) { engine.spawn('res://assets/prefabs/three.aeroprefab'); count[0]++; }",
+            "pr14.js");
+        REQUIRE(filled.status == EvalStatus::OutOfMemory);
+        refusing += scene.vm.stats().refusedAllocations > 0U ? 1U : 0U;
+        scene.vm.unbindWorld();  // frees the table's objects, so there is room to read the counter
+        INFO("limit " << config.heapLimitBytes);
+        const std::string counted = script_test::completion(scene.vm, "String(count[0])");
+        CHECK(counted != "0");
+        CHECK(scene.world.entityCount() == 3U * std::stoul(counted));
+        script_test::expectCleanShutdown(scene.vm);
+    }
+    CHECK(refusing >= 1U);  // a refused allocation logs; the case checks the World, not the log
+}
+
+TEST_CASE("prefab: a path is read once per binding, whichever way it is spelt (PR16)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const std::size_t start = scene.files->readCount();
+    REQUIRE(script_test::completion(scene.vm,
+                                    "engine.spawn('res://assets/prefabs/three.aeroprefab'); "
+                                    "engine.spawn('res://assets/prefabs/three.aeroprefab'); 'ok'") == "ok");
+    CHECK(scene.files->readCount() == start + 1U);
+    CHECK(scene.world.entityCount() == 6U);
+    // Two spellings of one file share the entry: the key is the normalized path, not the script's text.
+    scene.files->set("a/p.aeroprefab", prefabText());
+    const std::size_t beforeSpellings = scene.files->readCount();
+    REQUIRE(script_test::completion(scene.vm,
+                                    "engine.spawn('res://a/./p.aeroprefab'); "
+                                    "engine.spawn('res://a/b/../p.aeroprefab'); "
+                                    "engine.spawn('res://a/p.aeroprefab'); 'ok'") == "ok");
+    CHECK(scene.files->readCount() == beforeSpellings + 1U);
+    CHECK(scene.world.entityCount() == 15U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: an edit during a binding changes nothing until the next bind (PR17)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const std::string spawn = "engine.spawn('res://assets/prefabs/three.aeroprefab'); 'ok'";
+    REQUIRE(script_test::completion(scene.vm, spawn) == "ok");
+    scene.files->set(std::string{THREE_FILE}, sceneJson({entityJson(1, "Solo", 0, "")}));
+    const std::size_t reads = scene.files->readCount();
+    REQUIRE(script_test::completion(scene.vm, spawn) == "ok");
+    CHECK(scene.files->readCount() == reads);  // not re-read per spawn
+    CHECK(scene.named("Root").size() == 2U);
+    CHECK(scene.named("Solo").empty());
+    // The binding ends and a new one starts: the file is read again.
+    scene.vm.unbindWorld();
+    REQUIRE(scene.vm.bindWorld(scene.world) == BindStatus::Ok);
+    REQUIRE(script_test::completion(scene.vm, spawn) == "ok");
+    CHECK(scene.files->readCount() == reads + 1U);
+    CHECK(scene.named("Root").size() == 2U);
+    CHECK(scene.named("Solo").size() == 1U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: a failed read is not remembered, so a file made good later spawns without a rebind (PR18)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const std::string missing = "engine.spawn('res://later.aeroprefab')";
+    CHECK(scene.thrown(missing) == "TypeError: engine.spawn: 'res://later.aeroprefab': no such file");
+    scene.files->set("later.aeroprefab", prefabText());
+    std::size_t reads = scene.files->readCount();
+    CHECK(scene.thrown(missing) == "none");
+    CHECK(scene.files->readCount() == reads + 1U);
+    CHECK(scene.named("Root").size() == 1U);
+
+    // A bad text reads again on every attempt, and a fixed one spawns.
+    const std::string broken = "engine.spawn('res://fixme.aeroprefab')";
+    scene.files->set("fixme.aeroprefab", "{ not json");
+    reads = scene.files->readCount();
+    CHECK(scene.thrown(broken).starts_with("TypeError: engine.spawn: 'res://fixme.aeroprefab': "));
+    CHECK(scene.thrown(broken).starts_with("TypeError: engine.spawn: 'res://fixme.aeroprefab': "));
+    CHECK(scene.files->readCount() == reads + 2U);
+    scene.files->set("fixme.aeroprefab", prefabText());
+    CHECK(scene.thrown(broken) == "none");
+    CHECK(scene.files->readCount() == reads + 3U);
+    CHECK(scene.thrown(broken) == "none");
+    CHECK(scene.files->readCount() == reads + 3U);
+    CHECK(scene.named("Root").size() == 3U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: every end of a binding empties the cache, and a VM shut down with it full is clean (PR19)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const std::string spawn = "engine.spawn('res://assets/prefabs/three.aeroprefab'); 'ok'";
+    REQUIRE(script_test::completion(scene.vm, spawn) == "ok");
+    std::size_t reads = scene.files->readCount();
+    // bindWorld on the World already bound starts a new binding.
+    REQUIRE(scene.vm.bindWorld(scene.world) == BindStatus::Ok);
+    REQUIRE(script_test::completion(scene.vm, spawn) == "ok");
+    CHECK(scene.files->readCount() == reads + 1U);
+    reads = scene.files->readCount();
+    scene.vm.unbindWorld();
+    REQUIRE(scene.vm.bindWorld(scene.world) == BindStatus::Ok);
+    REQUIRE(script_test::completion(scene.vm, spawn) == "ok");
+    CHECK(scene.files->readCount() == reads + 1U);
+    CHECK(scene.world.entityCount() == 9U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);  // the cache is full: the VM's end frees it with the table
+}
+
+TEST_CASE("prefab: a hundred spawns of a three-entity prefab, cold and warm, are reported (PR20)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    constexpr int SPAWNS = 100;
+    constexpr int WARM_RUNS = 8;
+    PrefabScene scene;
+    const std::string run = std::format(
+        "for (let i = 0; i < {}; ++i) {{ engine.spawn('res://assets/prefabs/three.aeroprefab'); }}", SPAWNS);
+    const auto timed = [&]() {
+        const auto start = std::chrono::steady_clock::now();
+        const EvalResult result = scene.vm.evaluateScript(run, "pr20.js");
+        const auto stop = std::chrono::steady_clock::now();
+        REQUIRE(result.status == EvalStatus::Ok);
+        return std::chrono::duration<double, std::milli>(stop - start).count();
+    };
+    const double cold = timed();  // the first spawn parses the file
+    std::vector<double> warm;
+    warm.reserve(static_cast<std::size_t>(WARM_RUNS));
+    for (int i = 0; i < WARM_RUNS; ++i) {
+        warm.push_back(timed());
+    }
+    std::ranges::sort(warm);
+    MESSAGE("PR20: ", SPAWNS, " spawns, cold = ", cold, " ms, warm median of ", WARM_RUNS, " = ", warm[warm.size() / 2],
+            " ms");
+    CHECK(scene.world.entityCount() == static_cast<std::size_t>(3 * SPAWNS * (1 + WARM_RUNS)));
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+namespace {
+
+// A file source that can lie. `reportedSize` is what fileSize answers when it differs from the bytes (the file grew
+// after the size was read); `readFails` makes the read return nothing although the size answered. It answers only for
+// the paths it was given, so a mount over PrefabScene's backend falls through to it for every other path.
+class FaultyBackend final : public engine::FileSystemBackend {
+public:
+    struct Entry {
+        std::string text;
+        std::optional<std::uint64_t> reportedSize;
+        bool readFails = false;
+    };
+
+    void set(std::string relPath, Entry entry) { files[std::move(relPath)] = std::move(entry); }
+    [[nodiscard]] std::size_t readCount() const noexcept { return reads; }
+
+    [[nodiscard]] bool exists(std::string_view relPath) const override { return files.contains(relPath); }
+
+    [[nodiscard]] std::optional<std::uint64_t> fileSize(std::string_view relPath) const override {
+        const auto found = files.find(relPath);
+        if (found == files.end()) {
+            return std::nullopt;
+        }
+        return found->second.reportedSize.value_or(static_cast<std::uint64_t>(found->second.text.size()));
+    }
+
+    [[nodiscard]] std::optional<engine::ByteBuffer> readFile(std::string_view relPath) const override {
+        const auto found = files.find(relPath);
+        if (found == files.end()) {
+            return std::nullopt;
+        }
+        ++reads;
+        if (found->second.readFails) {
+            return std::nullopt;
+        }
+        engine::ByteBuffer bytes;
+        bytes.reserve(found->second.text.size());
+        for (const char c : found->second.text) {
+            bytes.push_back(static_cast<std::byte>(c));
+        }
+        return bytes;
+    }
+
+private:
+    std::map<std::string, Entry, std::less<>> files;
+    mutable std::size_t reads = 0;
+};
+
+// Mounts a FaultyBackend over a PrefabScene's file source and returns it.
+[[nodiscard]] FaultyBackend& mountFaulty(PrefabScene& scene) {
+    auto backend = std::make_unique<FaultyBackend>();
+    FaultyBackend& faulty = *backend;
+    scene.vfs.mount(std::move(backend));
+    return faulty;
+}
+
+}  // namespace
+
+TEST_CASE("prefab: a wrong first argument is refused before a wrong placement is read (PR21)") {
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    // Both the path and the placement are wrong; the path's kind is the second check and the placement the third.
+    CHECK(scene.thrown("engine.spawn(3, 1)") == "TypeError: engine.spawn: expected a string, got a number");
+    CHECK(scene.thrown("engine.spawn(undefined, 1, 2, 3)") ==
+          "TypeError: engine.spawn: expected a string, got undefined");
+    CHECK(scene.thrown("engine.spawn(3, new engine.Quat(), new engine.Vec3(), new engine.Quat())") ==
+          "TypeError: engine.spawn: expected a string, got a number");
+    // And the argument count is the first check of all.
+    CHECK(scene.thrown("engine.spawn(3, 1, 2, 3, 4)") ==
+          "TypeError: engine.spawn: expected at most 4 arguments, got 5");
+    CHECK(scene.world.entityCount() == 0U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: a path is checked only after the World is, so a bad path on an unbound VM names the World (PR22)") {
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    scene.vm.unbindWorld();
+    const bool parses = prefabsParse();
+    const std::string unbound = parses ? "TypeError: engine.spawn: no World is bound"
+                                       : "TypeError: engine.spawn: built without AERO_REFLECT_TOOLS";
+    CHECK(scene.thrown("engine.spawn('bullet')") == unbound);
+    CHECK(scene.thrown("engine.spawn('res://')") == unbound);
+    CHECK(scene.thrown("engine.spawn('res://../x.aeroprefab')") == unbound);
+    // Bound again, the same texts draw the path's own refusal.
+    REQUIRE(scene.vm.bindWorld(scene.world) == BindStatus::Ok);
+    if (parses) {
+        CHECK(scene.thrown("engine.spawn('bullet')") == "TypeError: engine.spawn: 'bullet' is not a res:// file path");
+    }
+    CHECK(scene.world.entityCount() == 0U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: a file that grew past the heap limit after its size was read is refused unparsed (PR23)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    constexpr std::size_t MIB = std::size_t{1024} * 1024;
+    engine::script::VmConfig config;
+    config.heapLimitBytes = MIB;
+    PrefabScene scene{script_test::patient(config)};
+    FaultyBackend& faulty = mountFaulty(scene);
+    // The size answered is 16 bytes; the bytes that come back are one over the limit.
+    faulty.set("grown.aeroprefab", {.text = std::string(MIB + 1U, ' '), .reportedSize = 16U});
+
+    CHECK(scene.thrown("engine.spawn('res://grown.aeroprefab')") ==
+          std::format("TypeError: engine.spawn: 'res://grown.aeroprefab': {} bytes is more than this VM's heap limit "
+                      "of {}",
+                      MIB + 1U, MIB));
+    CHECK(faulty.readCount() == 1U);  // the bytes were read, and then judged
+    CHECK(scene.world.entityCount() == 0U);
+
+    // Nothing was kept: the file made small and honest spawns on the next try, without a rebind.
+    faulty.set("grown.aeroprefab", {.text = prefabText()});
+    CHECK(scene.thrown("engine.spawn('res://grown.aeroprefab')") == "none");
+    CHECK(scene.world.entityCount() == 3U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: a file whose size answers and whose read does not is refused and not remembered (PR24)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    FaultyBackend& faulty = mountFaulty(scene);
+    faulty.set("flaky.aeroprefab", {.text = prefabText(), .readFails = true});
+
+    const std::string spawn = "engine.spawn('res://flaky.aeroprefab')";
+    CHECK(scene.thrown(spawn) == "TypeError: engine.spawn: 'res://flaky.aeroprefab': no such file");
+    CHECK(faulty.readCount() == 1U);  // the read was tried, which is what tells this from a missing file
+    CHECK(scene.world.entityCount() == 0U);
+
+    // The same refusal again, so the failure was not kept; then the read heals and the spawn lands.
+    CHECK(scene.thrown(spawn) == "TypeError: engine.spawn: 'res://flaky.aeroprefab': no such file");
+    CHECK(faulty.readCount() == 2U);
+    faulty.set("flaky.aeroprefab", {.text = prefabText()});
+    CHECK(scene.thrown(spawn) == "none");
+    CHECK(scene.world.entityCount() == 3U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: a scene the layers below refuse is named by its message, with no line or column (PR25)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    // Valid JSON, so the parse stage passes; the second stage finds a parent that no entity has.
+    scene.files->set("dangling.aeroprefab", sceneJson({entityJson(1, "A", 99, "")}));
+    const std::string refused = scene.thrown("engine.spawn('res://dangling.aeroprefab')");
+    CHECK(refused.starts_with("TypeError: engine.spawn: 'res://dangling.aeroprefab': entities[0] (id 1): parent 99"));
+    CHECK(refused.find("line ") == std::string::npos);
+    CHECK(refused.find("column ") == std::string::npos);
+    CHECK(scene.world.entityCount() == 0U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: a bound World that was moved from cannot hold a copy, and the refusal says so (PR26)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const engine::World taken = std::move(scene.world);  // the VM stays bound to the object it was bound to
+
+    CHECK(scene.thrown("engine.spawn('res://assets/prefabs/three.aeroprefab')") ==
+          "TypeError: engine.spawn: 'res://assets/prefabs/three.aeroprefab': the bound World cannot hold a copy");
+    CHECK(taken.entityCount() == 0U);
+    CHECK(scene.world.entityCount() == 0U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 1U);  // the World's own ERROR, and nothing else
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: a wrong rotation kind is named before a wrong scale kind, whichever slot holds which (PR27)") {
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    REQUIRE(script_test::completion(
+                scene.vm, "globalThis.v = new engine.Vec3(); globalThis.q = new engine.Quat(); 'ok'") == "ok");
+    // The rotation slot holds a Vec3 and the scale slot a Quat: both wrong, and the rotation's is the one reported.
+    CHECK(scene.thrown("engine.spawn('a', v, v, q)") ==
+          "TypeError: engine.spawn: expected an engine.Quat, got an engine.Vec3");
+    CHECK(scene.thrown("engine.spawn('a', v, 1, q)") ==
+          "TypeError: engine.spawn: expected an engine.Quat, got a number");
+    CHECK(scene.thrown("engine.spawn('a', v, q, q)") ==
+          "TypeError: engine.spawn: expected an engine.Vec3, got an engine.Quat");
+    CHECK(scene.world.entityCount() == 0U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("prefab: every placement kind is checked before any placement value is read (PR28)") {
+    if (!prefabsParse()) {
+        return;
+    }
+    const script_test::LogCapture log;
+    PrefabScene scene;
+    const Entity doomed = scene.place(Vec3{1.0F, 0.0F, 0.0F});
+    scene.define("d", doomed);
+    REQUIRE(script_test::completion(scene.vm,
+                                    "globalThis.q = new engine.Quat(); "
+                                    "globalThis.pv = d.get(engine.Transform).position; 'ok'") == "ok");
+    REQUIRE(scene.world.destroy(doomed));
+    const std::string path = "'res://assets/prefabs/three.aeroprefab'";
+    // pv is a view of a destroyed entity: reading it fails with its own error. A wrong kind later in the argument list
+    // is found first, because no value is read until every kind has passed.
+    CHECK(scene.thrown(std::format("engine.spawn({}, pv, 1)", path)) ==
+          "TypeError: engine.spawn: expected an engine.Quat, got a number");
+    CHECK(scene.thrown(std::format("engine.spawn({}, pv, undefined, q)", path)) ==
+          "TypeError: engine.spawn: expected an engine.Vec3, got an engine.Quat");
+    // With every kind right, the stale view is read and refuses in its own words.
+    CHECK(scene.thrown(std::format("engine.spawn({}, pv)", path)).starts_with("TypeError: engine.Transform.position"));
+    CHECK(scene.world.entityCount() == 0U);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(scene.vm);
+}

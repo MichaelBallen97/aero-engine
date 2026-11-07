@@ -77,6 +77,8 @@ constexpr std::array<std::string_view, 7> TEXT_EXTENSIONS{"json", "txt", "md", "
 // .aeromat IS JSON: the browser's job here is to say what a file MEANS, and a material is an editable
 // asset with its own panel, not a text file.
 constexpr std::array<std::string_view, 1> MATERIAL_EXTENSIONS{"aeromat"};
+// task 4.4.4: the SIXTH kind table. A .aeroprefab is scene-format JSON, and like a material it is not a text file.
+constexpr std::array<std::string_view, 1> PREFAB_EXTENSIONS{"aeroprefab"};
 
 // The stb-decodable SUBSET of TEXTURE_EXTENSIONS -- deliberately a SEPARATE table (D7/seed S32), not
 // derived from it: .ktx2 and .dds are textures that get an icon, never a decode attempt.
@@ -112,6 +114,9 @@ AssetKind classifyAssetKind(std::string_view fileName, bool isDirectory) noexcep
     if (extensionIn(ext, MATERIAL_EXTENSIONS)) {
         return AssetKind::Material;
     }
+    if (extensionIn(ext, PREFAB_EXTENSIONS)) {
+        return AssetKind::Prefab;
+    }
     return AssetKind::Unknown;
 }
 
@@ -139,6 +144,8 @@ std::string_view assetKindLabel(AssetKind kind) noexcept {
             return "Material";
         case AssetKind::Script:
             return "Script";
+        case AssetKind::Prefab:
+            return "Prefab";
         case AssetKind::Unknown:
             return "Unknown";
     }
@@ -154,6 +161,10 @@ constexpr std::size_t ICON_LABEL_MAX_LENGTH = 4;
 }  // namespace
 
 std::string iconLabelFor(std::string_view fileName) {
+    // task 4.4.4: ahead of the extension rule, which would keep "AERB" of a long extension.
+    if (classifyAssetKind(fileName, /*isDirectory=*/false) == AssetKind::Prefab) {
+        return "PFAB";
+    }
     const std::string_view ext = rawExtensionOf(fileName);
     if (ext.empty()) {
         return "FILE";  // no extension, or a trailing dot ("x.")
@@ -200,6 +211,8 @@ IconColor iconColorFor(AssetKind kind) noexcept {
             return iconColorOf(EDITOR_THEME.assetKind.material);
         case AssetKind::Script:
             return iconColorOf(EDITOR_THEME.assetKind.script);
+        case AssetKind::Prefab:
+            return iconColorOf(EDITOR_THEME.assetKind.prefab);
         case AssetKind::Unknown:
             return iconColorOf(EDITOR_THEME.assetKind.unknown);
     }

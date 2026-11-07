@@ -9,6 +9,9 @@
 //
 // Order inside transformHelper (script_api.hpp rule 9): the receiver, then the kind of every argument, then every
 // argument read out whole, then the entity's Transform, then the write. A refusal writes nothing.
+//
+// Since task 4.4.4 this file also holds the two functions of spawn(asset, ...) that need the Transform type: reading
+// the placement argument, and the one call of Prefab::instantiate. script_api_prefab.cpp holds the rest.
 
 #include <aero/core/math.hpp>
 #include <aero/scene/transform.hpp>
@@ -207,6 +210,90 @@ struct TransformInput {
 }
 
 }  // namespace
+
+bool readSpawnPlacement(JSContext* ctx, const ScriptApi& api, JSValueConst* argv, SpawnPlacement& out) {
+    const std::string site = "engine.spawn";
+    const bool transformBound = api.transformComponent != NO_COMPONENT;
+    // The table check comes first: the class list is empty with the reflect tools OFF.
+    const auto* const view =
+        transformBound
+            ? static_cast<const EntityRef*>(JS_GetOpaque(argv[1], api.componentClasses[api.transformComponent]))
+            : nullptr;
+    const bool positionGiven = isVectorOf(api, argv[1], 3);
+    if (view == nullptr && !positionGiven && !JS_IsUndefined(argv[1])) {
+        std::string expected = "an engine.Vec3";
+        if (transformBound) {
+            expected = "an engine." + std::string{api.table->components()[api.transformComponent].scriptName} +
+                       " or an engine.Vec3";
+        }
+        static_cast<void>(
+            throwTypeError(ctx, site + ": expected " + expected + ", got " + describeValue(ctx, argv[1], api)));
+        return false;
+    }
+    // Every kind first; nothing is read yet.
+    if (view != nullptr) {
+        for (int slot = 2; slot <= 3; ++slot) {
+            if (!JS_IsUndefined(argv[slot])) {
+                std::string message = site;
+                message += ": expected no argument after an engine.";
+                message += api.table->components()[api.transformComponent].scriptName;
+                message += ", got ";
+                message += describeValue(ctx, argv[slot], api);
+                static_cast<void>(throwTypeError(ctx, message));
+                return false;
+            }
+        }
+    } else {
+        std::array<float, 4> unused{};
+        if (!JS_IsUndefined(argv[2]) && !isVectorOf(api, argv[2], 4)) {
+            static_cast<void>(readVectorArgument(ctx, api, argv[2], 4, site, unused));
+            return false;
+        }
+        if (!JS_IsUndefined(argv[3]) && !isVectorOf(api, argv[3], 3)) {
+            static_cast<void>(readVectorArgument(ctx, api, argv[3], 3, site, unused));
+            return false;
+        }
+    }
+    // Then each read out whole. Nothing mutates the World here; the copy into `out` is the last touch of storage.
+    SpawnPlacement placement;
+    if (view != nullptr) {
+        const Site where{{}, "spawn", {}};
+        const void* const storage = resolveStorage(ctx, api, *view, api.transformComponent, where);
+        if (storage == nullptr) {
+            return false;
+        }
+        const auto& transform = *static_cast<const Transform*>(storage);
+        placement = SpawnPlacement{transform.position, transform.rotation, transform.scale};
+        out = placement;
+        return true;
+    }
+    const std::string noText;
+    std::array<float, 4> values{};
+    if (positionGiven) {
+        if (!readVectorArgument(ctx, api, argv[1], 3, noText, values)) {
+            return false;
+        }
+        placement.position = vec3Of(values);
+    }
+    if (!JS_IsUndefined(argv[2])) {
+        if (!readVectorArgument(ctx, api, argv[2], 4, noText, values)) {
+            return false;
+        }
+        placement.rotation = quatOf(values);
+    }
+    if (!JS_IsUndefined(argv[3])) {
+        if (!readVectorArgument(ctx, api, argv[3], 3, noText, values)) {
+            return false;
+        }
+        placement.scale = vec3Of(values);
+    }
+    out = placement;
+    return true;
+}
+
+Entity instantiateAtPlacement(const Prefab& prefab, World& world, const SpawnPlacement& placement) {
+    return prefab.instantiate(world, Transform{placement.position, placement.rotation, placement.scale});
+}
 
 ComponentTypeId transformTypeId() noexcept { return componentTypeId<Transform>(); }
 

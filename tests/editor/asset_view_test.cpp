@@ -498,9 +498,9 @@ TEST_CASE("asset view: the kind-filter option list is EVERY kind, in enum order 
     // filter -- and all 1570 shell cases and all 119 GPU cases stayed green. No runtime tier can read
     // a combo's contents, so the fix was to delete the second copy rather than to test the panel: the
     // list now lives beside the enum and this case is its pin.
-    constexpr std::array<AssetKind, 8> EXPECTED{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+    constexpr std::array<AssetKind, 9> EXPECTED{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
                                                 AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
-                                                AssetKind::Script, AssetKind::Unknown};
+                                                AssetKind::Script, AssetKind::Prefab,  AssetKind::Unknown};
     REQUIRE(ASSET_KIND_FILTER_OPTIONS.size() == EXPECTED.size());
     for (std::size_t i = 0; i < EXPECTED.size(); ++i) {
         CAPTURE(i);
@@ -1691,9 +1691,10 @@ TEST_CASE("asset view: a directory named mover.ts is a Folder (AV69)") {
 TEST_CASE("asset view: Script has a label, a slot before Unknown and a theme colour (AV70)") {
     CHECK(assetKindLabel(AssetKind::Script) == "Script");
     CHECK(static_cast<int>(AssetKind::Script) == 6);
-    CHECK(static_cast<int>(AssetKind::Unknown) == 7);
+    CHECK(static_cast<int>(AssetKind::Prefab) == 7);  // task 4.4.4 inserted Prefab before Unknown
+    CHECK(static_cast<int>(AssetKind::Unknown) == 8);
     CHECK((ASSET_KIND_FILTER_OPTIONS[6] == AssetKind::Script));
-    CHECK((ASSET_KIND_FILTER_OPTIONS[7] == AssetKind::Unknown));
+    CHECK((ASSET_KIND_FILTER_OPTIONS[8] == AssetKind::Unknown));
     const engine::editor::IconColor colour = iconColorFor(AssetKind::Script);
     const engine::editor::Srgb8 token = engine::editor::EDITOR_THEME.assetKind.script;
     CHECK(colour.r == token.r);
@@ -1710,4 +1711,39 @@ TEST_CASE("asset view: the kind filter separates a Script from Text by the kind,
     CHECK(matchesFilter("mover.d.ts", false, text));
     CHECK_FALSE(matchesFilter("mover.d.ts", false, script));
     CHECK_FALSE(matchesFilter("mover.ts", true, script));
+}
+
+TEST_CASE("asset view: an .aeroprefab is a Prefab, by the suffix constant and in any case (AV72)") {
+    CHECK(classifyAssetKind("x.aeroprefab", false) == AssetKind::Prefab);
+    CHECK(classifyAssetKind("x" + std::string(engine::editor::PREFAB_FILE_SUFFIX), false) == AssetKind::Prefab);
+    CHECK(classifyAssetKind("X.AEROPREFAB", false) == AssetKind::Prefab);
+    // The directory test comes before every table: a folder is a folder whatever it is called.
+    CHECK(classifyAssetKind("x.aeroprefab", true) == AssetKind::Folder);
+    // Only the LAST extension counts.
+    CHECK(classifyAssetKind("x.aeroprefab.txt", false) == AssetKind::Text);
+    CHECK(engine::editor::PREFAB_FILE_SUFFIX == ".aeroprefab");
+}
+
+TEST_CASE("asset view: Prefab has its own label, colour and tile text (AV73)") {
+    CHECK(assetKindLabel(AssetKind::Prefab) == "Prefab");
+    // The label is unique among the kinds, and so is the colour.
+    const engine::editor::IconColor own = iconColorFor(AssetKind::Prefab);
+    for (const AssetKind other : ASSET_KIND_FILTER_OPTIONS) {
+        if (other == AssetKind::Prefab) {
+            continue;
+        }
+        CAPTURE(static_cast<int>(other));
+        CHECK(assetKindLabel(other) != assetKindLabel(AssetKind::Prefab));
+        const engine::editor::IconColor theirs = iconColorFor(other);
+        CHECK((own.r != theirs.r || own.g != theirs.g || own.b != theirs.b));
+    }
+    const engine::editor::Srgb8 token = engine::editor::EDITOR_THEME.assetKind.prefab;
+    CHECK(own.r == token.r);
+    CHECK(own.g == token.g);
+    CHECK(own.b == token.b);
+    CHECK(own.a == token.a);
+    // Four letters of "aeroprefab" would read AERB; the kind answers PFAB ahead of the truncation rule.
+    CHECK(iconLabelFor("a.aeroprefab") == "PFAB");
+    CHECK(iconLabelFor("A.AEROPREFAB") == "PFAB");
+    CHECK(iconLabelFor("a.aeroprefab.txt") == "TXT");
 }

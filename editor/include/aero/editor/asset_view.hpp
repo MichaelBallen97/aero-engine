@@ -22,8 +22,12 @@ namespace engine::editor {
 // insert rather than append because the kind is PRESENTATION-ONLY -- nothing anywhere persists its
 // numeric value (one static_cast site, transient, in the browser's kind-filter action), so Unknown
 // moving 5 -> 6 is a non-event. Task 4.4.1: Script is inserted the same way (Unknown 6 -> 7); the filter's
-// single-digit decode (asset_browser_panel.cpp) reads 0-7 and the kind stays presentation-only.
-enum class AssetKind : std::uint8_t { Folder = 0, Texture, Model, Audio, Text, Material, Script, Unknown };
+// single-digit decode (asset_browser_panel.cpp) reads 0-7 and the kind stays presentation-only. Task 4.4.4: Prefab is
+// inserted the same way (Unknown 7 -> 8); the decode reads 0-8 and the kind stays presentation-only.
+enum class AssetKind : std::uint8_t { Folder = 0, Texture, Model, Audio, Text, Material, Script, Prefab, Unknown };
+
+// The file suffix of a prefab (task 4.4.4). AV72 ties it to the classification table.
+inline constexpr std::string_view PREFAB_FILE_SUFFIX = ".aeroprefab";
 
 // Classification is on the LAST extension, ASCII-lowercased. A directory is ALWAYS Folder, whatever
 // it is called ("textures.png/" is a folder). No extension, or a trailing dot, -> Unknown.
@@ -33,6 +37,7 @@ enum class AssetKind : std::uint8_t { Folder = 0, Texture, Model, Audio, Text, M
 //   Text:     json txt md hlsl glsl ts js   (a .d.ts, an upper-case .TS and a bare ".ts" stay Text)
 //   Material: aeromat
 //   Script:   a .ts that is not a .d.ts, exact case (isScriptAssetName); decided before the tables
+//   Prefab:   aeroprefab
 [[nodiscard]] AssetKind classifyAssetKind(std::string_view fileName, bool isDirectory) noexcept;
 
 // The stb_image-readable SUBSET of Texture, and deliberately NOT the same predicate: .ktx2 and .dds
@@ -49,9 +54,9 @@ enum class AssetKind : std::uint8_t { Folder = 0, Texture, Model, Audio, Text, M
 // kind unfilterable with no error, no log and no red test anywhere (measured directly -- sabotage seed
 // S2 stayed green through all 1570 + 119 cases before this constant existed). AV53 is the pin, and it
 // works only because there is one list rather than two.
-inline constexpr std::array<AssetKind, 8> ASSET_KIND_FILTER_OPTIONS{
-    AssetKind::Folder, AssetKind::Texture,  AssetKind::Model,  AssetKind::Audio,
-    AssetKind::Text,   AssetKind::Material, AssetKind::Script, AssetKind::Unknown};
+inline constexpr std::array<AssetKind, 9> ASSET_KIND_FILTER_OPTIONS{
+    AssetKind::Folder,   AssetKind::Texture, AssetKind::Model,  AssetKind::Audio,  AssetKind::Text,
+    AssetKind::Material, AssetKind::Script,  AssetKind::Prefab, AssetKind::Unknown};
 
 // "wood.png"->"PNG"; "scene.gltf"->"GLTF"; "model.blend1"->"BLE1" (4 max); "README"->"FILE".
 // ASCII uppercase only; a non-ASCII byte anywhere in the extension falls back to "FILE" rather than

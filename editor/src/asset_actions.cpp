@@ -274,6 +274,31 @@ AssetNameRefusal validateAssetName(std::string_view leaf) noexcept {
     return AssetNameRefusal::None;
 }
 
+// task 4.4.4: uniqueMaterialFileName's loop, promoted verbatim in behaviour. The compare is the file-local
+// asciiCaseEqual (the case-only carve-out's), which is the same ASCII fold New Material has always used.
+std::string uniqueAssetFileName(std::string_view stem, std::string_view suffix, std::span<const std::string_view> taken,
+                                std::size_t maxAttempts) {
+    for (std::size_t attempt = 1; attempt <= maxAttempts; ++attempt) {
+        std::string candidate(stem);
+        if (attempt > 1) {
+            candidate += '-';
+            candidate += std::to_string(attempt);
+        }
+        candidate += suffix;
+        bool collides = false;
+        for (const std::string_view existing : taken) {
+            if (asciiCaseEqual(candidate, existing)) {
+                collides = true;
+                break;
+            }
+        }
+        if (!collides) {
+            return candidate;
+        }
+    }
+    return {};  // exhausted -- the caller logs ONE WARN and writes nothing
+}
+
 AssetOpRefusal assetOpPathLadder(AssetOpKind kind, std::string_view sourceRelative,
                                  std::string_view destinationDirRelative) noexcept {
     // Rung 1: the assets root is the PROJECT's, not the browser's. CreateFolder is the one kind for

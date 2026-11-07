@@ -31,8 +31,11 @@
 //     runs receiver, then value, then target, then write.
 
 #include <aero/core/guid.hpp>
+#include <aero/core/math.hpp>
 #include <aero/core/slot_map.hpp>
+#include <aero/core/vfs.hpp>
 #include <aero/scene/entity.hpp>
+#include <aero/scene/prefab.hpp>
 #include <aero/script/internal/component_binding.hpp>
 #include <aero/script/vm.hpp>
 
@@ -127,6 +130,13 @@ struct ScriptApi {
     // The table index of the Transform binding, or NO_COMPONENT (the table is empty with the reflect tools OFF). The
     // transform helpers are installed on that class only.
     std::size_t transformComponent = NO_COMPONENT;
+    // spawn(asset, ...) reads a prefab file through these (task 4.4.4): the VM's module source, borrowed, null when the
+    // VM was made with none, and the heap limit that caps a file's size as it caps a module's.
+    const VirtualFileSystem* modules = nullptr;
+    std::size_t heapLimitBytes = 0;
+    // "res://..." (normalized) -> the prefab read from that file under the current binding. Emptied with the entity
+    // table, so a new binding reads the file again; a failed read inserts nothing. It holds no JSValue.
+    std::unordered_map<std::string, Prefab> prefabs;
 };
 
 enum class ClassCheck : std::uint8_t {
@@ -155,8 +165,8 @@ void releaseScriptApi(JSContext* ctx, ScriptApi& api) noexcept;
 // earlier binding, or no World) gets a new non-extensible object the table never holds. JS_EXCEPTION, with an exception
 // pending, when the heap limit refused it.
 [[nodiscard]] JSValue entityObjectFor(JSContext* ctx, ScriptApi& api, const EntityRef& ref);
-// Frees every held object and empties the table, the destroy queue and the marks. noexcept: JS_FreeValue runs only the
-// shared finalizer (finalizeOpaque), never script code.
+// Frees every held object and empties the table, the destroy queue, the marks and the prefab cache. noexcept:
+// JS_FreeValue runs only the shared finalizer (finalizeOpaque), never script code.
 void releaseEntityObjects(JSContext* ctx, ScriptApi& api) noexcept;
 // A new array holding the entity object of each of `entities`, in order, all of the current binding (the array rule: no
 // World access happens while objects are made). JS_EXCEPTION, with an exception pending, when the heap limit refused
@@ -177,17 +187,38 @@ struct WorldFunction {
 };
 // In magic order. query's length is World::MAX_QUERY_TYPES (8), so argv always holds 8 values.
 inline constexpr std::array<WorldFunction, 5> WORLD_FUNCTIONS{
-    {{"spawn", 0}, {"destroy", 1}, {"find", 1}, {"findAll", 1}, {"query", 8}}};
+    {{"spawn", 4}, {"destroy", 1}, {"find", 1}, {"findAll", 1}, {"query", 8}}};
 inline constexpr std::size_t MAX_QUERY_CLASSES = 8;
+// spawn's length is its most arguments: spawn(asset, position, rotation, scale) (rule 2: argv[0..3] only).
+inline constexpr int SPAWN_MAX_ARGUMENTS = 4;
+static_assert(WORLD_FUNCTIONS[0].length == SPAWN_MAX_ARGUMENTS);
 // One handler per entry of WORLD_FUNCTIONS, each with its checks in the contract's order. They build strings and
 // vectors, so they are not noexcept: the host function that calls them (script_api.cpp) is, and keeps their throwing
 // paths out of its own translation unit, which clang-tidy's bugprone-exception-escape would otherwise report (the
 // reason childrenArray gives).
-[[nodiscard]] JSValue spawnEntity(JSContext* ctx, ScriptApi& api, int argc);
+// spawnEntity serves spawn(): with no argument, a new entity; with any, spawnPrefab.
+[[nodiscard]] JSValue spawnEntity(JSContext* ctx, ScriptApi& api, int argc, JSValueConst* argv);
 [[nodiscard]] JSValue queueDestroy(JSContext* ctx, ScriptApi& api, JSValueConst value);
 [[nodiscard]] JSValue findEntity(JSContext* ctx, ScriptApi& api, JSValueConst value);
 [[nodiscard]] JSValue findAllEntities(JSContext* ctx, ScriptApi& api, JSValueConst value);
 [[nodiscard]] JSValue queryEntities(JSContext* ctx, ScriptApi& api, int argc, JSValueConst* argv);
+
+// ---- spawn(asset, ...) (script_api_prefab.cpp, script_api_transform.cpp) -----------------------------------------
+// A placement as spawn reads it. Not the component: script_api_transform.cpp is the one source that may name it.
+struct SpawnPlacement {
+    Vec3 position;
+    Quat rotation;
+    Vec3 scale = Vec3::one();
+};
+// The whole of spawn(asset, ...), the checks in the contract's order. Not noexcept: it builds strings; the host
+// function that calls it (script_api.cpp) is.
+[[nodiscard]] JSValue spawnPrefab(JSContext* ctx, ScriptApi& api, int argc, JSValueConst* argv);
+// The kinds of argv[1..3], every kind before any read, then each read out whole. False: a TypeError is pending and
+// nothing has changed. Reads argv[1] to argv[3] only: spawn's length is 4 (rule 2).
+[[nodiscard]] bool readSpawnPlacement(JSContext* ctx, const ScriptApi& api, JSValueConst* argv, SpawnPlacement& out);
+// The one call of Prefab::instantiate in the script layer: it needs a Transform, which only script_api_transform.cpp
+// may name. A null Entity: the prefab or the World refused.
+[[nodiscard]] Entity instantiateAtPlacement(const Prefab& prefab, World& world, const SpawnPlacement& placement);
 
 // ---- engine.input (script_api_input.cpp) --------------------------------------------------------------------------
 // The functions of the frozen object `engine.input`. One host function (script_api.cpp) serves them all; its magic is

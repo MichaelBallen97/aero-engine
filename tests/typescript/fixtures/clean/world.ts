@@ -20,6 +20,18 @@ export default class World extends engine.Script {
         const two: engine.Entity[] = engine.query(engine.Transform, engine.MeshRenderer);
         const queued: boolean = engine.destroy(b);
         void [count, hit, all, none, one, two, queued];
+
+        const asset = "res://assets/prefabs/bullet.aeroprefab";
+        const planted: engine.Entity = engine.spawn(asset);
+        const placedAt: engine.Entity = engine.spawn(asset, new engine.Vec3(1, 2, 3));
+        const turned: engine.Entity = engine.spawn(asset, new engine.Vec3(), new engine.Quat());
+        const sized: engine.Entity = engine.spawn(asset, new engine.Vec3(), new engine.Quat(), new engine.Vec3(2, 2, 2));
+        const own = this.entity.get(engine.Transform);
+        if (own) {
+            const copied: engine.Entity = engine.spawn(asset, own);
+            void copied;
+        }
+        void [planted, placedAt, turned, sized];
     }
 
     onUpdate(dt: number): void {

@@ -8,6 +8,7 @@ add_library(aero_scene STATIC
     src/transform.cpp  # task 1.3.2 — engine::Transform's matrices + the builtin-registration hook
     src/camera.cpp     # task 1.3.3 — engine::Camera's view/projection matrices
     src/animation_player.cpp  # task 3.5.2 — engine::AnimationPlayer's playback clock
+    src/prefab.cpp  # task 4.4.4 -- engine::Prefab, a saved entity tree
 )
 add_library(aero::scene ALIAS aero_scene)
 

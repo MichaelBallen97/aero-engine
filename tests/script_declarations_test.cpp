@@ -1,5 +1,5 @@
 // Aero Engine -- the TypeScript declarations against a live VM (task 4.2.2; DT1-DT7, since 4.4.1 DT22-DT25, since
-// 4.4.2 DT26-DT28, and since 4.4.3 DT29-DT32).
+// 4.4.2 DT26-DT28, since 4.4.3 DT29-DT32, and since 4.4.4 DT33-DT35).
 //
 // The build joins engine/script/types/prelude.d.ts with one reflect-gen --emit-dts block per built-in component header
 // into aero-engine.d.ts. These cases read that file from disk with a deliberately strict reader (the line grammar in
@@ -48,6 +48,7 @@ struct DeclaredMember {
     int arity = -1;         // a method's parameter count; -1 for a field
     bool optional = false;  // `name?(...)`: a method a script may define, never a property of the prototype
     bool rest = false;      // the last parameter is a rest parameter (`...types: T[]`); arity still counts it
+    int overloads = 1;      // adjacent function lines of one name, merged; arity is their largest
 };
 struct DeclaredClass {
     std::string name;
@@ -339,8 +340,25 @@ enum class Context : std::uint8_t { Top, Namespace, Map, TypeBody, Class, Interf
                 } else if (startsWith(line, "function ")) {  // a method form only: a field after `function` is refused
                     DeclaredMember function;
                     if (parseMember(line.substr(9), function) && function.arity >= 0 && !function.optional) {
-                        result.functions.push_back(function);
-                        understood = true;
+                        const auto& all = result.functions;
+                        if (!all.empty() && all.back().name == function.name) {
+                            // Adjacent lines of one name are overloads: one entry, the largest arity.
+                            DeclaredMember& previous = result.functions.back();
+                            if (previous.rest || function.rest) {
+                                refuse("function " + function.name + " overloads a rest parameter");
+                                return result;
+                            }
+                            previous.arity = std::max(previous.arity, function.arity);
+                            ++previous.overloads;
+                            understood = true;
+                        } else if (std::any_of(all.begin(), all.end(),
+                                               [&](const DeclaredMember& m) { return m.name == function.name; })) {
+                            refuse("function " + function.name + " is declared apart from its overloads");
+                            return result;
+                        } else {
+                            result.functions.push_back(function);
+                            understood = true;
+                        }
                     }
                 } else if (startsWith(line, "class ") && endsWith(line, " {")) {
                     const std::string_view name = leadingIdent(line.substr(6));
@@ -1342,4 +1360,96 @@ TEST_CASE("declarations: engine.input's unions list the name tables' names in ta
         CHECK(unions[i].name == expected[i].first);
         CHECK(unions[i].members == expected[i].second);  // order too: the declarations list the table as written
     }
+}
+
+TEST_CASE("declarations: adjacent function lines of one name are one entry with the largest arity (DT33)") {
+    const std::string open = "declare namespace engine {\n";
+    const Declarations twoUp = parseDeclarations(open +
+                                                 "    function f(a: string): Thing;\n"
+                                                 "    function f(a: string, b: number): Thing;\n"
+                                                 "}\n");
+    CHECK(twoUp.error.empty());
+    REQUIRE(twoUp.functions.size() == 1U);
+    CHECK(twoUp.functions[0].name == "f");
+    CHECK(twoUp.functions[0].arity == 2);
+    CHECK(twoUp.functions[0].overloads == 2);
+
+    // The larger arity first: the entry keeps it, not the last line's.
+    const Declarations twoDown = parseDeclarations(open +
+                                                   "    function f(a: string, b: number): Thing;\n"
+                                                   "    function f(a: string): Thing;\n"
+                                                   "}\n");
+    CHECK(twoDown.error.empty());
+    REQUIRE(twoDown.functions.size() == 1U);
+    CHECK(twoDown.functions[0].arity == 2);
+    CHECK(twoDown.functions[0].overloads == 2);
+
+    // Three lines with the largest in the middle, between two neighbours that stay apart and in file order.
+    const Declarations three = parseDeclarations(open +
+                                                 "    function before(): void;\n"
+                                                 "    function f(a: string): Thing;\n"
+                                                 "    function f(a: string, b: number, c: number): Thing;\n"
+                                                 "    function f(): Thing;\n"
+                                                 "    function after(a: number): void;\n"
+                                                 "}\n");
+    CHECK(three.error.empty());
+    REQUIRE(three.functions.size() == 3U);
+    CHECK(three.functions[0].name == "before");
+    CHECK(three.functions[0].arity == 0);
+    CHECK(three.functions[0].overloads == 1);
+    CHECK(three.functions[1].name == "f");
+    CHECK(three.functions[1].arity == 3);
+    CHECK(three.functions[1].overloads == 3);
+    CHECK(three.functions[2].name == "after");
+    CHECK(three.functions[2].arity == 1);
+    CHECK(three.functions[2].overloads == 1);
+}
+
+TEST_CASE("declarations: a function repeated apart, or with a rest parameter, is refused at its line (DT34)") {
+    const std::string open = "declare namespace engine {\n";
+    // A repeat with another function between is a duplicate, not an overload.
+    CHECK(refusedAt(open + "    function f(a: string): Thing;\n"
+                           "    function g(): void;\n"
+                           "    function f(a: string, b: number): Thing;\n"
+                           "}\n",
+                    4));
+    CHECK(refusedAt(open + "    function f(): Thing;\n"
+                           "    function f(a: string): Thing;\n"
+                           "    function g(): void;\n"
+                           "    function f(a: number): Thing;\n"
+                           "}\n",
+                    5));
+    // A rest parameter on either adjacent line leaves the arity ambiguous.
+    CHECK(refusedAt(open + "    function f(a: string): Thing;\n"
+                           "    function f(...rest: number[]): Thing;\n"
+                           "}\n",
+                    3));
+    CHECK(refusedAt(open + "    function f(...rest: number[]): Thing;\n"
+                           "    function f(a: string): Thing;\n"
+                           "}\n",
+                    3));
+    // The message names the cause.
+    const Declarations apart = parseDeclarations(open +
+                                                 "    function f(): Thing;\n"
+                                                 "    function g(): void;\n"
+                                                 "    function f(a: string): Thing;\n"
+                                                 "}\n");
+    CHECK(apart.error.find("function f is declared apart from its overloads") != std::string::npos);
+}
+
+TEST_CASE("declarations: spawn is declared as three overloads whose largest arity is the runtime's length (DT35)") {
+    const Declarations declared = parseDeclarations(builtFile());
+    REQUIRE(declared.error.empty());
+    const auto spawn = std::find_if(declared.functions.begin(), declared.functions.end(),
+                                    [](const DeclaredMember& function) { return function.name == "spawn"; });
+    REQUIRE(spawn != declared.functions.end());
+    CHECK(spawn->overloads == 3);
+    CHECK(spawn->arity == 4);
+    CHECK_FALSE(spawn->rest);
+
+    engine::script::Vm vm = makeBuiltinVm();
+    const std::string live = completion(vm, RUNTIME_FUNCTIONS_SCRIPT);
+    expectCleanShutdown(vm);
+    CHECK(live.find("spawn/4") != std::string::npos);
+    CHECK(live.find("spawn/0") == std::string::npos);
 }

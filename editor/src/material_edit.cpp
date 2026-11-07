@@ -12,6 +12,7 @@
 // (--warnings-as-errors on the Linux lane) rejects a non-enum switch without one outright. They take
 // render::materialSlotAt()'s own shape instead -- `default:` answering baseColor -- which is the
 // authority for "which slot is index k" and the thing ME14 walks against.
+#include <aero/editor/asset_actions.hpp>  // task 4.4.4: uniqueAssetFileName, the loop New Material's name delegates to
 #include <aero/editor/material_edit.hpp>
 
 #include <cstddef>
@@ -28,25 +29,6 @@ namespace {
 // same four letters for CLASSIFICATION; the two tables are separate by the same recorded design that
 // keeps the browser's kind table and the thumbnail table apart.
 constexpr std::string_view MATERIAL_FILE_SUFFIX = ".aeromat";
-
-// ASCII-only, locale-independent. NEVER std::tolower(char): UTF-8 continuation bytes are NEGATIVE as
-// char, which is UB and trips bugprone-signed-char-misuse (asset_view.cpp's own note, copied
-// TU-locally -- there is no shared header for a two-line function).
-constexpr unsigned char foldAscii(unsigned char c) noexcept {
-    return (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + ('a' - 'A')) : c;
-}
-
-[[nodiscard]] bool namesEqualFolded(std::string_view a, std::string_view b) noexcept {
-    if (a.size() != b.size()) {
-        return false;
-    }
-    for (std::size_t i = 0; i < a.size(); ++i) {
-        if (foldAscii(static_cast<unsigned char>(a[i])) != foldAscii(static_cast<unsigned char>(b[i]))) {
-            return false;
-        }
-    }
-    return true;
-}
 
 }  // namespace
 
@@ -177,25 +159,7 @@ bool materialSlotIsSrgb(std::size_t index) noexcept {
 
 std::string uniqueMaterialFileName(std::string_view stem, std::span<const std::string_view> taken,
                                    std::size_t maxAttempts) {
-    for (std::size_t attempt = 1; attempt <= maxAttempts; ++attempt) {
-        std::string candidate(stem);
-        if (attempt > 1) {
-            candidate += '-';
-            candidate += std::to_string(attempt);
-        }
-        candidate += MATERIAL_FILE_SUFFIX;
-        bool collides = false;
-        for (const std::string_view existing : taken) {
-            if (namesEqualFolded(candidate, existing)) {
-                collides = true;
-                break;
-            }
-        }
-        if (!collides) {
-            return candidate;
-        }
-    }
-    return {};  // exhausted -- the caller logs ONE WARN and writes nothing (AC-6)
+    return uniqueAssetFileName(stem, MATERIAL_FILE_SUFFIX, taken, maxAttempts);  // task 4.4.4: the loop moved
 }
 
 }  // namespace engine::editor

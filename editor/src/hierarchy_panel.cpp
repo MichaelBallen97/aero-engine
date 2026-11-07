@@ -6,6 +6,8 @@
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/entity_presentation.hpp>
 #include <aero/editor/panel_context.hpp>
+#include <aero/editor/project.hpp>        // task 4.4.4: ProjectSession::isOpen, for the Save as Prefab item
+#include <aero/editor/scene_session.hpp>  // task 4.4.4: sceneIoAvailable
 #include <aero/editor/selection.hpp>
 #include <aero/editor/shortcut_hint.hpp>  // task E.6.2: Duplicate's hint
 #include <aero/scene/mesh_renderer.hpp>   // task 3.1.5: the row arm asks the LIVE World, never the payload
@@ -513,6 +515,11 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
         }
         if (ImGui::MenuItem("Duplicate", chordHint(currentHostOs(), {.ctrl = true}, "D").c_str())) {
             pending = PendingAction{.kind = ActionKind::Duplicate, .target = entity};
+        }
+        // task 4.4.4: records the row and nothing more; EditorApp::tick writes the file (a panel has neither the
+        // browser's folder nor the assets root). Enabled only where a save can succeed.
+        if (ImGui::MenuItem("Save as Prefab", nullptr, false, sceneIoAvailable() && context.project.isOpen())) {
+            pendingSavePrefab = entity;
         }
         if (ImGui::MenuItem("Delete", "Del")) {
             pending = PendingAction{.kind = ActionKind::Delete, .target = entity};

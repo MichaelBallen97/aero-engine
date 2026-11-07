@@ -1915,7 +1915,7 @@ void AssetBrowserPanel::applyPending() {
             if (action.path == "all") {
                 filter.anyKind = true;
             } else if (!action.path.empty()) {
-                // A single digit, 0-7 -- static_cast<int>(AssetKind) (§D-7's PendingAction shape).
+                // A single digit, 0-8 -- static_cast<int>(AssetKind) (§D-7's PendingAction shape).
                 // No std::stoi: the no-exceptions rule (docs/04) extends to this control-flow path too.
                 //
                 // THE CEILING, written down at task 3.4.2 rather than discovered at kind eleven: this

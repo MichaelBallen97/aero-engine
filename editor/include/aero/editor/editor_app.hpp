@@ -300,6 +300,10 @@ public:
     // (2.2.5 D16) and viewportCamera() (2.3.1 D6) do: without it, D10's per-frame reconcile has no
     // black-box signature, AC-31 is unprovable and sabotage seed S14 would redden nothing at all.
     [[nodiscard]] std::string_view assetBrowserRoot() const noexcept;
+    // task 4.4.4: the Asset Browser's selected entry, relative to its root ("" when nothing is selected or no Asset
+    // Browser panel is registered) -- the GPU tier's one window onto the browser's selection. The same view caveat as
+    // assetBrowserRoot().
+    [[nodiscard]] std::string_view assetBrowserSelection() const noexcept;
     // How many entries the recents list currently holds. Exists for the same reason
     // assetBrowserRoot() (A9) does: without it, AC-34 ("restoreLastProject == false never reads the
     // recents file") is provable only as a downstream consequence (projectIsOpen()/projectRoot()
@@ -636,6 +640,10 @@ public:
     // the next tick()'s reconcile block. `kind` is static_cast<std::uint8_t>(AssetKind) so AssetKind
     // stays out of this header's surface, exactly as modelImportState() keeps SessionState out.
     void requestHierarchyAssetDrop(Guid guid, std::uint8_t kind, Entity targetRow);  // Entity{} == the void
+    // task 4.4.4: the Hierarchy's "Save as Prefab" item, as a seam. It writes the SAME member the menu item writes
+    // (HierarchyPanel::requestSavePrefab), drained by the next tick's reconcile block. A no-op when no Hierarchy panel
+    // is registered.
+    void requestHierarchySavePrefab(Entity row);
     // task E.5.2: the Create pipeline's seam. Writes the SAME member the menu bar's click is copied into
     // after drawShellUi, so a seam and a click are indistinguishable downstream; the next tick's reconcile
     // block applies it (applyCreate).
@@ -838,6 +846,15 @@ private:
     // path (D12), so this adds no writeTextFileAtomic call site at all.
     [[nodiscard]] bool createMaterialAsset(std::string_view directoryRel);
 
+    // task 4.4.4 (D11): Save as Prefab's DRAIN, called from tick()'s reconcile block and nowhere else. `row` is the
+    // Hierarchy row the item was opened on: the whole selection when it is inside it, otherwise that row alone, both
+    // through topMost (reparentTargets). Every precondition is RE-DERIVED here, because a project can close and a row
+    // can die between the click and the tick. Returns true iff a file was written, which the caller folds into the
+    // same `refresh` the material create does, so the write and the scan that mints its `.meta` are ONE pass. A
+    // refusal logs exactly ONE WARN and writes nothing. It reads the selection and the World and writes neither, and it
+    // never touches the CommandStack: a file is not an edit.
+    [[nodiscard]] bool savePrefabAsset(Entity row);
+
     // ---- task E.4.3: the five orchestrating methods -----------------------------------------------
     // Each takes createMaterialAsset's shape verbatim: the PANEL's root, refuse an empty one, list
     // with includeHidden = true, plan, execute, log exactly ONE line, and requestSelectEntry the
@@ -892,6 +909,9 @@ private:
     // The import -> plan -> command sequence. `placement` is the ROOT entity's local Transform, so the
     // same plan serves a viewport drop (a world point) and a Hierarchy drop (local identity).
     void instantiateModelDrop(const AssetRecord& record, Entity parent, const Transform& placement);
+    // task 4.4.4: the same sequence for a .aeroprefab -- read, parse, one InstantiatePrefabCommand. `placement` is the
+    // copy's root placement composed with the saved root's own Transform.
+    void instantiatePrefabDrop(const AssetRecord& record, Entity parent, const Transform& placement);
     // A material assignment is a SetFieldCommand on MeshRenderer's "material" field -- no new command
     // type, and undo comes free.
     void pushMaterialAssign(Entity entity, Guid material);

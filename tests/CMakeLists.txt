@@ -54,6 +54,7 @@ add_executable(aero_tests
     script_input_test.cpp # task 4.4.3 -- engine.input: the name tables, the binding and the functions (SI1-SI17)
     script_system_test.cpp # task 4.4.1 -- ScriptSystem: the lifecycle over one World (LC1-LC25, LC27, LC31-LC38, LC40-LC49, LC51-LC53)
     script_world_test.cpp # task 4.4.2 -- the entity table, the world functions and the destroy queue (WA1-WA28)
+    script_prefab_test.cpp # task 4.4.4 -- spawn(asset, ...): the forms, the refusals and the cache (PR1-PR28)
     script_math_test.cpp # task 4.4.2 -- the Vec3 and Quat helpers (VX1-VX15)
     platform_test.cpp
     platform_event_test.cpp
@@ -72,6 +73,7 @@ add_executable(aero_tests
     scene_format_test.cpp # task 1.2.3 — scene format v1: envelope/version/hierarchy + canonical round-trip
     material_format_test.cpp # task 3.4.1 — material format v1: envelope/defaults/tokens + canonical round-trip
     scene_test.cpp        # task 1.3.1 — engine::World over EnTT: entities, components, queries, registration
+    scene_prefab_test.cpp # task 4.4.4 -- engine::Prefab: capture, fromWorld, instantiate (PW1-PW30)
     transform_test.cpp    # task 1.3.2 — engine::Transform, the World-owned forest, world matrices
     camera_test.cpp       # task 1.3.3 — engine::Camera: defaults/layout/projection/view/registration
     light_test.cpp        # task 1.3.3 — engine::DirectionalLight + PointLight
@@ -553,6 +555,7 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/skeleton_cook_source_test.cpp
                editor/animation_cook_source_test.cpp
                editor/asset_drag_test.cpp
+               editor/prefab_asset_test.cpp    # task 4.4.4 -- the prefab command, the text bridge and the save (PE1-PE19)
                editor/instantiate_plan_test.cpp
                editor/asset_commands_test.cpp
                editor/material_from_import_test.cpp
