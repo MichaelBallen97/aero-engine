@@ -17,6 +17,17 @@ function(sdk_fail id)
     message(FATAL_ERROR "${id}: ${ARGN}")
 endfunction()
 
+# sdk_normalise_separators(<out> <text>): the text with `\` read as `/`, a run of `/` as one, and a `/` before a space
+# dropped. A tool writes a path its own way -- CMake on Windows writes backslashes into compile_commands.json, doubled
+# by JSON, and a shell-quoted space as `\ ` -- so a search for a path in tool output normalises the text and the path
+# with this one function and only then looks. A path goes through file(TO_CMAKE_PATH) first.
+function(sdk_normalise_separators out text)
+    string(REPLACE "\\" "/" text "${text}")
+    string(REGEX REPLACE "/+" "/" text "${text}")
+    string(REPLACE "/ " " " text "${text}")
+    set(${out} "${text}" PARENT_SCOPE)
+endfunction()
+
 # sdk_executable_path(<out> <binary dir> <target>)
 function(sdk_executable_path out binary target)
     set(suffix "")
