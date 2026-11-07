@@ -190,6 +190,10 @@ target_compile_definitions(aero_tests PRIVATE AERO_SCRIPT_SRC_DIR="${CMAKE_SOURC
 target_compile_definitions(aero_tests PRIVATE
     AERO_PLATFORM_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/engine/platform/include")
 
+# task 4.5.1: platform_test.cpp's BP1 compares platform::basePath() with the folder Ninja writes aero_tests into, through
+# std::filesystem::equivalent, so no spelling is compared. UNGATED: it names a folder, not a feature.
+target_compile_definitions(aero_tests PRIVATE AERO_TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}")
+
 # task 4.1.2: script_module_test.cpp's ML13/ML14/ML43 mount tests/fixtures/scripts at the res:// root through a
 # DirectoryBackend -- Epic 4.1's Definition of Done read off real files. A PATH, NOT A FLAG (the
 # AERO_AUDIO_FIXTURES_DIR rule below): a missing fixture is a REQUIRE failure, never a silent skip. UNGATED: both

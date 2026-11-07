@@ -8,6 +8,9 @@
 
 #include <doctest/doctest.h>
 
+#include <filesystem>
+#include <string>
+#include <system_error>
 #include <utility>
 
 TEST_CASE("headless Context is valid") {
@@ -100,4 +103,55 @@ TEST_CASE("a fresh Context has empty input state and newFrame is callable") {
     CHECK(ctx.input().mousePosition().x == doctest::Approx(0.0f));
     ctx.newFrame();  // no-op on empty state; must be callable
     CHECK_FALSE(ctx.input().keyPressed(engine::platform::Key::W));
+}
+
+namespace {
+
+// Restores the working directory on every exit path, so a failed REQUIRE cannot leave later cases elsewhere.
+struct CurrentPathGuard {
+    std::filesystem::path saved = std::filesystem::current_path();
+    CurrentPathGuard() = default;
+    CurrentPathGuard(const CurrentPathGuard&) = delete;
+    CurrentPathGuard& operator=(const CurrentPathGuard&) = delete;
+    ~CurrentPathGuard() {
+        std::error_code ec;
+        std::filesystem::current_path(saved, ec);
+    }
+};
+
+}  // namespace
+
+TEST_CASE("platform: basePath is the executable's folder with a trailing separator, with no Context (BP1)") {
+    const std::string base = engine::platform::basePath();
+    REQUIRE_FALSE(base.empty());
+    const char last = base.back();
+    CHECK((last == '/' || last == '\\'));
+    std::error_code ec;
+    CHECK(std::filesystem::equivalent(std::filesystem::path{base}, std::filesystem::path{AERO_TEST_BINARY_DIR}, ec));
+    CHECK_FALSE(ec);
+}
+
+TEST_CASE("platform: basePath does not follow the current directory (BP2)") {
+    const std::string before = engine::platform::basePath();
+    REQUIRE_FALSE(before.empty());
+    std::error_code ec;
+    const std::filesystem::path elsewhere = std::filesystem::temp_directory_path(ec);
+    REQUIRE_FALSE(ec);
+    const CurrentPathGuard guard;
+    std::filesystem::current_path(elsewhere, ec);
+    REQUIRE_FALSE(ec);
+    CHECK_FALSE(std::filesystem::equivalent(std::filesystem::current_path(), std::filesystem::path{before}, ec));
+    CHECK(engine::platform::basePath() == before);
+}
+
+TEST_CASE("platform: basePath is a copy that outlives SDL_Quit (BP3)") {
+    std::string during;
+    {
+        engine::platform::Context ctx{{.headless = true}};
+        REQUIRE(ctx.valid());
+        during = engine::platform::basePath();
+    }
+    const std::string after = engine::platform::basePath();
+    REQUIRE_FALSE(during.empty());
+    CHECK(during == after);
 }
