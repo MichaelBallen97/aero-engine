@@ -1415,3 +1415,13 @@ if(AERO_REFLECT_TOOLS)
     aero_add_typescript_case(clean)
     aero_add_typescript_case(broken)
 endif()
+
+# ---------------------------------------------------------------------------------------------
+# task 4.5.1: the AERO_SDK configuration. The entries exist only in an SDK tree (the *-sdk presets), so every other
+# configuration's `ctest -N` is unchanged. sdk.refusals runs cmake/sdk_check.cmake alone under `cmake -P`, one
+# combination per arm, and needs no build.
+if(AERO_SDK)
+    add_test(NAME sdk.refusals COMMAND ${CMAKE_COMMAND}
+        -DCHECK=${CMAKE_SOURCE_DIR}/cmake/sdk_check.cmake
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/sdk/refusals.cmake)
+endif()
