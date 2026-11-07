@@ -404,6 +404,18 @@ jobs:
           AERO_REQUIRE_TSC: 1   # a missing TypeScript compiler is a FAILURE, not a skip, as a missing GPU is (task 4.2.2)
         run: ${{ matrix.ctest_launcher }} ctest --preset ${{ matrix.preset }}-release
 
+      # A separate tree from both of the above: `*-release` links Tracy and `*-debug` carries the sanitizers, and the
+      # SDK is the engine as a consumer links it, with neither. It writes only build/<preset>-sdk, so the steps
+      # after it still read build/<preset>-release.
+      - name: Configure, build & test — SDK (task 4.5.1)
+        shell: bash
+        env:
+          AERO_REQUIRE_GPU: ${{ matrix.require_gpu }}   # a consumer with no GPU is a FAILURE, not a skip
+        run: |
+          cmake --preset ${{ matrix.preset }}-sdk
+          cmake --build --preset ${{ matrix.preset }}-sdk
+          ${{ matrix.ctest_launcher }} ctest --preset ${{ matrix.preset }}-sdk
+
       - name: Print the mp3/ogg cook digests (task 3.7.1, D12)
         shell: bash
         # THE ONE MEASUREMENT IN THIS WORKFLOW THAT IS NOT A CHECK. cooker.audio_lossy_digests cooks
