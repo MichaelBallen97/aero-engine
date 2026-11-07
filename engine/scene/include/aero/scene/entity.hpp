@@ -8,8 +8,8 @@
 // noun: `using Entity = Handle<Entity>` would be a name clash.
 //
 // The backing ECS identifier is 64 bits wide (32-bit index + 32-bit version) precisely so this
-// mapping is lossless and a stale handle can never alias a live one — see the World's own header and
-// engine/scene/internal/aero/scene/internal/world_access.hpp for the conversion.
+// mapping is lossless and a stale handle can never alias a live one — see the World's own header; the
+// conversion itself lives in the engine-internal ECS seam.
 
 #include <aero/core/handle.hpp>
 
