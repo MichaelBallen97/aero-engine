@@ -1443,4 +1443,12 @@ if(AERO_SDK)
     unset(_aero_sdk_case)
     set_tests_properties(sdk.install PROPERTIES FIXTURES_SETUP sdk_prefix)
     set_tests_properties(sdk.prefix sdk.headers PROPERTIES FIXTURES_REQUIRED sdk_prefix)
+
+    # The C++ mini-game, built against that prefix alone and run twice. It needs a GPU: without one the driver prints
+    # `sdk: SKIPPED` and exits 0, which the regular expression turns into a skip. It never exits 77 (a ctest skip code
+    # would hide a missing GPU from AERO_REQUIRE_GPU).
+    add_test(NAME sdk.mini_game COMMAND ${CMAKE_COMMAND} ${_aero_sdk_args}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/sdk/mini_game.cmake)
+    set_tests_properties(sdk.mini_game PROPERTIES
+        FIXTURES_REQUIRED sdk_prefix RESOURCE_LOCK sdk_prefix TIMEOUT 1500 SKIP_REGULAR_EXPRESSION "sdk: SKIPPED")
 endif()
