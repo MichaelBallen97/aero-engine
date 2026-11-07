@@ -287,6 +287,24 @@ private:
     fs::path dirPath;
 };
 
+// CP15 only. The process working directory is global state, so it is restored by a destructor that runs on a thrown
+// REQUIRE as well as on success.
+class ScopedCwd {
+public:
+    explicit ScopedCwd(const fs::path& to) : previous(fs::current_path()) { fs::current_path(to); }
+    ~ScopedCwd() {
+        std::error_code ec;
+        fs::current_path(previous, ec);
+    }
+    ScopedCwd(const ScopedCwd&) = delete;
+    ScopedCwd& operator=(const ScopedCwd&) = delete;
+    ScopedCwd(ScopedCwd&&) = delete;
+    ScopedCwd& operator=(ScopedCwd&&) = delete;
+
+private:
+    fs::path previous;
+};
+
 [[nodiscard]] std::string readAll(const std::string& path) {
     const ed::FileReadResult read = ed::readTextFile(path);
     return read.text.value_or(std::string("<unreadable>"));
@@ -401,7 +419,11 @@ TEST_CASE("cpp_project: a file named src fails src/main.cpp alone and is not rem
 TEST_CASE("cpp_project: a root that is a file, or empty, fails every file and writes nothing (CP15)") {
     const TempDir dir("CP15");
     putBytes(dir.join("root-is-a-file"), "x");
+    // The working directory is a folder this case owns, so no other test or ctest entry writes into what is counted.
+    const TempDir workDir("CP15_cwd");
+    const ScopedCwd cwd(workDir.path());
     const std::size_t before = countEntries(fs::current_path());
+    REQUIRE(before == 0);
 
     const ed::CppProjectReport onFile = ed::writeCppProject(dir.join("root-is-a-file"), DEMO_NAME);
     CHECK_FALSE(onFile.ok());
