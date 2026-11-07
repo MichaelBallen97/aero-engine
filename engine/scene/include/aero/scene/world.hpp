@@ -55,7 +55,7 @@
 namespace engine {
 
 namespace scene::internal {
-struct WorldAccess;  // the entt seam (engine/scene/internal/...); befriended by World below
+struct WorldAccess;  // the engine's internal ECS seam, not part of an installed SDK; World befriends it below
 }  // namespace scene::internal
 
 namespace scene::detail {
