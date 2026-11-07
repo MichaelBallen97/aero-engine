@@ -299,12 +299,31 @@ Subtasks:
 - Define the header install set; sweep for third-party leakage
 - Write a mini-game against it; fix what's missing
 
+**Outcome:** a C++ game builds against an installed engine and nothing else. The `<os>-sdk` presets (`AERO_SDK`: Release,
+no profiling, no sanitizers, both tool options ON) install the eleven static layers, 87 of the 95 public headers, the
+80 compiled shaders, four third-party link files and a hand-written CMake package. A consumer runs
+`find_package(AeroEngine)` and `aero_add_game` with no toolchain file, and no third-party include directory reaches its
+compile line (`docs/04`, "The C++ SDK"). The writing of the mini-game found two gaps.
+`World::registerComponent<T>` registers a game's own component types per World, with no ECS type in a public header, and
+`platform::basePath()` names the folder the shipped data sits in. `scene_serialize::loadPrefabText` lets a C++ game load
+a prefab without quickjs. On MSVC the package pins the release DLL runtime in every configuration.
+`samples/phase-4-scripting/cpp` is the mini-game, and its README's rules are the reference for the TypeScript half. Six
+`sdk.*` entries prove the prefix on all three CI lanes: its layout, a moved prefix, every header compiling alone, the
+refusals and the mini-game's scripted run.
+
 ### 4.5.2 C++ project template · P0 · M · depends: 4.5.1
 **Goal:** `New Project (C++)` produces something that builds.
 **Deliverable:** CMake template project linking the engine with a hello-cube gameplay loop.
 Subtasks:
 - Template project (CMake + engine link + entry point)
 - Hello-cube gameplay; documented build steps
+
+**Outcome:** a C++ project's four files (`CMakeLists.txt`, a hello-cube `src/main.cpp`, `README.md` and `.gitignore`)
+render from `editor/templates/cpp-project/` in one pass over three tokens, with the name sanitised into `game_<...>`
+for CMake and escaped into the window's title (`docs/09` section 4.12). `writeCppProject` writes each file only when
+nothing is at its path, and never reads, merges, renames or removes anything. `sdk.template` writes a project into a
+folder with a space in its name, builds it from the README's own commands against the SDK prefix, and runs the
+hello-cube to its frame limit. New Project calls the writer in 4.6.1.
 
 ---
 
@@ -315,7 +334,7 @@ Subtasks:
 
 ### 4.6.1 Language field + editor gating · P0 · S · depends: 2.6.1, 4.4.1, 4.5.2
 **Goal:** wire the fork into the project system.
-**Deliverable:** `language: "ts" | "cpp"` set at creation (immutable after); script panels/import active only for TS projects, template generation for C++. Task E.6.4 ships the New Project dialog's language control disabled, TypeScript shown selected, with the tooltip "Not implemented yet -- task 4.6.1"; this task enables it and gives createProject the choice (NEW_PROJECT_LANGUAGE today).
+**Deliverable:** `language: "ts" | "cpp"` set at creation (immutable after); script panels/import active only for TS projects, template generation for C++. Task E.6.4 ships the New Project dialog's language control disabled, TypeScript shown selected, with the tooltip "Not implemented yet -- task 4.6.1"; this task enables it and gives createProject the choice (NEW_PROJECT_LANGUAGE today). Template generation is `writeCppProject` (4.5.2, `docs/09` section 4.12): New Project calls it for a C++ project, into the project folder it has just made.
 Subtasks:
 - Creation-dialog language choice → `project.json`
 - Feature gating by language across editor UI

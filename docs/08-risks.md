@@ -47,6 +47,7 @@
 | **R37** | **A script recursing past about 50 levels from a hook fails in Debug builds only** (decided by task 4.4.1, 2026-11-01) — from `onUpdate` the deepest recursion is 56 calls in Debug and 535 in Release at the 512 KiB default stack. The engine's frames below a hook cost nothing measurable, and a realistic hook chain uses 4 / 5 frames' worth. Release recursion from global code reads 536 against 4.1.1's 544; the cause was not investigated | Low | Low | **Accepted (4.4.1, D8):** no larger default stack (above 512 KiB, Windows' 1 MiB main thread needs `/STACK`), no `/STACK`, and no optimised Debug backend (it would cross MSVC's Debug and Release runtimes for one port, unmeasured). Editors and exported games run Release builds. Revisit when a real script needs deeper recursion in Debug |
 | **R38** | **Windows' DirectInput driver can stall a real-driver gamepad start-up for up to a minute** (raised by task 4.4.3's spike, 2026-11-03) — SDL's own comment (`joystick/windows/SDL_dinputjoystick.c:407-411`) warns that DirectInput's initialisation can take a minute with no controller attached. A Context with `GamepadDrivers::System` starts that driver; `VirtualOnly` sets `SDL_HINT_JOYSTICK_DIRECTINPUT` to `0` and skips it, and no CI lane runs `System` on Windows (GP22 runs it on macOS only). Not measured: no Windows host has run it | Med | Med | Time `System`'s Context construction on the Windows validation pass, with and without a pad. If it stalls, the editor (4.7.1) and the runtime (Phase 5) can turn DirectInput off through the hint, at the cost of the pads only DirectInput reads |
 | **R39** | **BS8 can go red on Windows on a branch that touches nothing near it** (raised by task 4.4.4's CI, 2026-11-05) — BS8 (`blender_service_test.cpp:635`) reopens a child's log for a truncating write right after `ToolProcess`'s destructor. The destructor force-kills and destroys with no wait (`tool_process.cpp:78-80`), which on Windows is `TerminateProcess` (`SDL_windowsprocess.c:561`), and the child holds the log through the handle it inherited from `SDL_IOFromFile`, opened by `CreateFileW` with share mode 0 (`SDL_iostream.c:126-128`). A reopen while that handle lives fails, and `writeBytes`'s REQUIRE reads false (`:118`). Seen once: PR #135's run `42014951944`, attempt 1, Windows Release, one case of 2540; Debug passed in the same job, attempt 2 passed with no change, and none of the six earlier failed runs checked names BS8. The cause is read from the source, not reproduced: no Windows host is at hand | Low | Low | A red on this case alone, on a first attempt, is this race: rerun the failed job once, and treat a second red as a defect. The fix is its own small change (an unowned handoff below): wait for the child after the kill in `reset`, or give BS8's reopen a bounded retry |
+| **R40** | **A game component's storage leans on two private EnTT virtuals** (raised by Epic 4.5, 2026-11-08) — `World::registerComponent<T>` gives a game's own type a `RuntimeStorage` (`world.cpp`), a storage sized at run time that overrides two of EnTT's private virtuals so it can live in the registry beside the typed pools. A version `static_assert` fences the pinned EnTT 3.16, so a bump fails to compile rather than misbehaving. A run-time pool id can also collide with a later typed pool, at about 2^-32 per pair. That is reachable only through a typed registration made after the World is built, which only tests do. MSVC and GCC first compiled and ran it on PR #136's CI, green | Low | Med | An EnTT bump re-reads the two virtuals, re-runs RG1–RG18 and re-measures the pool-id walk before the `static_assert` moves. Never widen the fence to a version range |
 
 ---
 
@@ -73,7 +74,7 @@ Decisions deliberately deferred until there is data or the relevant phase arrive
 Work a task found, measured or declined that no task in `docs/tasks/` owns yet. The list moved here from
 `CLAUDE.md`'s state block on 2026-10-26, where a pointer to this section remains.
 
-**NINETY-THREE UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**NINETY-SEVEN UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs in `CLAUDE.md`'s state block (fact
 4's four permitted cases, the inspector-row gap, the closed `File` section, E.1.1's fired thick-line handoff) are
@@ -293,6 +294,21 @@ not repeated here.
   case where no point hits, and it is not: `ndcToViewportPoints` collapses the click and every projected point to (0, 0),
   every non-mesh entity in front of the eye sits at distance 0, all of them hit, and the lowest index wins. Measured by
   I378 in a shader-tools-OFF build. Either the comment or `pickEntity`'s degenerate case changes.
+- **The TypeScript half of the two-language demo** (4.5.1) — Story 4's first line asks that the C++ mini-game "plays the
+  same logic as the TypeScript small game", and no TypeScript small game exists. The rules in
+  `samples/phase-4-scripting/cpp/README.md` are the reference: every constant, the frame order and the scripted run's
+  pinned line. The TypeScript half is written against them when Story 3's demo is assembled, after Play (4.7.1, 4.7.2
+  and 4.7.4).
+- **A published SDK archive per tag** (4.5.1) — the SDK exists only as `cmake --install` of an `<os>-sdk` preset. Nothing
+  builds, names or uploads a prefix per OS on a tag. It sits beside 5.2.3's precompiled runtime, and no task owns it.
+- **New Project writing a C++ project** (4.5.2) — for 4.6.1. `writeCppProject(projectRoot, name)` (`docs/09` section
+  4.12) has no product caller. The test driver `sdk.template` and its `aero_sdk_project_writer` tool are its only callers
+  until New Project calls it for `language: "cpp"`. The folder it fills is made by the caller, and a TypeScript project
+  gets none of its files.
+- **A game in a macOS bundle** (4.5.1) — for 5.4.1. Inside a `.app`, `basePath()` is `Contents/Resources`, while
+  `aero_add_game` copies `shaders/` (and a game's `assets/`, by the sample's own rule) beside the executable in
+  `Contents/MacOS`. The validation pass had to copy them into `Contents/Resources` by hand to run either game as a bundle.
+  An exported macOS game needs that copy.
 
 ---
 
@@ -434,6 +450,14 @@ configurations on PR #135's run (`42014951944`, attempt 2), 228 / 228 and 233 / 
 float comparisons in PW23–PW25 and I370, I373–I375's Asset Browser at 320x180 and PE19's write failure held under MSVC and
 GCC. Linux's leak checker reported nothing, PR19's full cache at shutdown included, and clang-tidy found nothing on the
 Linux lane. The same run's attempt 1 was red on BS8 alone (R39).
+
+**EPIC 4.5 (4.5.1 AND 4.5.2) OWES A WINDOWS PAGE AND A LINUX PAGE.** No manual pass has run off macOS, and all eight of
+the page's rows are owed by hand on both: the generated project built from its README alone, and the hello-cube's
+window, turning cube, arrow keys and Escape. Owed too are the mini-game's movement keys and arena edge, a held Space's
+fire rate and range, its three hits, and Escape. CI's lanes ran the SDK step for the first time on PR #136's run
+(`42383159907`), with `sdk.*` 6 / 6 on each, so a game built and ran against an installed prefix under MSVC and GCC too,
+a Windows Debug consumer linked against the `/MD` SDK among them. Every new doctest case ran green there in both
+configurations, 228 / 228 on Windows and 233 / 233 on Linux.
 
 **METHOD TRAPS FOR DRIVING THE EDITOR, ALL MEASURED.** A pending TCC prompt stalls the editor to ~0.2% CPU
 with a window that **NEVER RENDERS** (a black capture); the prompts **CASCADE**, one per bundle identity, and

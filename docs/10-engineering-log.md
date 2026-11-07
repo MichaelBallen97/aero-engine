@@ -72,6 +72,8 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | 4.4.2 Entity/world API | #133 | `1094266` | **3 / 3**, nothing failed (terminal rows, no editor UI: the 81 new cases under `leaks`, 0 leaks; LC48's update spawning and destroying 1 000 entities at a median of 0.671–0.677 ms in Release against 1.94 ms; WA27's `find` / `findAll` / `query` over 10 000 entities at most 29.1 / 44.0 / 129.2 µs in Release against 90.9 / 134.4 / 405.1 µs, both bounds 3 × the Release medians measured afterwards at the commits that added the cases). Three code-review rounds (four should-fix in round 1: a strict "sloppy" arm, a commuting `lookAt` sample, a missing `<ostream>`, and an attach failure counted for an entity the flush destroyed; one in round 2, the flushed subtree's erase untested; all closed, round 3 approved); a 135-row sabotage matrix whose seven predicted holes WA29–WA34 and VM88 closed and re-ran red; no new risk or handoff; CI green on the first push (`41544399893`, 6 / 6) and on `main`'s push run (`41553547614`, 6 / 6) |
 | 4.4.3 Input API for scripts | #134 | `c852d42` | **2 / 2**, nothing failed (terminal rows, no editor UI: the 49 new cases under `leaks`, 0 leaks; GP13's `VirtualOnly` Context construction at a median of 2.35 ms in Release against 7.14 ms, 3 × the Release median at the commit that added the case; one row NOT EXECUTABLE: a physical pad and the play-in-editor rows). One code-review round (one minor: the frame-model comments lacked the gamepad sentences, fixed); an 86-row sabotage matrix whose four holes, three of them predicted, closed with GP23–GP26 and re-ran red; R38 (Windows' DirectInput stall) and three unowned handoffs (4.7.1, 4.7.4, Phase 5); CI green on the first push (`41728157319`, 6 / 6) and on `main`'s push run (`41745107998`, 6 / 6) |
 | 4.4.4 Prefab-lite spawn | #135 | `25f93d1` | **11 / 11**, nothing failed (the editor GUI driven on macOS: Save as Prefab on one root, a root with a child and two roots; three real drops; undo and redo through the Edit menu; a reopen; the item greyed with no project; a hundred spawns at a warm median of 0.165–0.190 ms in Release against 16.6 ms; the 61 engine cases under `leaks`, 0 leaks; no row NOT EXECUTABLE). Two code-review rounds (round 1: three should-fix, among them capture's non-finite pivot, and three minor; round 2: two minor; all closed); a 219-row sabotage matrix whose 22 holes, all predicted, closed with PW27–PW30, PR21–PR28, PE18–PE19 and I378–I383 and re-ran red, three more rows witnessed by the page; R39 (BS8's reopen races Windows' process teardown) and four unowned handoffs; CI red on attempt 1 on BS8 alone, on Windows Release, then green with no change (`42014951944`, 6 / 6), and green on `main`'s push run (`42326395560`, 6 / 6) |
+| 4.5.1 Public C++ API surface audit | #136 | `8a20539` | **8 / 8** with 4.5.2, one page for the epic, nothing failed (macOS, Release, against a prefix installed from `74e288b`: the generated project configured and built with the prefix as its only path, in an environment of `HOME`, `PATH` and `TMPDIR`; the hello-cube's title `Cube Demo ñ`, turning cube, arrow keys and Escape; the mini-game's eight movement keys, the x ≈ ±8 edge, 4.64 shots a second each visible 0.93–0.95 s, all three hits and Escape; no row NOT EXECUTABLE). Epic 4.5 ran as one branch and one PR, with `f859048` as 4.5.1's last commit. Two code-review rounds (round 1: one blocking, the Windows separators in SDK27; three should-fix, among them the Windows Debug refusal that plan section H replaced with the runtime pin; two minor; round 2: one minor; all closed). Sabotage: 59 doctest and 40 ctest rows; six holes, all predicted, five closed with RG17, RG18, PT8, CP18 and SDK30 and re-run red, and C33 a non-finding; six rows witnessed by the page. R40 and four unowned handoffs. CI: the PR's run `42383159907` was 6 / 6 green on its first attempt, with the SDK step 6 / 6 on all three lanes; `main`'s push run `42391543025` was 6 / 6 green |
+| 4.5.2 C++ project template | #136 | `8a20539` | **8 / 8**: the same page, PR and merge as 4.5.1 (rows 1–4 are this task's) |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -21726,3 +21728,237 @@ include directory reaches no consumer. `engine/scene` gains `prefab.hpp` and `pr
 `scene_prefab_test.cpp` and `script_prefab_test.cpp`, and the shell binary `tests/editor/prefab_asset_test.cpp`. Docs:
 `docs/09` section 17 and section 9.0, `docs/08` (R39, four unowned handoffs, the mount bullet and the validation debt), the
 phase file, and the scripting, components, editor-assets, cooked-assets and tests rule files.
+
+### 4.5.1 + 4.5.2 — Public C++ API surface audit and C++ project template — a C++ game builds against an installed engine SDK alone, the editor can write a C++ project that does, and Epic 4.5 closes
+
+A C++ game now builds against an installed engine and nothing else. The `<os>-sdk` presets install the eleven static
+engine layers, 87 public headers, the 80 compiled shaders and a hand-written CMake package into one relocatable prefix,
+and a game needs `find_package(AeroEngine)` and `aero_add_game`, with neither vcpkg nor this repository. A game's own
+component types register at run time through `World::registerComponent<T>`. The C++ mini-game in
+`samples/phase-4-scripting/cpp` is the first game written against the prefix. `writeCppProject` writes a C++ project's
+four files, and that project builds and runs its hello-cube against the same prefix. The two tasks ran as one unit: one
+spec, one plan, one branch, one review loop, one sabotage matrix, one validation page and one PR. Merged as PR #136
+(`8a20539`, a true merge commit): twenty-five commits on `2ded76d`. They are 4.5.1's eight steps with a test-only
+clang-tidy commit before its docs (`0586966`), the boundary commit `f859048` that ends 4.5.1, 4.5.2's four steps, the
+gate's clang-tidy fix, seven round-1 fix commits, three round-2 commits and the commit that closed the sabotage holes.
+CI: run `42383159907` at `74e288b` was 6 / 6 green on its first attempt, and it was the SDK step's first run on every
+lane, `sdk.*` 6 / 6 on macOS, Windows and Linux. `main`'s push run `42391543025` on the merged head was
+6 / 6 green. This is Story 4's first line, its third line and the template half of its second. The dialog half of
+the second line and all of the fourth are 4.6.1's, so Story 4's demo has not run.
+
+**What shipped.**
+- **Public component registration** (`world.hpp`, `world.cpp`; RG1–RG18). `World::registerComponent<T>(name)` makes a
+  game's own type a component of one World, and no ECS type appears in a public header.
+  - The World builds a `RuntimeStorage` sized at run time from a table of T's operations (`ComponentOps`: size,
+    construct, relocate, destroy) that the header instantiates for T. `RuntimeStorage` overrides two private EnTT
+    virtuals, fenced by a version `static_assert` (R40). An empty T is a tag and stores nothing (RG8, RG17).
+  - Registration is idempotent and per World (RG10, RG13, RG18). A second name for one T keeps the first and warns; one
+    name on two types warns once, and `findComponentType` keeps the first (RG11).
+  - T must be a plain value type: no `const`, `volatile` or reference; default-, copy- and nothrow-move-constructible;
+    aligned no further than `__STDCPP_DEFAULT_NEW_ALIGNMENT__`. Any other type fails to compile with a `static_assert`
+    that names the rule (SDK16, SDK30).
+  - An unregistered type logs an ERROR and yields `nullptr`, `false` or 0 (RG9). A copy that throws leaves the entity
+    without the component and the pool intact (RG16).
+  - A capture skips a game type with one WARN per type (RG12), and a saved document never holds one (RG15).
+- **`platform::basePath()`** (`context.hpp`, `platform.cpp`; BP1–BP3). It returns the folder a game reads its shipped
+  data from: the executable's folder, or `Contents/Resources` inside a macOS bundle. The path is UTF-8, ends in a
+  separator, and is empty when the OS cannot say. It needs no `Context`, ignores the current directory, and the copy
+  outlives `SDL_Quit`.
+- **`scene_serialize::loadPrefabText`** (PT1–PT8). The `.aeroprefab` parse moves out of `script_api_prefab.cpp`, so a C++
+  game loads a prefab without quickjs. `PrefabLoadResult` holds a `Prefab` or an error: `line L, column C: <reason>`, a
+  bare reason for a scene-stage failure, or `a prefab has exactly one root`. `engine.spawn(path, ...)` calls it, and
+  PR1–PR28 run unchanged.
+- **The `AERO_SDK` configuration** (`CMakeLists.txt`, `cmake/sdk_check.cmake`, `CMakePresets.json`; SDK1–SDK3, SDK28,
+  SDK29). `macos-sdk`, `windows-sdk` and `linux-sdk` inherit `sdk-base`: Release, no profiling, no sanitizers, both tool
+  options ON, the `aero_sdk` target, installed into `build/sdk/<preset>`. Configure refuses every other configuration,
+  and `sdk_check.cmake` also runs alone under `cmake -P`. `AERO_SDK` defaults to OFF, and an OFF tree gains no ctest
+  entry and no `find_package`.
+- **The prefix and its package** (`cmake/sdk_install.cmake`, `cmake/AeroEngineConfig.cmake`, `cmake/aero_add_game.cmake`;
+  SDK4–SDK15). `docs/04`'s "The C++ SDK" holds the layout and the eight headers left out (the profiler, six tool-time
+  cook headers and `cooked_script.hpp`). `install(EXPORT)` was rejected: it needs fourteen files edited and reddens
+  audio-boundary's Parts 1c and 1d. `sdk_install.cmake` classifies every link item by name. It writes the link graph with
+  `file(WRITE)` (`AeroEngineGraph.cmake`) and the per-OS file names with `file(GENERATE)` (`AeroEngineFiles.cmake`), and
+  any item it does not know is a configure error. `aero::engine` is an INTERFACE target over the eleven layers;
+  `aero::script` is not among them. No third-party include directory reaches a consumer. `aero_add_game` links
+  `aero::engine` under C++20 and copies the shaders (and, on Windows, the DLLs) beside the executable.
+- **The MSVC runtime pin** (plan section H; SDK3, SDK10, SDK28, SDK29). `find_package(AeroEngine)` sets
+  `CMAKE_MSVC_RUNTIME_LIBRARY` to `MultiThreadedDLL` above its `find_dependency` calls, so every target defined after it
+  links the release DLL runtime in every configuration and under every generator. A project that set another runtime is
+  refused, by name.
+- **The C++ mini-game** (`samples/phase-4-scripting/cpp`; SDK17–SDK21). A player cube, three targets, and bullets
+  copied from `assets/bullet.aeroprefab` plus two game components. Every rule is a named `constexpr`, and the README
+  lists them as the reference. `--scripted` plays 600 frames from a fixed key table and prints
+  `mini_game: frames=600 fired=8 hits=3 bullets=0 entities=4 drawn=<n>`. The exit codes are 1 for a failure, 2 for an
+  unknown argument and 3 for no window or GPU device. A copy of the executable, `shaders/` and `assets/` runs from
+  anywhere (SDK21). The tree builds it as an SDK consumer would, when both tool options are on.
+- **CI's SDK step**: "Configure, build & test — SDK" on all three lanes, in a build tree of its own.
+- **Installed headers** name no file a prefix lacks: `scene.hpp`, `entity.hpp`, `log.hpp`, `cooked_audio.hpp` and
+  `world.hpp:58` were reworded.
+- **The template** (`editor/templates/cpp-project/*.in`, `cpp_project_template.{hpp,cpp}`, `cpp_project_template_data.hpp`;
+  CP1–CP9, CP18).
+  - Four 7-bit files are embedded into `aero_editor_core` through `aero_embed_text_files`.
+  - `renderCppProject` replaces `@AERO_PROJECT_ID@`, `@AERO_PROJECT_TITLE@` and `@AERO_PROJECT_NAME@` in one
+    left-to-right pass (`docs/09` section 4.12).
+  - The identifier is `game_` plus the sanitised name, and the title is a C literal's body with three-digit octal escapes.
+  - The hello-cube is a lit, spinning cube that the arrow keys move and Escape ends. `--frames <n>` stops it after n frames
+    and prints `hello-cube: frames=<n> updates=<n>`.
+- **The writer** (CP10–CP17). `writeCppProject` reports one outcome per file. It writes a file only when `entryExists` (a
+  `symlink_status` test that never follows a link) finds nothing at the path, and it never reads, merges, renames or
+  removes anything. `cpp_project_template.cpp` is Check A's ninth file, with its seed and stage 20 in
+  `no_delete_e2e.cmake`.
+- **`sdk.template`** (`tests/sdk/template.cmake`, `tests/sdk/project_writer_tool.cpp`; SDK22–SDK27). The
+  `aero_sdk_project_writer` tool (in every configuration, `EXCLUDE_FROM_ALL`) writes a project into a folder with a space
+  in its name. The driver builds it from the README's own commands and runs it to `hello-cube: frames=30 updates=30`.
+
+**Code-review rounds.**
+- Round 1 (`2ded76d..dafdfbc`): one blocking, three should-fix and two minor, all closed in seven commits.
+  - Blocking: SDK27 searched the compile database for a forward-slash prefix, which Windows' Ninja writes with
+    backslashes. F1 added one `sdk_normalise_separators` that SDK11 and SDK27 share.
+  - Should-fix, plan: the Windows Debug refusal tested `CMAKE_BUILD_TYPE`, which a multi-config generator ignores. Plan
+    section H replaced the refusal with the runtime pin, SDK28 and SDK29.
+  - Should-fix: CP15 counted ctest's shared working directory. It now owns its own.
+  - Should-fix: a dangling symlink at a template path read as absent and was replaced. F4 added `entryExists` and CP17.
+  - Minor: four installed headers named files the prefix lacks, and `docs/04` said `sdk.prefix` copies the prefix where
+    it moves it.
+- Round 2 (`dafdfbc..f944b7f`): one minor, `world.hpp:58`.
+  - Section H.5 decided its weaker class: a comment that cites the engine's source, a tool-time header or an editor
+    header as provenance stays, and the rules file says so.
+  - CP17's symlink target became relative.
+  - The loop ended.
+
+**The sabotage matrix.** Two matrices at `75e939b`.
+- doctest: 59 rows through `macos-debug`. RED 49, HOLE 4 (S12, S13, S29 and S32), and VALIDATION 6 (S54–S59).
+- ctest: 40 rows through a task-local companion that applies seeds with the same `seed.sh` and runs the `sdk.*` drivers,
+  the project-no-delete e2e stage and two compile rows. RED 36, COMPILE-RED 2 (C3 and C40) and HOLE 2 (C23 and C33).
+- All six holes were predicted at seed design. `74e288b` closed five: RG17 (S12), RG18 (S13), PT8 (S29), CP18 (S32) and
+  SDK30 (C23).
+- S60–S63 repeat S12, S13, S29 and S32's edits with selectors that include the new cases, and came back RED 4. C19–C23,
+  the `sdk.headers` rows, re-ran RED 5 after `headers.cmake` changed.
+- C33 is a non-finding. Its edit is S48's, which CP11 and CP12 catch, and SDK23 claims only that the digests are
+  unchanged, which an identical rewrite keeps.
+- The validation page's rows 2–6 and 8 witness S54–S59.
+
+**Traps found, each measured.**
+- **An imported target is directory-scoped.** At root scope `if(TARGET EnTT::EnTT)` is false, so a `TARGET` test lets
+  `glm::glm` and `EnTT::EnTT` into the package graph silently. Classification goes by name. `SDL3::Headers` carries
+  include directories and no binary.
+- **`alignof(std::max_align_t)` is 8 on arm64 macOS**, where a plain `new` aligns to 16, so a limit taken from it would
+  accept a different set of types on this lane than on the others. The contract uses
+  `__STDCPP_DEFAULT_NEW_ALIGNMENT__`.
+- **A header comment holding `;` splits a CMake list.** `headers.cmake` masks `;`, `[` and `]` before `MATCHALL`, and
+  takes the first `<...>` or `"..."` token as the operand.
+- **`std::filesystem::exists` follows a link.** Before F4, CP17 failed three checks: `Written` instead of `Unchanged`, the
+  entry no longer a symlink, and `read_symlink` empty.
+- **Windows' Ninja writes include flags with backslashes** (`cmOutputConverter::ConvertDirectorySeparatorsForShell`, read
+  from CMake v3.31.0's source, not run). Every driver search of a path in tool output normalises separators first.
+- **ctest omits `, N tests failed` at 100 %**, so the companion matrix's first parser stopped at its baseline.
+- **A holes-mode case must also extend its row's selector.** S12, S13, S29 and S32 re-run with their old selectors stayed
+  HOLE, and S60–S63 exist for that reason.
+- **`doctest-totals.sh` marks a tree STALE when its binaries predate HEAD's commit time**, so a docs-only head shows STALE
+  on a tree with no work to do.
+- **A hand-installed prefix goes stale.** `sdk.install` re-creates only `<build>/sdk-test/prefix`. The validation pass
+  found `build/sdk/macos-sdk` installed before the branch's last header edits, with five of its 87 headers differing in
+  comments, and installed a fresh prefix of its own.
+- **A game window takes a signed `.app` for synthetic keys**, as the editor does. In a bundle `basePath()` is
+  `Contents/Resources`, so the pass copied `shaders/` (and the mini-game's `assets/`) there, which `aero_add_game` does
+  not do (a handoff for 5.4.1).
+- **The pinned EnTT deprecates `entry.second.type()`** for `.info()` in a registry storage walk (RG14).
+
+**Where the implementation departed from the plan.**
+- Step 1: `relocateComponent` carries `NOLINT(bugprone-use-after-move)` on the moved-from object's destructor call.
+  `constructComponent` value-initialises with `T()`. `swap_or_move` also returns early when `from == to`. RG14 finds its
+  pool by walking the registry's storages.
+- Step 5: `headers.cmake` masks list separators (above). `sdk.install` holds the prefix's resource lock as its readers
+  do, and every driver has a 1500 s timeout. `consumer.cpp.in` takes the address of one non-overloaded function per
+  layer.
+- Step 6: `sdk.mini_game` sits inside `if(AERO_SDK)` with no tool-option test, since `sdk_check.cmake` refuses an SDK
+  tree without both. SDK21 compares the summary line without its `drawn=` field.
+- Step 8: `0586966` cleared five clang-tidy findings and the EnTT deprecation in earlier steps' tests, so the boundary
+  commit stays docs-only.
+- Step 9: CP8 compares a render with each template file after a test-side token replace, because the data header is
+  private to `src/`. The hello-cube ignores `registerComponent`'s result; a failed registration shows as `updates=0`.
+- Step 11: the driver substitutes the test's prefix for the README's `<engine>/build/sdk/<os>-sdk`, appends
+  `--parallel 3`, and passes `CMAKE_EXPORT_COMPILE_COMMANDS` through the environment. `tests/CMakeLists.txt` includes
+  `cmake/embed.cmake` itself.
+- Review round 1: the spec's call 10 ("a Windows Debug consumer is refused") became plan section H's runtime pin.
+- The closing figures replace the plan's predictions: `aero_tests` 2045, `aero_editor_shell_test` 2558 and
+  `aero_scene_serialize_test` 52, not 2043, 2556 and 51, because of RG17, RG18, CP17, CP18 and PT8.
+
+**What was deliberately left out, and which task holds each.**
+- The New Project language control, `createProject`'s language parameter, the editor's gating, and the call that runs
+  `writeCppProject`: 4.6.1.
+- Native code in editor Play: the Phase 4 gate's C++ half is a standalone program.
+- `.pak`, export, and the editor driving a C++ build: Phase 5 (5.4.1). A bundle's `basePath()` and what `aero_add_game`
+  copies into one: 5.4.1 (an unowned handoff).
+- A published SDK archive per tag: an unowned handoff, beside 5.2.3. A Debug SDK: not planned.
+- `reflect-gen`, `AERO_COMPONENT`, scene and prefab persistence for game types, and `Prefab::capture` carrying them.
+- Cooked meshes, textures, audio or animation in the sample or the template, and the cooker in the SDK.
+- The TypeScript half of the two-language demo, and with it Story 4's "plays the same logic as the TypeScript small
+  game" (an unowned handoff; the mini-game README's rules are the reference until it exists).
+- iOS and Android, C++ hot reload, and a tenth guard.
+- A consumer below `cmake_minimum_required(VERSION 3.15)`, where CMP0091 is OLD and the runtime variable does nothing,
+  is neither pinned nor refused. The template requires 3.28.
+
+**The sentences that govern new work.**
+- A C++ game links the static engine from an installed prefix, and nothing third-party reaches its compile line.
+- A new engine library joins `_sdk_layers` and `aero_engine`, or configure refuses it. A new public header installs with
+  no edit, and a new exclusion is a named row in `docs/04`.
+- An installed header never sends a consumer to include or link something the prefix lacks.
+- The MSVC runtime pin lives in the package config, never in `aero_add_game`.
+- A game's component registers per World before use.
+- The template's `.in` files are 7-bit, and its render is one pass that never rescans replaced text.
+- The writer creates and never deletes.
+- These live in `.claude/rules/build-and-guards.md` and `editor-projects.md`.
+
+**Validation and sabotage status — macOS 8 / 8 (2026-11-08), Windows and Linux unrun.** Both games were built as
+Release with AppleClang 21 against a prefix installed from `74e288b`. Each ran as a signed throwaway `.app` on the
+built-in 3024×1964 Retina panel, under macOS 26.6.2, with the prompt watcher seeing no prompt.
+- Row 1: the writer exited 0. Configure and build exited 0 with only `HOME`, `PATH` and `TMPDIR` in the environment, the
+  build tree named neither the worktree nor vcpkg, the one include directory was `<prefix>/include`, and every archive
+  linked was under `<prefix>/lib`.
+- Row 2: the window was titled `Cube Demo ñ`. Over six captures the cube's centre stayed at x 962–964 px while its outline
+  widened from 163 to 207 px, with the top face brighter than the front and the side darker still.
+- Row 3: each arrow moved the cube its own way, at about 440 px/s, while held (Right 962 → 1269 px, Up 601 → 375), and it
+  drifted 0.3–7.5 px after release, which is the turning outline.
+- Row 4: Escape exited 0 in the same second.
+- Row 5: the scripted control printed the README's line exactly, and all eight keys moved the player the right way. The
+  player stopped at 1039.0 and 240.0 px while the key was held, 399.5 px either side of the start, which is x ≈ 7.9 by two
+  calibrations.
+- Row 6: a 60 fps recording showed 14 bullets 0.2154 s apart (4.64 a second), each visible 0.933–0.950 s, along −Z.
+- Row 7: each target and its bullet vanished together about 0.62 s after the shot, and afterwards the arena held only the
+  player.
+- Row 8: Escape exited 0 with nothing on stderr.
+- No row is NOT EXECUTABLE on macOS. Off macOS all eight are owed by hand. CI is the only witness off macOS. PR #136's
+  run `42383159907` ran every new case in Debug under the sanitizers and in Release, 228 / 228 on Windows and 233 / 233
+  on Linux. Its SDK step passed all six `sdk.*` entries on both lanes, among them a Windows Debug consumer linked
+  against the `/MD` SDK (SDK10) and the generated project built with MSVC and GCC. The lint job was green.
+
+Measured at `74e288b` on fresh build directories:
+- `aero_tests` **2045** (+20), `aero_scene_serialize_test` **52** (+9) and `aero_editor_shell_test` **2558** (+18).
+  `aero_editor_imgui_test` **389**, `aero_editor_inspector_test` **74** and **14 / 28** are unchanged.
+- reflect-tools-OFF `aero_tests` **2013**, shell **2516** and ImGui **389**; shader-tools-OFF `aero_tests` **1905**,
+  shell **2558** and ImGui **370**.
+- `ctest -N` is **233 / 220 / 107**, with `cooker.*` 81 in all three and no entry added. A `macos-sdk` tree is 233 + 6,
+  and its preset selects the six `sdk.*` entries.
+- The guards read math **670**, platform **99**, rhi **200**, scene **99**, golden-rule **202**, project-no-delete
+  **A=9 B=115**, audio **11-3-75**, probes **7-77** and script **182-99-20**.
+  - Math and Check B moved with seven new C-family files, one of them in `editor/src`.
+  - Check A moved with its ninth entry.
+  - Audio's and probes' last figures moved with thirteen new CMake files.
+  - No engine or runtime file was added.
+
+**Case ids claimed:** RG1–RG18 (next free: RG19), BP1–BP3 (BP4), PT1–PT8 (PT9) and CP1–CP18 (CP19). SDK1–SDK30 (SDK31)
+label the `sdk.*` drivers' checks; they are not doctest cases.
+
+**Build & dependency impact:** no vcpkg port.
+- New targets: `aero_engine` (INTERFACE, `aero::engine`) in every configuration; `aero_sdk` under `AERO_SDK`;
+  `aero_mini_game` when both tool options are on; and `aero_sdk_project_writer` in every configuration, outside `all`.
+- Six ctest entries exist under `AERO_SDK` only. CI gains the SDK step.
+- `engine/scene` gains the registration in `world.hpp` and `world.cpp`, `engine/platform` gains `basePath`, and
+  `engine/scene_serialize` gains `loadPrefabText`.
+- The editor gains `cpp_project_template.{hpp,cpp}`, its data header, `entryExists` in `text_file`, and the four
+  templates.
+- The tests gain `scene_register_test.cpp`, `tests/editor/cpp_project_template_test.cpp`, `tests/sdk/` (six drivers, a
+  shared helper, the consumer and the writer tool) and cases in `scene_serialize_test.cpp` and `platform_test.cpp`.
+- Docs: `docs/03`, `docs/04`'s "The C++ SDK", `docs/09` section 4.12, `docs/08` (R40, four unowned handoffs and the
+  validation debt), the phase file, and the build-and-guards and editor-projects rule files.

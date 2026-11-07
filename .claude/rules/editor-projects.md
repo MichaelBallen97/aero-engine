@@ -346,5 +346,6 @@ is refused outright.** Validate on a NON-symlinked root unless symlinks are the 
   form that reaches CMake.
 - **`cpp_project_template.cpp` includes no editor header beyond its own and `text_file.hpp`.** `tests/sdk/` compiles that
   translation unit with `aero::core` alone, so an editor include there breaks the SDK build, not the editor's.
-- **`writeCppProject` writes a file only when nothing is at the path** (`fileExists`, so a directory wearing the name
-  counts), and it is in `check-project-no-delete.sh`'s Check A.
+- **`writeCppProject` writes a file only when nothing is at the path** (`entryExists`, a `symlink_status` test, so a
+  directory or a symlink wearing the name counts, a dangling one included), and it is in
+  `check-project-no-delete.sh`'s Check A.

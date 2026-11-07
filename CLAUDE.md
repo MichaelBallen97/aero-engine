@@ -10,19 +10,12 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
-**Phase 4 (Scripting) is open.** Epics 4.1, 4.2, 4.3 and 4.4 are closed, every task macOS-validated: 4.1.1 (VM lifecycle,
-PR #123 `efdd0b9`), 4.1.2 (module loading via the VFS, PR #124 `ccf776c`), 4.2.1 (quickjs binding emission, PR #125
-`fab6db8`: the frozen `engine` namespace), 4.2.2 (`.d.ts` emission, PR #126 `1c10fad`: `aero-engine.d.ts` and a
-`tsconfig.json` written into a TypeScript project, type-checked by a pinned TypeScript 5.9.3), 4.3.1 (esbuild on
-import, PR #127 `d06a635`: each changed `.ts` bundled in the background by a pinned esbuild 0.28.2 to
-`Library/Scripts/<guid>.js` + `.js.map` + a provenance record, `using` lowered for R21), 4.3.2 (bytecode compile &
-cache, PR #129 `c26b890`: `aero_cooker script` cooks a bundle to a `.aeroscript`, `docs/09` §16; a read needs 64 KiB +
-48 × the payload of free heap, R31, and the import path's C stack per level is a budget Windows Debug sees first, R33)
-and 4.3.3 (script hot reload, PR #130 `08025f9`: a script is an ES module whose default export is a class,
-`Vm::loadScript` is its load and every reload, all or nothing, and each field whose name and kind did not change keeps
-its value; identical bytes are `Unchanged`, so any trigger is safe, R29; R34 accepted) and 4.3.4 (source-mapped errors,
-PR #131 `4d9d1ef`: every stack a VM describes names the `.ts` file, line and column through its module's source map,
-and the Console shows a record's frames in its row's tooltip; quickjs's recorded positions can name a wrong line, R35).
+**Phase 4 (Scripting) is open.** Epics 4.1–4.5 are closed, every task macOS-validated (`docs/10`'s index). Epics
+4.1–4.3: a quickjs-ng VM with ES modules read through the VFS (4.1.1, 4.1.2); the frozen `engine` namespace and
+`aero-engine.d.ts`, checked by a pinned TypeScript 5.9.3 (4.2.1, 4.2.2); each changed `.ts` bundled by a pinned esbuild
+0.28.2 to `Library/Scripts/<guid>.js` + `.js.map`, `using` lowered for R21 (4.3.1); `.aeroscript` bytecode cooked by
+`aero_cooker script` (`docs/09` §16; a read's heap need, R31; Windows Debug's C stack, R33; 4.3.2); all-or-nothing hot
+reload keeping each unchanged field (4.3.3; R29, R34); and stacks named through the source map (4.3.4; R35).
 Epic 4.4: **4.4.1 (ScriptComponent + lifecycle, PR #132 `63ca43a`, 12 / 12 on 2026-11-01)**: a `.ts` file the
 transpiler bundles is a Script asset; `engine::ScriptComponent`, the eleventh built-in, names one by GUID; and
 `engine::script::ScriptSystem` runs one instance of the script's class per entity of one World (`onInit` once,
@@ -39,7 +32,15 @@ real-driver start-up (R38). **4.4.4 (Prefab-lite spawn, PR #135 `25f93d1`, 11 / 
 tree is a `.aeroprefab` (`docs/09` §17), a scene v1 document with exactly one root; `engine::Prefab` captures and copies
 one; `engine.spawn(path, ...)` copies the file at a `res://` path, parsed once per World binding; the Hierarchy's Save as
 Prefab writes one, and a drop from the asset browser instantiates it as one undoable command. BS8 can go red on Windows
-alone, on a branch that touches nothing near it (R39). Nothing in the editor runs a script or binds input yet: 4.7.1
+alone, on a branch that touches nothing near it (R39). Epic 4.5, run as one unit: **4.5.1 (Public C++ API surface
+audit) and 4.5.2 (C++ project template), PR #136 `8a20539`, 8 / 8 on 2026-11-08**: a C++ game builds against an
+installed engine alone. The `<os>-sdk` presets (`AERO_SDK`) install the eleven static layers, 87 headers, the compiled
+shaders and a hand-written package (`find_package(AeroEngine)`, `aero_add_game`; `docs/04`, "The C++ SDK"), and on MSVC
+the package pins the release runtime in every configuration. `World::registerComponent<T>` registers a game's own
+component per World (R40), `platform::basePath()` names the folder shipped data sits in, and
+`scene_serialize::loadPrefabText` loads a prefab without quickjs. `samples/phase-4-scripting/cpp` is the C++ mini-game,
+and `writeCppProject` writes a C++ project's four files (`docs/09` §4.12), with no product caller until 4.6.1.
+Nothing in the editor runs a script or binds input yet: 4.7.1
 feeds the game's `InputState` from the viewport and turns on the editor's gamepad switch, and 4.7.4's play session calls
 `update`, `stop` and `reloadScript`, supplies the resolver, binds input and picks the VFS mount that decides whether a
 frame reads `res://assets/...` and where `spawn` finds a prefab (unowned handoffs in `docs/08`). No quickjs-ng patch shipped (R21, R23, R24, R25, R31 stay open
@@ -49,8 +50,10 @@ and of its fifth line's `onDestroy`, and waits on 4.7.1, 4.7.2 and 4.7.4; Story 
 part, 4.3.4) has the engine side of its third and fourth lines and waits on 4.7.3 and 4.7.4; Story 3 (4.4.2, 4.4.3,
 4.4.4, 4.2.2, 4.3.2) has every listed task merged: it has its cook line, its `.d.ts` line and its third line's editor
 half, and the engine side of its first and second lines and of its third line's `spawn`, and its demo waits on Play
-(4.7.1, 4.7.2 and 4.7.4). No story's demo has run. The next task is **4.5.1 (Public C++ API surface audit)**: the order
-stays numeric.
+(4.7.1, 4.7.2 and 4.7.4); Story 4 (4.5.1, 4.5.2, 4.6.1) has its first line, its third line and the template half of
+its second, and waits on 4.6.1, and its first line's "same logic as the TypeScript small game" waits on that game (an
+unowned handoff in `docs/08`). No story's demo has run. The next task is **4.6.1 (Language field + editor gating)**:
+the order stays numeric.
 
 **Three phase gates are still open**, each owing its deliverable rather than code:
 - **Phase 0**: macOS-PASS, held open for the Windows/Linux 60 fps sign-off (`samples/phase-0-cube/VALIDATION.md`).
@@ -101,7 +104,7 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
 | **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.6 **CLOSED in code** — 24 of 24 merged, see the merged-task index in `docs/10` (E.6.4, `52a5b68`, the last). What is left is the gate below — its artifact `samples/phase-E-editor/` does not exist yet — and ONE unrun validation page (E.1.5), the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
-| **Phase 4** — Scripting | **OPEN.** Epic 4.1 **CLOSED** — 4.1.1 (#123) and 4.1.2 (#124) merged; Epic 4.2 **CLOSED** — 4.2.1 (#125) and 4.2.2 (#126) merged; Epic 4.3 **CLOSED** — 4.3.1 (#127), 4.3.2 (#129), 4.3.3 (#130) and 4.3.4 (#131) merged; Epic 4.4 **CLOSED** — 4.4.1 (#132), 4.4.2 (#133), 4.4.3 (#134) and 4.4.4 (#135) merged. Next: 4.5.1. |
+| **Phase 4** — Scripting | **OPEN.** Epic 4.1 **CLOSED** — 4.1.1 (#123) and 4.1.2 (#124) merged; Epic 4.2 **CLOSED** — 4.2.1 (#125) and 4.2.2 (#126) merged; Epic 4.3 **CLOSED** — 4.3.1 (#127), 4.3.2 (#129), 4.3.3 (#130) and 4.3.4 (#131) merged; Epic 4.4 **CLOSED** — 4.4.1 (#132), 4.4.2 (#133), 4.4.3 (#134) and 4.4.4 (#135) merged; Epic 4.5 **CLOSED** — 4.5.1 and 4.5.2 merged together (#136). Next: 4.6.1. |
 | **Phase 4 gate** | Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly. Gate artifact: `samples/phase-4-scripting/` (the two-language demo). |
 
 ### Engine layers, in dependency order
@@ -113,15 +116,15 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 
 ### Test inventory — measured, never remembered
 
-**After 4.4.4 (#135)**, measured on both presets and on fresh build directories at `21aa0b8` (the merge's second
-parent; `main` had not moved, so the merge tree is the same).
+**After 4.5.1 + 4.5.2 (#136)**, measured on both presets and on fresh build directories at `74e288b` (the merge's
+second parent; `main` had not moved, so the merge tree is the same).
 
 | Measurement | Value |
 |---|---|
-| `ctest -N` | **233** in both presets; **220** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **107** reflect-tools-OFF (120 `reflect-gen.*`, four doctest binaries and `typescript.clean` / `typescript.broken` removed), nothing added in either; `cooker.*` **81 / 81 / 81**; 4.4.4 added no entry |
-| doctest, seven binaries | **2025 / 2540 / 389 / 43 / 74 / 14 / 28** (`aero_tests` +61: PW1–PW30, PR1–PR28, DT33–DT35; shell +23: PE1–PE19, AV72–AV73, DR29, AR9; ImGui +14: I370–I383; the other four unchanged); reflect-tools-OFF `aero_tests` **1993** (all 61 compile in), shader-tools-OFF **1885** |
-| guards | math **663**, platform **99**, rhi **200**, scene **99**, golden-rule **202**, project-no-delete **A=8 B=114** (2 permitted), audio **11-3-62**, probes **7-64**, script **182-99-20** |
-| `git ls-files` | `editor/src/*.cpp` **114**, `editor/include/aero/editor/*.hpp` **84** |
+| `ctest -N` | **233** in both presets; **220** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **107** reflect-tools-OFF (120 `reflect-gen.*`, four doctest binaries and `typescript.clean` / `typescript.broken` removed), nothing added in either; `cooker.*` **81 / 81 / 81**; an `AERO_SDK` tree is 233 + 6 (`sdk.*`), and `ctest --preset macos-sdk` selects those six |
+| doctest, seven binaries | **2045 / 2558 / 389 / 52 / 74 / 14 / 28** (`aero_tests` +20: RG1–RG14, RG16–RG18, BP1–BP3; shell +18: CP1–CP18; `aero_scene_serialize_test` +9: RG15, PT1–PT8, cases written into it, no component; the other four unchanged); reflect-tools-OFF `aero_tests` **2013**, shader-tools-OFF **1905** |
+| guards | math **670**, platform **99**, rhi **200**, scene **99**, golden-rule **202**, project-no-delete **A=9 B=115** (2 permitted), audio **11-3-75**, probes **7-77**, script **182-99-20** |
+| `git ls-files` | `editor/src/*.cpp` **115**, `editor/include/aero/editor/*.hpp` **85** |
 
 The seven doctest binaries, in order: `aero_tests`, `aero_editor_shell_test`, `aero_editor_imgui_test`,
 `aero_scene_serialize_test`, `aero_editor_inspector_test`, `aero_reflect_meta_test`, `aero_reflect_json_test`.
@@ -136,6 +139,8 @@ no target moved math, rhi, golden-rule and script (4.1.2, 4.2.1, 4.3.3, 4.3.4, 4
 `script_api_input.cpp` and the internal `input_names.hpp`); a new public engine header added platform and scene to
 those four (4.3.2, 4.4.1, 4.4.4); new `editor/src` files moved math and project-no-delete's B, a new entry in its forbidden
 list its A (4.3.1's `script_transpiler.cpp`), and a new `.cmake` file audio's and probes' last figures (4.2.2, 4.3.1).
+Epic 4.5's four new targets, none an engine library, moved no engine guard: seven C-family files moved math and B, Check
+A's ninth entry its A, and thirteen CMake files audio's and probes' last figures.
 
 How to measure and compare these figures: `.claude/rules/tests.md`.
 
@@ -161,6 +166,7 @@ ctest --preset macos-debug          # prefix AERO_REQUIRE_GPU=1 to rehearse the 
 ```
 
 Six presets — `{macos,windows,linux}-{debug,release}` — each gated to its host OS by preset conditions, building into `build/<preset>/`.
+Three more, `{macos,windows,linux}-sdk` (4.5.1), build the installable C++ SDK (`docs/04`, "The C++ SDK") and install it into `build/sdk/<preset>`.
 
 - **`*-debug`** — ASan/UBSan via `AERO_ENABLE_SANITIZERS` → `cmake/sanitizers.cmake` (Windows: ASan only, MSVC has no UBSan).
 - **`*-release`** — `AERO_ENABLE_PROFILING=ON` links the pinned Tracy 0.13.1 client into `aero::profiling` and defines `AERO_PROFILING_ENABLED`. Tracy is dev-builds-only — never Debug, never the runtime — enforced by default-OFF plus link gating, not convention. Use the `AERO_PROFILE_*` macros from `<aero/core/profiler.hpp>`, which no-op when profiling is off.
