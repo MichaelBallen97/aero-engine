@@ -2066,3 +2066,77 @@ TEST_CASE("scene_serialize: a registered game component never reaches the saved 
     CHECK(saveWorldText(world) == without);
     CHECK(without.find("SerializeGame") == std::string::npos);
 }
+
+// ---- task 4.5.1: loadPrefabText, the prefab parse the script layer and the game template share ----------------------
+
+namespace {
+
+[[nodiscard]] std::string prefabEntity(int id, int parent, std::string_view components = "{}") {
+    // A root has no "parent" key: the key is an integer >= 1 (docs/09 §2.2).
+    const std::string parentKey = parent == 0 ? std::string{} : ", \"parent\": " + std::to_string(parent);
+    return "{ \"id\": " + std::to_string(id) + ", \"name\": \"e" + std::to_string(id) + "\"" + parentKey +
+           ", \"components\": " + std::string{components} + " }";
+}
+
+[[nodiscard]] std::string prefabText(const std::vector<std::string>& entities) {
+    std::string text = "{ \"version\": 1, \"entities\": [";
+    for (std::size_t i = 0; i < entities.size(); ++i) {
+        text += (i == 0 ? "" : ", ") + entities[i];
+    }
+    return text + "] }";
+}
+
+}  // namespace
+
+TEST_CASE("scene_serialize: loadPrefabText reads a root and two children (PT1)") {
+    const PrefabLoadResult result =
+        loadPrefabText(prefabText({prefabEntity(1, 0), prefabEntity(2, 1), prefabEntity(3, 1)}));
+    REQUIRE(result.prefab.has_value());
+    CHECK(result.prefab->entityCount() == 3);
+    CHECK(result.error.empty());
+}
+
+TEST_CASE("scene_serialize: loadPrefabText refuses a document with no entity (PT2)") {
+    const PrefabLoadResult result = loadPrefabText(prefabText({}));
+    CHECK_FALSE(result.prefab.has_value());
+    CHECK(result.error == "a prefab has exactly one root");
+}
+
+TEST_CASE("scene_serialize: loadPrefabText refuses a document with two roots (PT3)") {
+    const PrefabLoadResult result = loadPrefabText(prefabText({prefabEntity(1, 0), prefabEntity(2, 0)}));
+    CHECK_FALSE(result.prefab.has_value());
+    CHECK(result.error == "a prefab has exactly one root");
+}
+
+TEST_CASE("scene_serialize: loadPrefabText names the line and column of malformed JSON (PT4)") {
+    const PrefabLoadResult result = loadPrefabText("{ \"version\": 1,\n  \"entities\": [ }");
+    CHECK_FALSE(result.prefab.has_value());
+    CHECK(result.error == "line 2, column 17: unexpected character at start of value");
+}
+
+TEST_CASE("scene_serialize: loadPrefabText gives a scene-stage failure with no position (PT5)") {
+    const PrefabLoadResult result = loadPrefabText(prefabText({prefabEntity(1, 0), prefabEntity(1, 0)}));
+    CHECK_FALSE(result.prefab.has_value());
+    CHECK_FALSE(result.error.empty());
+    CHECK(result.error.find("line") == std::string::npos);
+}
+
+TEST_CASE("scene_serialize: loadPrefabText keeps an entity whose component is unknown, with one WARN (PT6)") {
+    ScriptWarnCapture capture;
+    const PrefabLoadResult result =
+        loadPrefabText(prefabText({prefabEntity(1, 0, "{ \"game::Velocity\": { \"x\": 1.0 } }")}));
+    REQUIRE(result.prefab.has_value());
+    CHECK(result.prefab->entityCount() == 1);
+    CHECK(capture.count() == 1);
+}
+
+TEST_CASE("scene_serialize: a loaded prefab saves back to the same text (PT7)") {
+    const std::string moved = R"({ "engine::Transform": { "position": { "x": 1, "y": 2, "z": 3 } } })";
+    const PrefabLoadResult first = loadPrefabText(prefabText({prefabEntity(1, 0, moved), prefabEntity(2, 1)}));
+    REQUIRE(first.prefab.has_value());
+    const std::string text = saveWorldText(first.prefab->world());
+    const PrefabLoadResult again = loadPrefabText(text);
+    REQUIRE(again.prefab.has_value());
+    CHECK(saveWorldText(again.prefab->world()) == text);
+    CHECK(text.find("\"z\": 3") != std::string::npos);
+}

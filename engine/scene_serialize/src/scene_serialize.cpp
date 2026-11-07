@@ -24,7 +24,9 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace engine::scene_serialize {
@@ -182,6 +184,24 @@ SceneDocument saveWorld(const World& world) {
         doc.entities.push_back(std::move(rec));
     }
     return doc;
+}
+
+PrefabLoadResult loadPrefabText(std::string_view text) {
+    World parsed;
+    const SceneLoadResult loaded = loadSceneText(parsed, text);
+    if (loaded.error.has_value()) {
+        const SceneError& error = *loaded.error;
+        // A scene-stage failure carries no position (line 0): its message names the entity instead.
+        const std::string where =
+            error.line > 0U ? "line " + std::to_string(error.line) + ", column " + std::to_string(error.column) + ": "
+                            : std::string{};
+        return PrefabLoadResult{std::nullopt, where + error.message};
+    }
+    std::optional<Prefab> prefab = Prefab::fromWorld(std::move(parsed));
+    if (!prefab.has_value()) {
+        return PrefabLoadResult{std::nullopt, "a prefab has exactly one root"};
+    }
+    return PrefabLoadResult{std::move(prefab), std::string{}};
 }
 
 std::string saveWorldText(const World& world) { return writeSceneText(saveWorld(world)); }
