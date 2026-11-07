@@ -294,6 +294,11 @@ This is why export is instant instead of taking 20 minutes, and why the **user d
 
 The gameplay is native code, so it must be **compiled and linked per target platform**. The user builds locally for their own OS; other platforms are produced via CI. This is the price of native performance and full engine access.
 
+A game links the **static** engine from an installed prefix (the C++ SDK, `docs/04`): eleven archives, their headers and the
+compiled shaders, found through `find_package(AeroEngine)` and built with `aero_add_game`. No shared engine exists, and
+none can: `componentTypeId` is a property of one program image, so a component type defined in two images would be two
+different types. A game's own component types are registered at run time with `World::registerComponent<T>`.
+
 ---
 
 ## The four consumers of reflection

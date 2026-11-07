@@ -15,8 +15,8 @@ against the engine's public API — committed in this folder.
 - Given the same logic written in C++ against the engine's public API, when I build the mini-game with its documented
   steps and run it, then it plays the same game natively.
 
-The C++ half is read through the gate artifact line: the C++ mini-game is built from the C++ project template and runs
-as its own program. Play in the editor runs the TypeScript half.
+The C++ half is read through the gate artifact line: the C++ mini-game is built the way a C++ project from the C++ project template is
+(`find_package` and `aero_add_game`, against an installed prefix) and runs as its own program. Play in the editor runs the TypeScript half.
 
 ## How the demo is built up
 

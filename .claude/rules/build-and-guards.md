@@ -103,3 +103,25 @@ configure, and the answer is to re-run it.
 **`editor/src/script_transpiler.cpp` IS IN `check-project-no-delete.sh`'s CHECK A (4.3.1)**, which moved from 7 files to
 8 and Check B from 111 to 113 `editor/src/*.cpp` files. It writes into `Library/Scripts/`, the reason `project_state.cpp`
 is listed. Check A's `::copy` also forbids `std::copy` and `std::ranges::copy` there.
+
+## The C++ SDK (4.5.1)
+
+- **An imported target is directory-scoped.** At root scope `if(TARGET EnTT::EnTT)` is FALSE, so a `TARGET` test passes
+  `glm::glm` and `EnTT::EnTT` into the package graph with no error. `cmake/sdk_install.cmake` classifies by NAME, in a fixed
+  order, and any leftover item holding `::` is a configure error. `SDL3::Headers` carries include directories and no
+  binary, so it is on the no-binary list.
+- **Two generated files, because neither write does the other's job.** `file(WRITE)` evaluates nothing and carries
+  `$<LINK_LIBRARY:...>` verbatim (`AeroEngineGraph.cmake`); `file(GENERATE)` resolves `$<TARGET_FILE_NAME:...>` per OS and
+  refuses `$<LINK_LIBRARY:...>` outside a link context (`AeroEngineFiles.cmake`).
+- **A new engine library joins `_sdk_layers` and `aero_engine`, or configure refuses it:** a layer linking an `aero::` name
+  outside the list is a `FATAL_ERROR`, and so is any target the roster and the no-binary list do not know.
+- **A new public header installs with no edit.** A new exclusion is a named row in `docs/04`'s "The C++ SDK" and an entry in
+  `_sdk_excluded`; `tests/sdk/prefix.cmake` keeps its own literal copy of the list on purpose.
+- **Every tracked `.cpp` must be in `build/linux-debug`'s compile database**, because CI's clang-tidy reads that tree and it
+  has `AERO_SDK=OFF`. A source that exists only under `AERO_SDK` is a red lint step, so an SDK fixture is a `.in` file
+  (`tests/sdk/consumer/consumer.cpp.in`), outside the list.
+- **A driver names layers as `aero::x`**, or composes `aero::${layer}`: audio-boundary's Part 1d reads every CMake file.
+- **A consumer build passes `--parallel 3`.** `ctest --preset <os>-sdk` starts builds the build hook cannot see.
+- **The prefix is a test fixture.** `sdk.install` removes and re-creates `<build>/sdk-test/prefix` on every run; the
+  preset's `installDir` is never touched by a test.
+- **`ctest -N` in an SDK tree is 233 + 6**; every other configuration stays 233, because the entries exist only under `AERO_SDK`.
