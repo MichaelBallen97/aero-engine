@@ -166,6 +166,8 @@ add_library(aero_editor_core STATIC
     src/context_router.cpp       # task E.3.2 -- the pure routing decision and the one-slot latch
     src/script_types.cpp         # task 4.2.2 -- the project's script declarations and tsconfig: the embedded texts and
                                  # the one writer; never logs
+    src/cpp_project_template.cpp # task 4.5.2 -- the C++ project template's pure render; includes only its own header,
+                                 # its data header and std (tests/sdk/ compiles it with aero::core alone)
     src/project_state.cpp        # task E.4.1 -- <projectRoot>/Library/editor-state.json; PURE, no <filesystem>
     src/scene_containment.cpp    # task E.4.2 -- the containment predicate; ALL <filesystem> for this
                                  # pair, never logs, never writes (D1-D4)
@@ -213,6 +215,15 @@ aero_embed_text_files(aero_editor_core
         scriptDeclarations=${_aero_script_declarations_file}
         tsconfigTemplate=${CMAKE_CURRENT_SOURCE_DIR}/templates/tsconfig.json.in
     DEPENDS aero_script_declarations)
+# task 4.5.2: the four files of a new C++ project, embedded as 7-bit text with their @AERO_PROJECT_...@ tokens intact.
+aero_embed_text_files(aero_editor_core
+    HEADER "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp_project_template_data.hpp"
+    NAMESPACE engine::editor::embedded
+    FILES
+        cppProjectCmakeTemplate=${CMAKE_CURRENT_SOURCE_DIR}/templates/cpp-project/CMakeLists.txt.in
+        cppProjectMainTemplate=${CMAKE_CURRENT_SOURCE_DIR}/templates/cpp-project/main.cpp.in
+        cppProjectReadmeTemplate=${CMAKE_CURRENT_SOURCE_DIR}/templates/cpp-project/README.md.in
+        cppProjectGitignoreTemplate=${CMAKE_CURRENT_SOURCE_DIR}/templates/cpp-project/gitignore.in)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # SYSTEM so nothing lints or warns on a vendored header we neither own nor may patch. PRIVATE for the
 # same reason imgui is. NOTE (A13): this does NOT confine stb_image.h to one TU -- FindStb resolves to

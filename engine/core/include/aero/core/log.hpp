@@ -146,7 +146,7 @@ void logFormat(LogLevel level, const LogLocation& location, std::format_string<A
     ::engine::LogLocation { __FILE__, __func__, static_cast<std::uint32_t>(__LINE__) }
 
 // do/while(false): keeps each macro a single statement, so it is valid after a braceless
-// if/else (the statement-safety lesson profiler.hpp documents).
+// if/else. A bare `{ ... }` body would end the `if` at the caller's `;`, and a following `else` would not compile.
 #define AERO_LOG_IMPL(levelEnum, levelNumber, ...)                                      \
     do {                                                                                \
         if constexpr ((levelNumber) >= AERO_LOG_ACTIVE_LEVEL) {                         \

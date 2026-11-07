@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <thread>
 
 namespace engine::platform::internal {
@@ -93,5 +94,9 @@ private:
     void (*rawEventSink)(void* user, const void* sdlEvent) = nullptr;
     void* rawEventSinkUser = nullptr;
 };
+
+// The folder a game reads its shipped data from: UTF-8, ending in a separator, empty when the OS cannot say. It is the
+// executable's folder, and Contents/Resources inside a macOS bundle. Needs no Context, and the copy outlives SDL.
+[[nodiscard]] std::string basePath();
 
 }  // namespace engine::platform

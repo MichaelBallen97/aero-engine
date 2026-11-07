@@ -74,6 +74,7 @@ add_executable(aero_tests
     material_format_test.cpp # task 3.4.1 — material format v1: envelope/defaults/tokens + canonical round-trip
     scene_test.cpp        # task 1.3.1 — engine::World over EnTT: entities, components, queries, registration
     scene_prefab_test.cpp # task 4.4.4 -- engine::Prefab: capture, fromWorld, instantiate (PW1-PW30)
+    scene_register_test.cpp # task 4.5.1 -- World::registerComponent<T> from public headers (RG1-RG14, RG16)
     transform_test.cpp    # task 1.3.2 — engine::Transform, the World-owned forest, world matrices
     camera_test.cpp       # task 1.3.3 — engine::Camera: defaults/layout/projection/view/registration
     light_test.cpp        # task 1.3.3 — engine::DirectionalLight + PointLight
@@ -188,6 +189,10 @@ target_compile_definitions(aero_tests PRIVATE AERO_SCRIPT_SRC_DIR="${CMAKE_SOURC
 # flag, like the definition above, and UNGATED for the same reason.
 target_compile_definitions(aero_tests PRIVATE
     AERO_PLATFORM_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/engine/platform/include")
+
+# task 4.5.1: platform_test.cpp's BP1 compares platform::basePath() with the folder Ninja writes aero_tests into, through
+# std::filesystem::equivalent, so no spelling is compared. UNGATED: it names a folder, not a feature.
+target_compile_definitions(aero_tests PRIVATE AERO_TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}")
 
 # task 4.1.2: script_module_test.cpp's ML13/ML14/ML43 mount tests/fixtures/scripts at the res:// root through a
 # DirectoryBackend -- Epic 4.1's Definition of Done read off real files. A PATH, NOT A FLAG (the
@@ -592,7 +597,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/project_ui_view_test.cpp         # task E.6.4 — the Welcome and New Project model (WL, NP)
                editor/script_types_test.cpp            # task 4.2.2 — the declarations and tsconfig writer (DT8+)
                editor/esbuild_tool_test.cpp            # task 4.3.1 — the pinned esbuild and its pure rules (EB)
-               editor/script_transpiler_test.cpp)      # task 4.3.1 — the transpile driver over a real esbuild (ST)
+               editor/script_transpiler_test.cpp       # task 4.3.1 — the transpile driver over a real esbuild (ST)
+               editor/cpp_project_template_test.cpp)   # task 4.5.2 — the C++ project template's pure render (CP)
 # task 4.3.1: aero::script joins so that script_transpiler_test.cpp's ST20-ST22 evaluate the editor's own transpiled
 # output in the engine's VM. Tests sit outside the boundary rule (the aero_tests precedent); aero_editor_core itself
 # does not link it, and the editor binary does not either.
@@ -642,7 +648,9 @@ target_compile_definitions(aero_editor_shell_test PRIVATE
     # task 4.2.2: DT10 compares the editor's two embedded texts with the files they were built from. Paths, not
     # flags: the declarations are the build's own output (the target property, so nothing restates it).
     AERO_SCRIPT_DECLARATIONS_FILE="${_aero_script_declarations_file}"
-    AERO_TSCONFIG_TEMPLATE_FILE="${CMAKE_SOURCE_DIR}/editor/templates/tsconfig.json.in")
+    AERO_TSCONFIG_TEMPLATE_FILE="${CMAKE_SOURCE_DIR}/editor/templates/tsconfig.json.in"
+    # task 4.5.2: CP8 compares the four embedded C++ project templates with their files. A path, not a flag.
+    AERO_CPP_PROJECT_TEMPLATE_DIR="${CMAKE_SOURCE_DIR}/editor/templates/cpp-project")
 
 # task 3.2.4 (F13): a real subprocess the process layer can spawn on every CI lane, with NO Blender
 # installed. `cmake -E true|false|sleep|echo|cat|touch|copy_directory` covers start, non-blocking poll,
@@ -1409,4 +1417,67 @@ aero_add_typescript_case(driver_e2e)
 if(AERO_REFLECT_TOOLS)
     aero_add_typescript_case(clean)
     aero_add_typescript_case(broken)
+endif()
+
+# ---------------------------------------------------------------------------------------------
+# task 4.5.2: the C++ project template's writer as a stand-alone tool, for tests/sdk/template.cmake. In every
+# configuration, so its .cpp stays in linux-debug's compile database for CI's clang-tidy; EXCLUDE_FROM_ALL, so it is in
+# no `all`. It compiles the writer's own sources with aero::core alone: the SDK build must not need the editor.
+include("${CMAKE_SOURCE_DIR}/cmake/embed.cmake")
+add_executable(aero_sdk_project_writer EXCLUDE_FROM_ALL
+    sdk/project_writer_tool.cpp
+    ${CMAKE_SOURCE_DIR}/editor/src/cpp_project_template.cpp
+    ${CMAKE_SOURCE_DIR}/editor/src/text_file.cpp)
+target_include_directories(aero_sdk_project_writer PRIVATE ${CMAKE_SOURCE_DIR}/editor/include)
+target_link_libraries(aero_sdk_project_writer PRIVATE aero::core)
+aero_embed_text_files(aero_sdk_project_writer
+    HEADER "${CMAKE_SOURCE_DIR}/editor/src/cpp_project_template_data.hpp"
+    NAMESPACE engine::editor::embedded
+    FILES
+        cppProjectCmakeTemplate=${CMAKE_SOURCE_DIR}/editor/templates/cpp-project/CMakeLists.txt.in
+        cppProjectMainTemplate=${CMAKE_SOURCE_DIR}/editor/templates/cpp-project/main.cpp.in
+        cppProjectReadmeTemplate=${CMAKE_SOURCE_DIR}/editor/templates/cpp-project/README.md.in
+        cppProjectGitignoreTemplate=${CMAKE_SOURCE_DIR}/editor/templates/cpp-project/gitignore.in)
+
+# ---------------------------------------------------------------------------------------------
+# task 4.5.1: the AERO_SDK configuration. The entries exist only in an SDK tree (the *-sdk presets), so every other
+# configuration's `ctest -N` is unchanged. sdk.refusals runs cmake/sdk_check.cmake alone under `cmake -P`, one
+# combination per arm, and needs no build.
+if(AERO_SDK)
+    add_test(NAME sdk.refusals COMMAND ${CMAKE_COMMAND}
+        -DCHECK=${CMAKE_SOURCE_DIR}/cmake/sdk_check.cmake
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/sdk/refusals.cmake)
+
+    # The three drivers that read an installed prefix. One argument list, so a consumer is configured with the tree's
+    # own generator, compiler and build type and no toolchain. sdk.install removes and re-creates <WORK_ROOT>/prefix
+    # on every run (the fixture); the other two require it and, with it, hold the lock: sdk.prefix renames the prefix
+    # for a moment, and a `ctest -j` must not see that.
+    set(_aero_sdk_args
+        -DSOURCE_DIR=${CMAKE_SOURCE_DIR} -DBUILD_DIR=${CMAKE_BINARY_DIR}
+        -DWORK_ROOT=${CMAKE_CURRENT_BINARY_DIR}/sdk-test
+        -DCONSUMER_GENERATOR=${CMAKE_GENERATOR} -DCONSUMER_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
+        -DCONSUMER_CXX_COMPILER=${CMAKE_CXX_COMPILER} -DCONSUMER_BUILD_TYPE=${CMAKE_BUILD_TYPE})
+    foreach(_aero_sdk_case IN ITEMS install prefix headers)
+        add_test(NAME sdk.${_aero_sdk_case} COMMAND ${CMAKE_COMMAND} ${_aero_sdk_args}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/sdk/${_aero_sdk_case}.cmake)
+        set_tests_properties(sdk.${_aero_sdk_case} PROPERTIES RESOURCE_LOCK sdk_prefix TIMEOUT 1500)
+    endforeach()
+    unset(_aero_sdk_case)
+    set_tests_properties(sdk.install PROPERTIES FIXTURES_SETUP sdk_prefix)
+    set_tests_properties(sdk.prefix sdk.headers PROPERTIES FIXTURES_REQUIRED sdk_prefix)
+
+    # The C++ mini-game, built against that prefix alone and run twice. It needs a GPU: without one the driver prints
+    # `sdk: SKIPPED` and exits 0, which the regular expression turns into a skip. It never exits 77 (a ctest skip code
+    # would hide a missing GPU from AERO_REQUIRE_GPU).
+    add_test(NAME sdk.mini_game COMMAND ${CMAKE_COMMAND} ${_aero_sdk_args}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/sdk/mini_game.cmake)
+    set_tests_properties(sdk.mini_game PROPERTIES
+        FIXTURES_REQUIRED sdk_prefix RESOURCE_LOCK sdk_prefix TIMEOUT 1500 SKIP_REGULAR_EXPRESSION "sdk: SKIPPED")
+
+    # The generated C++ project: the tool writes it, the README's own commands build it against that prefix, and it runs.
+    add_test(NAME sdk.template COMMAND ${CMAKE_COMMAND} ${_aero_sdk_args}
+        -DWRITER=$<TARGET_FILE:aero_sdk_project_writer>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/sdk/template.cmake)
+    set_tests_properties(sdk.template PROPERTIES
+        FIXTURES_REQUIRED sdk_prefix RESOURCE_LOCK sdk_prefix TIMEOUT 1500 SKIP_REGULAR_EXPRESSION "sdk: SKIPPED")
 endif()

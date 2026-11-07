@@ -1,0 +1,47 @@
+// A consumer of the installed SDK (tests/sdk/prefix.cmake). It names one function of each of the eleven layers and
+// stores each address through a volatile pointer, so even -O3 cannot drop the reference: every layer's archive is
+// really pulled in through its edges, in link order, on a linker that resolves left to right.
+#include <aero/assets/cooked_mesh.hpp>
+#include <aero/audio/clip.hpp>
+#include <aero/core/content_hash.hpp>
+#include <aero/platform/context.hpp>
+#include <aero/reflect/json_reader.hpp>
+#include <aero/render/light_falloff.hpp>
+#include <aero/rhi/shader_loader.hpp>
+#include <aero/scene/transform.hpp>
+#include <aero/scene_audio/scene_audio.hpp>
+#include <aero/scene_render/scene_renderer.hpp>
+#include <aero/scene_serialize/scene_serialize.hpp>
+
+#include <cstdio>
+
+namespace {
+
+using AnyFunction = void (*)();
+constexpr int LAYER_COUNT = 11;
+
+template <typename F>
+AnyFunction erased(F function) {
+    return reinterpret_cast<AnyFunction>(function);
+}
+
+AnyFunction volatile sink[LAYER_COUNT];
+
+}  // namespace
+
+int main() {
+    int layer = 0;
+    sink[layer++] = erased(&engine::hashBytes);
+    sink[layer++] = erased(&engine::assets::parseCookedMesh);
+    sink[layer++] = erased(&engine::audio::loadAudioClip);
+    sink[layer++] = erased(&engine::platform::basePath);
+    sink[layer++] = erased(&engine::rhi::parseShaderMetadata);
+    sink[layer++] = erased(&engine::render::punctualDistanceAttenuation);
+    sink[layer++] = erased(&engine::parseJson);
+    sink[layer++] = erased(&engine::worldMatrix);
+    sink[layer++] = erased(&engine::scene_render::resolveEnvironment);
+    sink[layer++] = erased(&engine::scene_audio::buildAudioView);
+    sink[layer++] = erased(&engine::scene_serialize::saveWorldText);
+    std::printf("consumer: layers=%d\n", layer);
+    return layer == LAYER_COUNT ? 0 : 1;
+}

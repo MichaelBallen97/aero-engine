@@ -53,22 +53,11 @@ JSValue throwForPath(JSContext* ctx, const Site& site, std::string_view path, co
 // tolerance policy is the scene's: an unknown component is a WARN and a skip.
 [[nodiscard]] std::optional<Prefab> parsePrefab(JSContext* ctx, const Site& site, std::string_view path,
                                                 std::string_view text) {
-    World parsed;
-    const scene_serialize::SceneLoadResult loaded = scene_serialize::loadSceneText(parsed, text);
-    if (loaded.error.has_value()) {
-        const SceneError& error = *loaded.error;
-        // A scene-stage failure carries no position (line 0): its message names the entity instead.
-        const std::string where =
-            error.line > 0U ? "line " + std::to_string(error.line) + ", column " + std::to_string(error.column) + ": "
-                            : std::string{};
-        static_cast<void>(throwForPath(ctx, site, path, where + error.message));
-        return std::nullopt;
+    scene_serialize::PrefabLoadResult loaded = scene_serialize::loadPrefabText(text);
+    if (!loaded.prefab.has_value()) {
+        static_cast<void>(throwForPath(ctx, site, path, loaded.error));
     }
-    std::optional<Prefab> prefab = Prefab::fromWorld(std::move(parsed));
-    if (!prefab.has_value()) {
-        static_cast<void>(throwForPath(ctx, site, path, "a prefab has exactly one root"));
-    }
-    return prefab;
+    return std::move(loaded.prefab);
 }
 
 // The prefab of the file at `key` (a normalized res:// path), read and parsed on the binding's first spawn of it and

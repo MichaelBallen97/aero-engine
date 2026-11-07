@@ -14,3 +14,15 @@ add_subdirectory(scene_render)  # task 1.4.1 — the World -> render bridge
 add_subdirectory(scene_audio)   # task 3.7.2 — the World -> audio bridge; depends on scene + audio
 add_subdirectory(scene_serialize)  # task 1.4.2 — the World <-> SceneDocument bridge
 add_subdirectory(script)           # task 4.1.1 — the quickjs-ng VM; above scene since 4.2.1 (the bindings)
+
+# task 4.5.1: the whole engine as one name. A game links aero::engine and gets the eleven layers a C++ project builds
+# against; aero::script is not one of them (a C++ project has no scripting layer), and aero::scene_serialize exists
+# only where the reflection tools do.
+add_library(aero_engine INTERFACE)
+add_library(aero::engine ALIAS aero_engine)
+target_link_libraries(aero_engine INTERFACE
+    aero::core aero::assets aero::audio aero::platform aero::rhi aero::render aero::reflect aero::scene
+    aero::scene_render aero::scene_audio)
+if(AERO_REFLECT_TOOLS)
+    target_link_libraries(aero_engine INTERFACE aero::scene_serialize)
+endif()

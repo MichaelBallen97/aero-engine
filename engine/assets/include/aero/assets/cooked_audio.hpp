@@ -98,8 +98,8 @@ inline constexpr std::uint64_t MAX_COOKED_AUDIO_BYTES =
 // three containers, for one reason: this format's WRITER (audio_cook.cpp) and its PARSER
 // (cooked_audio.cpp) are two translation units, and an anonymous namespace cannot be shared across
 // them. A second copy of these ten numbers is exactly the disguise a swapped-offset defect wears, so
-// there is one copy and both TUs reach it. The texture_cook.hpp `detail` seam is the precedent for a
-// public detail namespace in this subsystem; a consumer outside engine/assets and aero_tests reaching
+// there is one copy and both TUs reach it. The cooked-texture container's `detail` seam is the precedent
+// for a public detail namespace in this subsystem; a consumer outside engine/assets and aero_tests reaching
 // into it is a review finding, not a supported use.
 namespace detail {
 inline constexpr std::size_t H_MAGIC = 0;

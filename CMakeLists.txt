@@ -46,6 +46,18 @@ include(cmake/reflect.cmake)   # task 1.1.4: aero_reflect_generate() + AERO_LLVM
                                # call site (engine/ for 1.3.2) sees them on a fresh configure (D2).
 include(cmake/esbuild.cmake)   # task 4.3.1: the pinned esbuild, fetched and verified at configure; ungated.
 
+# task 4.5.1: the installable C++ SDK. OFF by default; the *-sdk presets turn it on. cmake/sdk_check.cmake refuses
+# every configuration an SDK cannot ship from (it also runs alone under `cmake -P`, tests/sdk/refusals.cmake).
+option(AERO_SDK "Configure the installable C++ SDK (docs/04): Release, no profiling, no sanitizers, both tools ON" OFF)
+if(AERO_SDK)
+    include(cmake/sdk_check.cmake)
+endif()
+
+# task 4.5.1: aero_add_game() and the folder it copies the shaders from. Unconditional, so a sample's CMakeLists reads
+# the same in the tree and against an installed prefix (the package defines both itself, cmake/AeroEngineConfig.cmake).
+set(AERO_ENGINE_SHADERS_DIR "${CMAKE_BINARY_DIR}/shaders")
+include(cmake/aero_add_game.cmake)
+
 # task 2.1.2: aero_assert_golden_rule() -- project rule #1 (docs/00, docs/03) enforced at the LINK and
 # INCLUDE-DIRECTORY level, called at the very end of this file (below). No option() gate, unlike every
 # other module in this cluster: none of the existing AERO_* options disables an INVARIANT.
@@ -96,6 +108,10 @@ add_subdirectory(editor)
 add_subdirectory(shaders)  # task 0.4.3; must follow tools/ (aero_shaderc) and cmake/shaders.cmake
 add_subdirectory(tests)
 add_subdirectory(samples)   # validation apps (docs/03); first populated by 0.3.1's phase-0-window
+
+if(AERO_SDK)
+    include(cmake/sdk_install.cmake)  # must follow every add_subdirectory; root scope reaches no guarded target
+endif()
 
 # Project rule #1 (docs/00, docs/03). The engine NEVER depends on the editor -- enforced here at the
 # LINK and INCLUDE-DIRECTORY level, and textually by .github/scripts/check-golden-rule.sh. Must be

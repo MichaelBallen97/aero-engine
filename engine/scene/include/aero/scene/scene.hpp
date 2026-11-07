@@ -3,8 +3,8 @@
 // <aero/platform/platform.hpp>. Include this to get the whole public surface; include the individual
 // headers when you want a narrower dependency.
 //
-// The INTERNAL seam (<aero/scene/internal/world_access.hpp>, which is where EnTT lives) is
-// deliberately NOT part of this umbrella and ships through a separate target, aero::scene_internal.
+// The ECS seam, where EnTT lives, is engine-internal: it is not part of this umbrella and not in an installed SDK. A
+// game registers its own components through World::registerComponent<T> (world.hpp).
 
 #include <aero/scene/animation_player.hpp>  // task 3.5.2
 #include <aero/scene/audio_listener.hpp>    // task 3.7.2

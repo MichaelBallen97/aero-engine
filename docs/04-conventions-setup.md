@@ -55,6 +55,69 @@ Automated tests that fail the build if an invariant is broken. Every guard has a
 
 ---
 
+## The C++ SDK
+
+Task 4.5.1. A C++ game builds against an installed engine and nothing else: the prefix holds the eleven static engine
+libraries, their headers, the compiled shaders and a CMake package, and a game's own build needs neither vcpkg nor
+this repository.
+
+- **Presets.** `macos-sdk`, `windows-sdk` and `linux-sdk`, each gated to its host. They configure `AERO_SDK=ON`, Release,
+  no profiling, no sanitizers and both tool options ON, build the `aero_sdk` target (the eleven layers and the compiled
+  shaders) and install into `build/sdk/<preset>` (the preset's `installDir`, the documented developer path). The test
+  preset selects the `sdk.*` entries only. `AERO_SDK` is a cache option, default OFF, and an OFF tree adds no ctest
+  entry and no `find_package`.
+- **Refusals.** `cmake/sdk_check.cmake` makes configure fail for a non-Release build type, `AERO_ENABLE_PROFILING=ON`,
+  `AERO_ENABLE_SANITIZERS=ON`, and either `AERO_SHADER_TOOLS` or `AERO_REFLECT_TOOLS` OFF. A Debug, instrumented or
+  Tracy-linked archive does not link into a consumer that did not ask for the same runtime, and the SDK ships the compiled
+  shaders and the generated scene serializers.
+- **Layout.**
+
+  | Path under the prefix | Holds |
+  |---|---|
+  | `include/aero/**` | 87 headers: the 95 public headers of the eleven layers minus the eight below |
+  | `lib/` | the 11 engine archives |
+  | `lib/third_party/` | the link files of spdlog, fmt, enkiTS and SDL3 (import libraries on Windows) |
+  | `bin/` | the same four libraries' DLLs, on Windows only |
+  | `share/aero/shaders/` | the 80 compiled shader artifacts |
+  | `lib/cmake/AeroEngine/` | `AeroEngineConfig.cmake`, `AeroEngineConfigVersion.cmake`, `AeroEngineGraph.cmake`, `AeroEngineFiles.cmake`, `aero_add_game.cmake` |
+
+  A consumer runs `find_package(AeroEngine CONFIG REQUIRED)` with `-DCMAKE_PREFIX_PATH=<prefix>` and no toolchain file,
+  then `aero_add_game(<target> <source>...)`, which links `aero::engine` under C++20 and copies the shaders (and, on
+  Windows, the DLLs) beside the executable, where `platform::basePath()` finds them. `aero::engine` links the eleven
+  layers; `aero::script` is not one of them, because quickjs belongs to TypeScript projects. The package exposes no
+  third-party include directory: nothing third-party can reach a consumer's compile line.
+- **Eight headers are not installed.** Every other file in the eleven include trees installs, so a new public header
+  needs no edit. A new exclusion is a new row here, and a new name in `cmake/sdk_install.cmake`'s `_sdk_excluded`.
+
+  | Header | Why a game never gets it |
+  |---|---|
+  | `profiler.hpp` | Tracy is dev-builds-only |
+  | `animation_cook.hpp`, `audio_cook.hpp`, `mesh_cook.hpp`, `skeleton_cook.hpp`, `texture_cook.hpp`, `bc_block.hpp` | cooking happens at tool time |
+  | `cooked_script.hpp` | `.aeroscript` exists only in TypeScript projects |
+
+- **What `sdk.*` proves.** Six ctest entries, run by `ctest --preset <os>-sdk`: `sdk.refusals` (each refusal and the MSVC
+  runtime pin, under `cmake -P`), `sdk.install` (the fixture: it re-creates the prefix on every run), `sdk.prefix` (the
+  layout, then the prefix, moved to a path with a space in it, serves a fresh consumer that builds and runs, with no
+  reference to the old path or to vcpkg), `sdk.headers` (every installed header compiles alone, every `#include` in one is `<aero/...>` or a
+  standard header, and a planted third-party include fails to build) and `sdk.mini_game` (the C++ mini-game, built against
+  the prefix alone and run `--scripted` from another folder) and, since 4.5.2, `sdk.template` (the C++ project template's
+  four files, written into a folder with a space in its name, built from the README's own commands and run).
+  CI runs the preset on all three lanes, in a tree of its own.
+- **The project template (4.5.2).** A new C++ project is given a `CMakeLists.txt`, a hello-cube `src/main.cpp`, a
+  `README.md` and a `.gitignore`, rendered from `editor/templates/cpp-project/`. The files are specified in
+  `docs/09-file-formats.md` section 4.12, and the generated README is the build guide for a game.
+- **One Release SDK per OS.** The archives are per architecture and per compiler, and the SDK is Release only. A game
+  links the engine statically, which is why there is no shared engine: `componentTypeId` is a property of one program
+  image (`docs/03`).
+- **Windows: the release runtime in every configuration.** The SDK is a Release build, and on Windows it uses the release
+  DLL runtime (`/MD`). MSVC cannot link `/MDd` code against it (LNK2038), so `find_package(AeroEngine)` sets
+  `CMAKE_MSVC_RUNTIME_LIBRARY` to `MultiThreadedDLL`, and every target defined after it gets that runtime in every
+  configuration and under every generator: a Debug build links and runs, unoptimised and without the debug runtime. A
+  project that sets the variable to anything else is refused, by name. A target defined before the `find_package` call
+  keeps CMake's default runtime.
+
+---
+
 ## Git conventions
 
 - **Branching:** trunk-based. Short-lived feature branches, merged to `main` via PR (even solo — the PR is where CI runs and where the review discipline lives).

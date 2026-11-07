@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -704,6 +705,12 @@ bool Context::pollEvent(Event& out) {
         // else: still-unmodeled -- already dequeued, keep draining.
     }
     return false;
+}
+
+std::string basePath() {
+    // SDL caches the string and frees it in SDL_Quit, so hand back a copy. The call needs no SDL_Init.
+    const char* base = SDL_GetBasePath();
+    return base != nullptr ? std::string{base} : std::string{};
 }
 
 }  // namespace engine::platform

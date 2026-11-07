@@ -4,18 +4,20 @@
 // the ONE place, besides engine/scene/src/world.cpp, where EnTT is visible inside engine/.
 //
 // WHY IT EXISTS: creating a typed component storage (entt::basic_registry::storage<T>()) is a
-// TEMPLATE and therefore cannot be instantiated from an entt-free header — verified against EnTT
-// 3.16: there is no runtime-typed storage factory. Everything else about a component (insert, read,
-// erase, count, iterate) goes through the type-erased base and needs no `T`, which is why the public
-// World API (world.hpp) is entt-free while this ONE operation is not.
+// TEMPLATE and therefore cannot be instantiated from an entt-free header. Everything else about a
+// component (insert, read, erase, count, iterate) goes through the type-erased base and needs no `T`,
+// which is why the public World API (world.hpp) is entt-free while this ONE operation is not. A game
+// does not need it: World::registerComponent<T> builds a run-time-sized storage instead. This seam
+// serves the engine's own components, whose storage is the typed one.
 //
 // Deliberately OUTSIDE the engine/*/include/* glob, so check-scene-boundary.sh's public-header scan
 // does not flag the entt include below. That same script uses THIS FILE as its canary: if it is
 // renamed, or stops including entt, the guard refuses to pass rather than passing vacuously.
 //
 // WHO INCLUDES THIS: engine/scene's own TUs; engine TUs that author built-in components (1.3.2+);
-// generated registration code (Phase 4/5). Ordinary consumers never need it — they only *use*
-// components, which the public templates in world.hpp already allow.
+// generated registration code (Phase 4/5). A game registers through World::registerComponent<T> and
+// never needs it, and neither does anyone who only *uses* components, which the public templates in
+// world.hpp already allow.
 //
 // Adding any other accessor here requires a spec-level decision — the seam stays two functions wide.
 

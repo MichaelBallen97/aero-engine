@@ -7,6 +7,7 @@
 // aero_reflect_generate_json). Gated on AERO_REFLECT_TOOLS at the CMake layer.
 #include <aero/reflect/json_reader.hpp>   // JsonParseConfig (loadSceneText passthrough)
 #include <aero/reflect/scene_format.hpp>  // SceneDocument, SceneError
+#include <aero/scene/prefab.hpp>          // Prefab (loadPrefabText)
 #include <aero/scene/world.hpp>           // World, Entity
 
 #include <cstddef>
@@ -41,6 +42,16 @@ struct SceneLoadResult {
 // parseScene(text) then loadScene. On a parse/validate error, returns {error, {}} and does NOT touch
 // `world`. The strict path (parseScene guarantees a valid forest before any entity is created).
 [[nodiscard]] SceneLoadResult loadSceneText(World& world, std::string_view text, const JsonParseConfig& config = {});
+
+// loadPrefabText's result: exactly one of the two is set.
+struct PrefabLoadResult {
+    std::optional<Prefab> prefab;
+    std::string error;  // "line L, column C: <reason>", "<reason>" when the failure has no position, or
+                        // "a prefab has exactly one root"
+};
+
+// Parses a .aeroprefab (docs/09 §17). A scene v1 document, so an unknown component is a WARN and a skip.
+[[nodiscard]] PrefabLoadResult loadPrefabText(std::string_view text);
 
 // Serialize every LIVE entity of `world` into a SceneDocument: ids 1..N in eachEntity() order,
 // `parent` resolved to the parent's assigned id (0 for roots), each present built-in emitted in
