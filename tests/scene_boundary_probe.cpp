@@ -208,3 +208,13 @@ static_assert(std::is_aggregate_v<engine::ScriptComponent>);
 // One Guid (two uint64): 16 bytes, 8-aligned, no padding.
 static_assert(sizeof(engine::ScriptComponent) == 16);
 static_assert(alignof(engine::ScriptComponent) == 8);
+
+// ---- task 4.5.1 ----------------------------------------------------------------------------------
+// World::registerComponent<T> compiles on a link line that is still exactly `aero::scene`. A decltype would not
+// instantiate the template body, whose static_asserts and operation table are the part that must stay free of any
+// third-party name, so this function does. It is never called.
+namespace {
+[[maybe_unused]] engine::ComponentTypeId instantiateRegistration(engine::World& world) {
+    return world.registerComponent<ProbePosition>("probe::Position");
+}
+}  // namespace

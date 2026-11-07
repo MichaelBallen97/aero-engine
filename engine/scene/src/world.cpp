@@ -23,12 +23,20 @@
 
 #include <algorithm>  // task 1.3.2 — std::find (ordered child unlink)
 #include <cstddef>
+#include <cstdint>
 #include <deque>
+#include <new>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>  // task 1.3.2 — HierarchyNode::children
+
+// Why the patch digit too: RuntimeStorage overrides get_at and swap_or_move, private virtuals of basic_sparse_set, and
+// override catches a rename, never a changed contract. A bump re-reads sparse_set.hpp and storage.hpp, then moves this
+// line.
+static_assert(ENTT_VERSION_MAJOR == 3 && ENTT_VERSION_MINOR == 16 && ENTT_VERSION_PATCH == 0,
+              "RuntimeStorage was written against EnTT 3.16.0: re-read its overrides before moving this pin");
 
 namespace engine {
 namespace {
@@ -66,7 +74,117 @@ struct EntityName {
     std::string value;
 };
 
+// The marker every runtime-registered component is stored under; each game type has its own pool under its own id.
+struct RuntimeComponent {};
+
+// A component storage sized at run time, the registry's to own (entt::storage_type below). A push only adds pages, so
+// it never relocates an element: copyComponent rests on that. A tag (size 0) stores nothing, like a typed tag storage.
+//
+// Why a page and not one growing array: a typed storage is paged for the same reason, and World::copyComponent reads
+// its source AFTER the only call that could move it.
+class RuntimeStorage final : public ErasedStorage {
+    using Base = ErasedStorage;
+    using Iterator = Base::basic_iterator;
+    static constexpr std::size_t PAGE_ELEMENTS = 1024;
+
+public:
+    using allocator_type = Base::allocator_type;  // NOLINT(readability-identifier-naming): EnTT's name
+
+    explicit RuntimeStorage(const allocator_type& allocator)
+        : Base{entt::type_id<RuntimeComponent>(), entt::deletion_policy::swap_and_pop, allocator} {}
+    RuntimeStorage(const RuntimeStorage&) = delete;
+    RuntimeStorage& operator=(const RuntimeStorage&) = delete;
+    RuntimeStorage(RuntimeStorage&&) = delete;
+    RuntimeStorage& operator=(RuntimeStorage&&) = delete;
+    ~RuntimeStorage() override {
+        RuntimeStorage::pop_all();
+        for (std::byte* page : pages) {
+            ::operator delete(page);
+        }
+    }
+
+    // Runs before the first push.
+    void configure(const scene::detail::ComponentOps& componentOps) { ops = componentOps; }
+
+private:
+    [[nodiscard]] std::byte* at(std::size_t pos) const noexcept {
+        return pages[pos / PAGE_ELEMENTS] + ((pos % PAGE_ELEMENTS) * ops.size);
+    }
+
+    // nullptr for a tag, which stores no value.
+    [[nodiscard]] const void* get_at(std::size_t pos) const override { return ops.size == 0 ? nullptr : at(pos); }
+
+    // Three relocates through one temporary element. No caller in production sorts a pool; basic_sparse_set's public
+    // swap_elements reaches this, and a case drives it.
+    void swap_or_move(std::size_t from, std::size_t to) override {
+        if (ops.size == 0 || from == to) {
+            return;
+        }
+        void* held = ::operator new(ops.size);
+        ops.relocate(held, at(from));
+        ops.relocate(at(from), at(to));
+        ops.relocate(at(to), held);
+        ::operator delete(held);
+    }
+
+protected:
+    // Swap-and-pop, as a typed storage does it: the last element moves into the erased slot.
+    void pop(Iterator first, Iterator last) override {
+        for (; first != last; ++first) {
+            if (ops.size != 0) {
+                std::byte* erased = at(index(*first));  // before swap_and_pop rewrites the sparse entry
+                std::byte* back = at(size() - 1U);
+                ops.destroy(erased);
+                if (erased != back) {
+                    ops.relocate(erased, back);
+                }
+            }
+            Base::swap_and_pop(first);
+        }
+    }
+
+    void pop_all() override {
+        if (ops.size != 0) {
+            for (std::size_t pos = size(); pos-- > 0U;) {
+                ops.destroy(at(pos));
+            }
+        }
+        Base::pop_all();
+    }
+
+    Iterator try_emplace(const SceneEntity entity, const bool forceBack, const void* value) override {
+        const Iterator it = Base::try_emplace(entity, forceBack);
+        if (ops.size == 0) {
+            return it;
+        }
+        const auto pos = static_cast<std::size_t>(it.index());
+        try {
+            while (pos / PAGE_ELEMENTS >= pages.size()) {
+                pages.push_back(static_cast<std::byte*>(::operator new(ops.size * PAGE_ELEMENTS)));
+            }
+            ops.construct(at(pos), value);
+        } catch (...) {
+            Base::pop(it, it + 1);  // the base's pop: no element was constructed
+            throw;
+        }
+        return it;
+    }
+
+private:
+    scene::detail::ComponentOps ops{};
+    std::vector<std::byte*> pages;
+};
+
 }  // namespace
+}  // namespace engine
+
+// The pinned EnTT's own customisation point: the registry allocates this storage for the marker type.
+template <typename Allocator>
+struct entt::storage_type<engine::RuntimeComponent, engine::scene::internal::SceneEntity, Allocator> {
+    using type = engine::RuntimeStorage;  // NOLINT(readability-identifier-naming): EnTT's name
+};
+
+namespace engine {
 
 struct World::Impl {
     struct Registration {
@@ -629,6 +747,26 @@ bool World::advanceQuery(QueryCursor& cursor, void** slots) const noexcept {
 }
 
 // ---- the component-type registry -------------------------------------------------------------
+
+ComponentTypeId World::registerComponentRaw(ComponentTypeId id, std::string_view name,
+                                            const scene::detail::ComponentOps& ops) {
+    if (impl == nullptr || !id.valid()) {
+        return {};
+    }
+    // Registered already: bind keeps its idempotence and its WARN, and no second pool is made.
+    if (const Impl::Registration* existing = impl->find(id); existing != nullptr) {
+        return scene::internal::WorldAccess::bind(*this, id, name, existing->storage, existing->emptyType);
+    }
+    // A pool id no pool holds. Built-ins sit under their type hashes, so the walk from a fixed seed ends at the first
+    // free value and depends on registration order alone.
+    auto poolId = static_cast<entt::id_type>(0x41455230U + impl->registrations.size());
+    while (impl->registry.storage(poolId) != nullptr) {
+        ++poolId;
+    }
+    RuntimeStorage& storage = impl->registry.storage<RuntimeComponent>(poolId);
+    storage.configure(ops);
+    return scene::internal::WorldAccess::bind(*this, id, name, &storage, ops.size == 0);
+}
 
 bool World::registered(ComponentTypeId id) const noexcept { return impl != nullptr && impl->find(id) != nullptr; }
 

@@ -6,22 +6,23 @@
 // linking aero::scene alone). The word "entt" appears only inside comments in this file, which the
 // guard strips before checking.
 //
-// WHY THE COMPONENT API IS TEMPLATES OVER SIX TYPE-ERASED PRIMITIVES: creating a typed component
-// storage is a TEMPLATE in the backing ECS (verified against EnTT 3.16 — there is no runtime-typed
-// storage factory), so it cannot be instantiated from an entt-free header. Everything else about a
-// component — insert, read, erase, count, iterate — goes through a type-erased base and needs no `T`
-// at all. So the public surface below is templates whose bodies do nothing but `static_cast` over
-// six non-template primitives (addRaw / getRaw x2 / hasRaw / removeRaw / countRaw); the one operation
-// that genuinely needs a template on the entt side (making T a component type of a World) lives
-// behind the internal seam, <aero/scene/internal/world_access.hpp>.
+// WHY THE COMPONENT API IS TEMPLATES OVER SIX TYPE-ERASED PRIMITIVES: a typed component storage is a
+// TEMPLATE in the backing ECS (verified against EnTT 3.16), so a built-in component registers through
+// an internal seam of the engine that can name the ECS. Everything else about a component -- insert,
+// read, erase, count, iterate -- goes through a type-erased base and needs no `T` at all. So the public surface below
+// is templates whose bodies do nothing but `static_cast` over six non-template primitives (addRaw / getRaw x2 / hasRaw
+// / removeRaw / countRaw).
+//
+// A GAME'S OWN COMPONENT registers through registerComponent<T>(name) below, with no ECS type in sight:
+// the World builds a storage sized at run time from a small table of T's operations (construct,
+// relocate, destroy), which this header instantiates for T.
 //
 // REGISTRATION IS PER-WORLD AND MANDATORY: a component type must be registered in THIS World, via
-// engine::scene::internal::registerComponent<T>(world, name) (the internal seam), before it can be
-// added, read, removed, counted or iterated. Using an unregistered type is a loud runtime rejection
-// (nullptr / false / 0, with an ERROR logged from the raw primitive) — never UB. Registration is
-// per-World by design: there is no process-global type table (the same global the project already
-// refused for JobSystem), so "which types does this World know?" is always answerable from the
-// World alone.
+// world.registerComponent<T>(name), before it can be added, read, removed, counted or iterated. Using
+// an unregistered type is a loud runtime rejection (nullptr / false / 0, with an ERROR logged from the
+// raw primitive) -- never UB. Registration is per-World by design: there is no process-global type
+// table (the same global the project already refused for JobSystem), so "which types does this World
+// know?" is always answerable from the World alone.
 //
 // NOT THREAD-SAFE: synchronize externally, exactly like <aero/core/slot_map.hpp>'s own contract.
 //
@@ -32,7 +33,8 @@
 // NO EXCEPTIONS CROSS THIS API (docs/04): every rejection path returns an invalid/empty/false answer,
 // never throws. Allocation failure still throws std::bad_alloc from the constructor and from any
 // growing container inside a component storage, exactly as everywhere else in the engine — that is
-// not a boundary this API tries to paper over.
+// not a boundary this API tries to paper over. The same holds for a game component whose copy
+// constructor throws: add<T>() propagates it and leaves the entity without a T.
 //
 // POINTER STABILITY: nothing may cache a T* returned by get<T>()/add<T>() across a later add<T>(),
 // remove<T>(), destroy(), or clear() touching the SAME component type on this World — the identical
@@ -45,6 +47,7 @@
 #include <array>
 #include <cstddef>
 #include <memory>
+#include <new>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -63,6 +66,37 @@ namespace scene::detail {
 template <typename... Ts, typename Fn, std::size_t... Is>
 void applySlots(Fn& fn, Entity entity, void* const* slots, std::index_sequence<Is...> /*seq*/) {
     fn(entity, *static_cast<Ts*>(slots[Is])...);
+}
+
+// What a run-time-sized storage needs to know about a component type.
+struct ComponentOps {
+    std::size_t size = 0;  // 0: a tag, nothing is stored
+    void (*construct)(void* at, const void* source) = nullptr;
+    void (*relocate)(void* to, void* from) noexcept = nullptr;
+    void (*destroy)(void* at) noexcept = nullptr;
+};
+
+// source == nullptr default-constructs.
+template <typename T>
+void constructComponent(void* at, const void* source) {
+    if (source == nullptr) {
+        ::new (at) T();
+    } else {
+        ::new (at) T(*static_cast<const T*>(source));
+    }
+}
+
+// Move-constructs into `to`, then destroys `from`.
+template <typename T>
+void relocateComponent(void* to, void* from) noexcept {
+    T& old = *static_cast<T*>(from);
+    ::new (to) T(std::move(old));
+    old.~T();  // NOLINT(bugprone-use-after-move): a moved-from object is still destroyed
+}
+
+template <typename T>
+void destroyComponent(void* at) noexcept {
+    static_cast<T*>(at)->~T();
 }
 
 }  // namespace scene::detail
@@ -223,7 +257,7 @@ public:
     // a previous add<T>()'s, and the storage's packed order may change; nothing may depend on either.
     // Returns nullptr, WITHOUT storing anything, for an empty (tag) component T — has<T>() is true
     // afterwards regardless. Returns nullptr plus one ERROR for a dead/null entity or an unregistered
-    // T (register it first via engine::scene::internal::registerComponent<T>).
+    // T (register it first via world.registerComponent<T>(name)).
     template <typename T>
     T* add(Entity entity, T value = T{});
 
@@ -263,6 +297,15 @@ public:
     void each(Fn&& fn);
 
     // ---- the component-type registry ----------------------------------------------------------
+
+    // Makes T a component type of THIS World with no ECS type in sight. Idempotent, per-World, an
+    // invalid id, silently, on a moved-from World. A second name for one T keeps the first and WARNs;
+    // one name for two types WARNs and findComponentType keeps the first.
+    // T must be a plain value type that is default-constructible, copy-constructible and nothrow
+    // move-constructible, no more aligned than a plain `new` returns. A type outside that does not
+    // compile.
+    template <typename T>
+    ComponentTypeId registerComponent(std::string_view name);
 
     [[nodiscard]] bool registered(ComponentTypeId id) const noexcept;
 
@@ -335,10 +378,31 @@ private:
     [[nodiscard]] bool advanceQuery(QueryCursor& cursor, void** slots) const noexcept;
     [[nodiscard]] bool nextEntity(std::size_t& cursor, Entity& out) const noexcept;
     [[nodiscard]] bool nextChild(Entity parent, std::size_t& cursor, Entity& out) const noexcept;
+    ComponentTypeId registerComponentRaw(ComponentTypeId id, std::string_view name,
+                                         const scene::detail::ComponentOps& ops);
 
     struct Impl;
     std::unique_ptr<Impl> impl;
 };
+
+template <typename T>
+ComponentTypeId World::registerComponent(std::string_view name) {
+    static_assert(std::is_same_v<T, std::remove_cvref_t<T>>,
+                  "a component must be a plain value type: remove the const, volatile or reference");
+    static_assert(std::is_default_constructible_v<T>, "a component must be default-constructible");
+    static_assert(std::is_copy_constructible_v<T>, "a component must be copy-constructible");
+    static_assert(std::is_nothrow_move_constructible_v<T>,
+                  "a component must be nothrow move-constructible: mark its move constructor noexcept");
+    static_assert(alignof(T) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
+                  "a component cannot be aligned past what a plain new returns: drop the alignas");
+    static constexpr scene::detail::ComponentOps OPS{
+        std::is_empty_v<T> ? std::size_t{0} : sizeof(T),
+        &scene::detail::constructComponent<T>,
+        &scene::detail::relocateComponent<T>,
+        &scene::detail::destroyComponent<T>,
+    };
+    return registerComponentRaw(componentTypeId<T>(), name, OPS);
+}
 
 template <typename Fn>
 void World::eachEntity(Fn&& fn) const {

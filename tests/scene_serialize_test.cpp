@@ -2041,3 +2041,28 @@ TEST_CASE("scene_serialize: section 2.3's tolerance rules on the ScriptComponent
         CHECK(text.find("\"script\": \"4410000000000000000000000000abcd\"") != std::string::npos);
     }
 }
+
+namespace {
+// A game's own types: run-time data to the serializer, which writes only what the reflection table lists.
+struct SerializeGameData {
+    std::string label = "game";
+    int hitPoints = 3;
+};
+struct SerializeGameTag {};
+}  // namespace
+
+TEST_CASE("scene_serialize: a registered game component never reaches the saved document (RG15)") {
+    World world;
+    const Entity e = world.create();
+    world.setName(e, "hero");
+    world.add<Transform>(e, Transform{.position = {1.0F, 2.0F, 3.0F}});
+    const std::string without = saveWorldText(world);
+
+    world.registerComponent<SerializeGameData>("game::SerializeGameData");
+    world.registerComponent<SerializeGameTag>("game::SerializeGameTag");
+    world.add<SerializeGameData>(e, SerializeGameData{"unsaved", 9});
+    world.add<SerializeGameTag>(e);
+    REQUIRE(world.has<SerializeGameData>(e));
+    CHECK(saveWorldText(world) == without);
+    CHECK(without.find("SerializeGame") == std::string::npos);
+}
