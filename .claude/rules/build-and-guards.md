@@ -132,4 +132,7 @@ Stage 20 plants `::copy` in it and expects exit 1.
 - **The MSVC runtime pin lives in `AeroEngineConfig.cmake`, never in `aero_add_game`.** The tree's `windows-debug` builds the
   mini-game through `aero_add_game` against `/MDd` layers (`samples/CMakeLists.txt`), so a pin there would break that lane.
   Whatever `sdk.refusals` tests sits above the config's `find_dependency`, because under `-P` the file stops there.
+- **An installed header names no internal seam, header or target a prefix lacks.** The rule is that a consumer is never sent
+  to include or link something the prefix does not hold. A comment citing the engine's own source files, a tool-time header
+  or an editor header as provenance documents the tree, so it is no such pointer and stays as written.
 - **`ctest -N` in an SDK tree is 233 + 6**; every other configuration stays 233, because the entries exist only under `AERO_SDK`.
