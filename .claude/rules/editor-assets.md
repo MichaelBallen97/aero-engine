@@ -588,3 +588,16 @@ has no sidecar, so its plan has one step and not two — so a default would let 
 encode a folder as a file, with no error and no failing test. Three call sites; `DR27` pins the one surviving
 `/*isDirectory=*/false` to the search-hit site, where it is correct because `searchAssets` never matches a
 folder.
+
+**`.aeroprefab` BYTES ARE WRITTEN BY ONE OPERATION (4.4.4).** That operation is Save as Prefab, through `savePrefabFile` in
+`prefab_asset.cpp`, whose path is a named local (`prefabAbsolutePath`), so the amended INV-A1 stays a grep; I97 still
+forbids the call in its four files. The drain, `EditorApp::savePrefabAsset`, runs from `tick()`'s reconcile block and
+nowhere else, before the refresh test, so the write and the scan that mints its `.meta` are one pass. A write never
+overwrites: the name comes from `uniqueAssetFileName` over the folder's unfiltered listing, compared ASCII-case-folded,
+and New Material's name is the same function. A file is not an edit, so the save never touches the CommandStack. A drop
+reads and parses the file at the drain, so an edit made since the scan is what lands, and a failure is one WARN with
+nothing created.
+
+**A NEW `AssetKind` PINS MORE THAN THE SWITCHES (4.4.4).** `Prefab` went in before `Unknown`, which moved `Unknown` from 7
+to 8 and the browser's single-digit decode to 0-8. AR5 and AR7 pin the draggable count (6 today), MP14 the rule count
+(20) and AV70 `Unknown`'s value, none of them through the compiler, and `ThemeAssetKinds` takes a token per kind.

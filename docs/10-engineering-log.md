@@ -71,6 +71,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | 4.4.1 ScriptComponent + lifecycle | #132 | `63ca43a` | **12 / 12**, nothing failed (the editor GUI driven on macOS: the Script kind's colour and filter, `.d.ts` and `.TS` staying Text, Add Component, attaching by drop and by picker, Undo and Redo, a saved and reopened scene naming the `.meta` guid, refused drops on the Hierarchy and the Viewport; the lifecycle cases under `leaks`, 0 leaks; BN57's 1 000-instance update at a median of 0.563–0.574 ms in Release; LC31's `stop()` over 10 000 instances in 53.0–54.1 ms in Debug). Two code-review rounds (one should-fix, the suspension WARN counting over half-moved run-order entries during a detach, and one minor, both closed); a 92-row sabotage matrix whose nine holes LC34–LC39, I369 and VM82 closed and re-ran red; R37 (the Debug recursion depth from a hook) recorded and the `bindWorld` handoff's 4.4.1 half closed; CI green on the first push (`41307754224`, 6 / 6) and on `main`'s push run (`41314380171`, 6 / 6) |
 | 4.4.2 Entity/world API | #133 | `1094266` | **3 / 3**, nothing failed (terminal rows, no editor UI: the 81 new cases under `leaks`, 0 leaks; LC48's update spawning and destroying 1 000 entities at a median of 0.671–0.677 ms in Release against 1.94 ms; WA27's `find` / `findAll` / `query` over 10 000 entities at most 29.1 / 44.0 / 129.2 µs in Release against 90.9 / 134.4 / 405.1 µs, both bounds 3 × the Release medians measured afterwards at the commits that added the cases). Three code-review rounds (four should-fix in round 1: a strict "sloppy" arm, a commuting `lookAt` sample, a missing `<ostream>`, and an attach failure counted for an entity the flush destroyed; one in round 2, the flushed subtree's erase untested; all closed, round 3 approved); a 135-row sabotage matrix whose seven predicted holes WA29–WA34 and VM88 closed and re-ran red; no new risk or handoff; CI green on the first push (`41544399893`, 6 / 6) and on `main`'s push run (`41553547614`, 6 / 6) |
 | 4.4.3 Input API for scripts | #134 | `c852d42` | **2 / 2**, nothing failed (terminal rows, no editor UI: the 49 new cases under `leaks`, 0 leaks; GP13's `VirtualOnly` Context construction at a median of 2.35 ms in Release against 7.14 ms, 3 × the Release median at the commit that added the case; one row NOT EXECUTABLE: a physical pad and the play-in-editor rows). One code-review round (one minor: the frame-model comments lacked the gamepad sentences, fixed); an 86-row sabotage matrix whose four holes, three of them predicted, closed with GP23–GP26 and re-ran red; R38 (Windows' DirectInput stall) and three unowned handoffs (4.7.1, 4.7.4, Phase 5); CI green on the first push (`41728157319`, 6 / 6) and on `main`'s push run (`41745107998`, 6 / 6) |
+| 4.4.4 Prefab-lite spawn | #135 | `25f93d1` | **11 / 11**, nothing failed (the editor GUI driven on macOS: Save as Prefab on one root, a root with a child and two roots; three real drops; undo and redo through the Edit menu; a reopen; the item greyed with no project; a hundred spawns at a warm median of 0.165–0.190 ms in Release against 16.6 ms; the 61 engine cases under `leaks`, 0 leaks; no row NOT EXECUTABLE). Two code-review rounds (round 1: three should-fix, among them capture's non-finite pivot, and three minor; round 2: two minor; all closed); a 219-row sabotage matrix whose 22 holes, all predicted, closed with PW27–PW30, PR21–PR28, PE18–PE19 and I378–I383 and re-ran red, three more rows witnessed by the page; R39 (BS8's reopen races Windows' process teardown) and four unowned handoffs; CI red on attempt 1 on BS8 alone, on Windows Release, then green with no change (`42014951944`, 6 / 6), and green on `main`'s push run (`42326395560`, 6 / 6) |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -21536,3 +21537,192 @@ gains `src/script_api_input.cpp` and `internal/aero/script/internal/input_names.
 `input.hpp`, `input.cpp` and `platform.cpp` grow. `aero_tests` gains `gamepad_input_test.cpp`, `input_pump_test.cpp` and
 `script_input_test.cpp`, and the `tsc` fixture `prelude_only/input.ts`. Docs: `docs/08` (R38, three unowned handoffs
 and the validation debt), the phase file, and the scripting and tests rule files.
+
+### 4.4.4 — Prefab-lite spawn — a saved entity tree is a `.aeroprefab` that a script copies with `engine.spawn` and the asset browser drops into a scene, and Epic 4.4 closes
+
+A saved entity tree is now an asset. The Hierarchy's Save as Prefab writes the selection to a `.aeroprefab`,
+`engine.spawn(path, ...)` copies the file's tree into the bound World, and a drop from the asset browser instantiates it as
+one undoable command. Merged as PR #135 (`25f93d1`, a true merge commit): sixteen commits on `631d1ca` — the plan's nine
+steps, the clang-tidy commit, the capture fix of plan section H, a comment fix, a test commit, a `docs/09` wording fix, the
+commit that closed the sabotage holes and I378's premise. CI: run `42014951944` at `21aa0b8`, attempt 1 red on BS8 alone on
+Windows Release (R39), attempt 2 green with no change, 6 / 6; `main`'s push run `42326395560` on the merged head, 6 / 6 green. This is the audit's D5, the editor half of Story
+3's third line, the engine side of its `spawn`, and this task's part of its fourth line (the `.d.ts`). All five of Story
+3's tasks are now merged; its demo needs Play (4.7.1, 4.7.2 and 4.7.4), so it has not run.
+
+**What shipped.**
+- **The file** (`docs/09` section 17; Reserved moves to section 18): a `.aeroprefab` is a scene v1 document in every byte, with one added rule: exactly one entity has no `parent`, and any other count is refused
+  with `a prefab has exactly one root`. The extension tells the asset browser what the file is; a loader never sniffs it.
+  Section 9.0's residual for a consumer with no importer closes here.
+- **`engine::Prefab`** (`engine/scene`, `prefab.hpp`, `prefab.cpp`; PW1–PW18, PW27–PW30): one private World holding one
+  root and its descendants, walked through the public World API, so the type needs no reflection and no EnTT and a public
+  editor header may name it. `capture(source, roots, wrapperName)` copies disjoint roots with their subtrees, `fromWorld`
+  takes a World a scene load filled and refuses anything but one root, moving from it only on success, and
+  `instantiate(destination, placement, parent)` makes a flat copy with no link back. The component copy walks the
+  registration table, so a component added later needs no change here (PW5). A failed copy destroys what it made.
+- **The capture's rule** (`prefab.cpp`; PW19–PW26): one saved root stores position zero and keeps its local rotation and
+  scale. Several saved roots go under a new wrapper root, an identity `Transform` named for the file, each stored at its
+  world position minus the mean of the roots' finite world positions, summed in double so the pivot is always a finite
+  float. A root whose world position is NaN or infinite is not refused: it takes no part in the mean and stores the
+  literal zero, as one root does. A root whose offset does not fit a float stays in the mean and stores zero.
+- **The placement** (`docs/09` section 17.4; PW30): `P.position + normalize(P.rotation) * (P.scale * S.position)`, the
+  product rotation and a componentwise scale. `normalize` gives the identity for a rotation with no length, so a zero
+  quaternion places the tree unrotated. A saved root with no `Transform` takes the placement itself. The placement is
+  taken by value, because a reference into the destination's own storage would be read after the copy grew it.
+- **`engine.spawn` takes a path** (`script_api_prefab.cpp`, `script_api_transform.cpp`; PR1–PR13, PR15, PR21–PR28, WA17):
+  `spawn(path, transform?)` and `spawn(path, position, rotation?, scale?)` beside the unchanged `spawn()`. Each returns the
+  root's one entity object. Every refusal is a `TypeError` at `engine.spawn`, in one fixed order, naming the script's path
+  text where it has one, and leaves the World as it was. A file is read through the VM's VFS, under `sourceWithinCap` before
+  the read and again after it. `ScriptApi` borrows the VFS and the heap limit. A build without the reflect tools stops after
+  the argument checks with `built without AERO_REFLECT_TOOLS`.
+- **The per-binding cache** (`ScriptApi::prefabs`; PR14, PR16–PR20): a normalized `res://` path to the `Prefab` read under
+  the current binding, emptied with the entity table and by nothing else. It holds no `JSValue`, and a failed read
+  inserts nothing, so a file made good is read again.
+- **The declarations** (`prelude.d.ts`, `script_declarations_test.cpp`; DT33–DT35): two new overloads of `spawn`, and the
+  declarations reader now reads an overloaded function and refuses a rest parameter in one. `typescript.broken` keeps its
+  TS2554 with a five-argument call and gains TS2345 twice and TS2769 twice; `clean/world.ts` and `prelude_only/vectors.ts`
+  call the new forms.
+- **The text bridge and the command** (`scene_io.cpp`, `asset_commands.cpp`; PE1–PE8, PE18): `prefabToText` and
+  `prefabFromText` keep `scene_io.cpp` the one reflection `#if`. `InstantiatePrefabCommand`, the seventh structural command,
+  holds a `Prefab` by value, copies it on the first redo and selects its root; later redos and every undo go through the
+  structural helpers, so a handle minted by the first redo names the same entity for the life of the history entry.
+- **The kind and the drop** (`asset_view`, `asset_drag`, `editor_app.cpp`; AV72–AV73, DR29, AR9, I370–I372, I378–I381):
+  `AssetKind::Prefab` before `Unknown`, draggable, a hatched tile reading `PFAB` in a teal theme token. Against the matrix,
+  `DropAction::InstantiatePrefab` fires on a Hierarchy row (the row's last child, at its origin), the Hierarchy's void (a
+  new root, at the origin) and the Viewport (at the drop point, resolved at the drain), never on a material slot, and an
+  asset field assigns the reference. The drain re-resolves the Guid and reads the file there, so an edit made since the
+  scan is what lands.
+- **Save as Prefab** (`prefab_asset.{hpp,cpp}`, `hierarchy_panel.cpp`, `editor_app.cpp`; PE9–PE17, PE19, I373–I377, I382,
+  I383): a row's context-menu item, greyed with no project or no scene I/O, that sets a one-shot drained by
+  `EditorApp::savePrefabAsset` in `tick()`'s reconcile block, the fifth one-shot there. It takes the whole selection when
+  the row is part of it, and the row alone otherwise. `savePrefabFile` writes into the browser's current folder
+  under `uniqueAssetFileName`, which New Material now shares, and never overwrites. A refusal logs one WARN and writes
+  nothing, and the save never touches the CommandStack.
+
+**Code-review rounds.** Round 1 (on `631d1ca..499435c`): no blocking, three should-fix, three minor, all six verified at
+their sources. F1: one root's non-finite world position poisoned every sibling's saved position, because the pivot went
+non-finite, the file held `null` and every instance's children landed at NaN. It closed with plan section H and `91cd3cf`.
+F2: no case pinned capture's non-finite arm; PW19–PW26 in `0470627`. F3: I375 checked Transforms only though its plan row
+claimed components; it now carries a `MeshRenderer` with its GUIDs. F4–F6, comments that stated the reverse of the code,
+misnamed I97's list and misstated `getRaw`, closed in `3627ff6`. Round 2 (on `499435c..0470627`): no blocking, no
+should-fix, two minor: `docs/09` section 17.3 read as if an overflowing root left the mean (`eb77d75`), and section H's
+other sites had not reached the plan's body. The loop closed at round 2. `021b92c` and `21aa0b8` are test-only and came
+after it, proved by the matrix and the gate.
+
+**The sabotage matrix.** 219 doctest rows through `macos-debug`, first run at `eb77d75`: 192 RED, 2 COMPILE-RED, 3
+VALIDATION and 22 HOLE, exactly the 22 the design predicted by trace, none a product defect. Each hole got a case in
+`021b92c`, and its row, re-run with the grown selector, came back RED:
+- S20 → PW27 (three roots carrying an unregistered type: one WARN for the walk). S28 → PW28 (`fromWorld` refuses and leaves
+  the caller's World whole). S30 → PW29 (`instantiate` on a moved-from Prefab). S33 and S34 → PW30 (a placement with a
+  different value on every axis).
+- S69 and S71 → PR21 and PR22 (the order of the first argument, the count, the World and the path). S81 and S82 → PR23 and
+  PR24 (a backend that lies about a size, and a read that fails after the size answered). S84 → PR25 (a scene-stage parse
+  failure names the entity). S86 → PR26 (a moved-from World). S95 and S96 → PR27 and PR28 (kinds before reads).
+- S146 → PE18. S212 → PE19. S171–S174 → I378–I381 (a drop onto an entity stays a root, an unread file, a bad file, the
+  selection across undo). S188 → I382. S189 and S190 → I383.
+
+The record reads 214 RED, 2 COMPILE-RED, 3 VALIDATION and 0 HOLE, and S171–S174 and S188–S190 re-ran RED at `21aa0b8` after
+I378's premise changed. The VALIDATION witnesses are row 11 for S195 and row 2 for S196 and S197: a source pin counts the two
+names of the menu item's condition and cannot read its operator, and every automated case enters past the click. Removing
+`count == 0U` and removing `single ||` in `prefab.cpp` are equivalent mutants. No seed reaches a tools-OFF arm or a
+`typescript.*` entry; `reduced.sh` and ctest run those.
+
+**Traps found, each measured.**
+- **A NaN stored by one root reaches every sibling.** `json_writer.cpp:160` writes a non-finite float as `null`, which
+  reads back as NaN (`docs/09` section 2), so a pivot that goes non-finite reaches every root of the file. Before section H
+  the finite rule held for one root only.
+- **`pickEntity` on a zero viewport size is not a miss.** `ndcToViewportPoints` collapses the click and every projected
+  point to (0, 0), every non-mesh entity in front of the eye sits at distance 0, all of them hit and the lowest index
+  wins. The comment in `ViewportPanel::pickAt` ("no point hit") says otherwise; it stands, an unowned handoff in `docs/08`.
+  It cost I378 two attempts in the shader-tools-OFF build: a first `#if` arm asserted a miss and went red, and the case's
+  premise became "the pick hits something", with no `#if`.
+- **Running `reduced.sh` after the hole cases caught I378's OFF-only red before Ship.** The matrix runs `macos-debug` alone,
+  and no seed reaches the OFF arms.
+- **A portable write failure is a folder where the temporary file goes.** No permission bit fails a write on Windows or
+  as root; a folder at `<path>.aero-tmp` fails it everywhere (PE19, I383).
+- **A bare WARN count passes whatever the parser says.** S172 was a hole of I379's first draft, so the case pins the WARN's
+  text.
+- **The Asset Browser does not draw at 320x180 with the Console visible**, so the select and navigate seams never apply.
+  `openSavePrefabApp` hides the Console and turns the watcher off, as `e63AssetsApp` does.
+- **A scene-stage parse failure carries line 0**, so its message omits `line L, column C: ` and reads `'<path>': <message>`;
+  a JSON-stage failure keeps it.
+- **Each heap-refused allocation logs a warning**, 24 across PR14's sweep, so that case asserts no log.
+- **`validateAssetName` and the suffix refuse different names.** `Crate.` fails alone and passes with the suffix, and 245
+  bytes passes alone and fails with it, so `prefabFileStem` checks both ways.
+- **EnTT's empty-type storage has no `get_at`,** so `getRaw` is null for a tag (`entt/entity/storage.hpp:789`).
+- **Timing reds on `aero_editor_shell_test`, none on a file this branch touches.** Locally: BS24 once, ST32 and ST41 once
+  each while lint ran concurrently, and BS14 once with nothing else running (`poll() never settled`,
+  `blender_service_test.cpp:340`); all passed alone and in every closing ctest. On CI: BS8 once, on Windows Release (R39).
+- **Row 11's no-project state.** The editor reopens the last project on launch, so the row launched it on an empty folder,
+  and the failed open leaves it with no project, one ERROR in the log. **A tile dragged into the Hierarchy commits** with the
+  slow drag shape, on a row and in the void.
+
+**Where the implementation departed from the plan.**
+- Step 3: a scene-stage message has no position (above). WA17 reads `builtinComponentBindings()` at run time for its
+  tools-ON and OFF arms, because a test file takes no `#if`.
+- Step 4: PR14 omits the plan's no-warning check (above), and `loadPrefab` takes a non-const `ScriptApi&` since it inserts.
+- Step 5: PE7 and PE8 hold their tools-OFF arm as a runtime `sceneIoAvailable()` return.
+- Step 6: AR5, AR7 and MP14 pin the number of draggable kinds and rules, and AV70 `Unknown`'s value; the plan listed none of
+  them, and they went from 5, 5, 18 and 7 to 6, 6, 20 and 8. AR9's name ends at its id, so the plan's gate pattern selects
+  it. `makePrefabDropProject` is self-contained, because `makeDropProject` sits inside the shader-tools block.
+- Step 7: `uniqueAssetFileName` uses `asciiCaseEqual`, already in `asset_actions.cpp`, and `material_edit.cpp`'s two local
+  helpers are deleted. `prefabFileStem` checks both ways (above). PE12's hidden entry cannot discriminate, since a generated
+  stem never starts with `.`, so the case uses a folder and an upper-case name, and covers the 64-name exhaustion.
+- Step 8: `makeSavePrefabProject` and `openSavePrefabApp` replace `makeDropProject`, for the same reason as step 6. I376 was
+  green against the stubbed drain and was proven live by a mutation.
+- Step 9: the worked example is its own section 17.7, and the file's root-first order is stated as the writer's habit, not
+  a rule a reader may rely on.
+- The closing figures replace the plan's predictions: `aero_tests` 2025, not 2005 or section H's 2013, because of the hole
+  cases. The validation page's `leaks` row runs 61 cases, not the plan's 49.
+
+**What was deliberately left out, and which task holds each.**
+- Overrides, nesting, a link from an instance to its asset and re-applying an edited prefab: v2 (`docs/future-roadmap.md`).
+- A prefab editing mode, a thumbnail of a prefab and a Save dialog: out of v1's prefab-lite.
+- A cooked or binary prefab: until cooked scenes exist (`docs/09` section 17.6). Packing: 5.1.2 (an unowned handoff).
+- The play session's VFS serving `assets/` under `res://assets/`: 4.7.4, joining the open mount decision in `docs/08`.
+- Reloading a prefab during a Play, `spawn` with a parent, a script's preload, and rewriting a `res://` string when an asset
+  is renamed.
+- A deadline on a first spawn's read (an unowned handoff in `docs/08`).
+- Sub-asset identity beyond an index (3.2.1's D13) stays open with the trigger it always had, no longer pointing here: a
+  prefab's `MeshRenderer` has the exposure a scene has.
+- Story 3's demo: it plays the small game, which needs 4.7.1, 4.7.2 and 4.7.4.
+
+**The sentences that govern new work.** A prefab is a scene v1 document with one root, and an instance is a flat copy. A
+loader never sniffs the extension. `engine.spawn` runs one order of checks and leaves the World as it was, and only
+`script_api_transform.cpp` names the component a placement is read from. The prefab cache lives for one binding. `.aeroprefab`
+bytes are written by one operation, which never overwrites. A new `AssetKind` pins four count literals besides the
+switches. These live in `.claude/rules/scripting.md`, `components.md`, `editor-assets.md` and `tests.md`.
+
+**Validation and sabotage status — macOS 11 / 11 (2026-11-05), Windows and Linux unrun.** `macos-release` at `21aa0b8`, the
+editor as a signed throwaway `.app` on a project made from `minimal.project.json`. Row 1: a hundred spawns of the
+three-entity prefab, cold / warm median of 8, 0.39975 / 0.165416, 0.311791 / 0.187459 and 0.327167 / 0.190459 ms, the worst
+warm median 1.1 % of the 16.6 ms bound. Rows 2–4: real right-clicks wrote `Cube.aeroprefab` (root position 0, 0, 0, rotation and
+scale the Cube's), `Cube-2.aeroprefab` (two entities) and `Cube-3.aeroprefab` (root `Cube-3`, identity Transform, offsets
+(0.75, 0.5, −0.5) and (−0.75, −0.5, 0.5)). Rows 5–7: real drags took `Entities` 5 → 7 → 9 → 11, the gizmo half a point from the
+release, the instance's faces measuring the source's colours, a row's drop its last child at its origin, a void's drop a new
+root at the origin. Row 8: three Edit-menu cycles 11 ↔ 9 with 0 differing pixels against the earlier captures, a further
+undo taking 9 → 7. Row 9: all six files identical after a reopen, in nanosecond mtime, size and SHA-1, GUIDs unchanged. Row 10:
+`61 | 61 passed`, 2046 assertions, `0 leaks for 0 total leaked bytes`. Row 11: the item greyed, ink 135,139,145 against
+206,210,215, and a click did nothing. No row is NOT EXECUTABLE on macOS. Off macOS, row 10 is NOT EXECUTABLE and the other
+ten are owed by hand; CI is the only witness there: PR #135's run `42014951944`, attempt 2, ran every new case in Debug
+under the sanitizers and in Release on the Windows and Linux lanes, 228 / 228 and 233 / 233, with no new case skipped, no
+`LeakSanitizer` report, and clang-tidy clean on the Linux lane.
+
+Measured at `21aa0b8` on fresh build directories:
+- `aero_tests` **2025** (+61), `aero_editor_shell_test` **2540** (+23), `aero_editor_imgui_test` **389** (+14), and
+  `aero_scene_serialize_test` **43**, `aero_editor_inspector_test` **74**, **14 / 28** unchanged; reflect-tools-OFF
+  `aero_tests` 1993, shell 2498 and ImGui 389; shader-tools-OFF `aero_tests` 1885, shell 2540 and ImGui 370.
+- `ctest -N` **233 / 220 / 107**, with `cooker.*` 81 in all three; no entry added.
+- The guards read math **663**, platform **99**, rhi **200**, scene **99**, golden-rule **202**,
+  project-no-delete **A=8 B=114**, audio **11-3-62**, probes **7-64** and script **182-99-20**.
+- No script-visible name was added, so `vm.hpp`'s heap figures were not re-measured.
+
+**Case ids claimed:** PW1–PW30 (next free: PW31), PR1–PR28 (PR29), PE1–PE19 (PE20), DT33–DT35 (DT36), AV72–AV73 (AV74), DR29
+(DR30), AR9 (AR10) and I370–I383 (I384).
+
+**Build & dependency impact:** no vcpkg port and no new target. `aero_script` links `aero::scene_serialize` PRIVATE when the
+reflect tools are on, with `AERO_SCRIPT_PREFABS=1`; the archive reaches every executable through `$<LINK_ONLY:...>`, and its
+include directory reaches no consumer. `engine/scene` gains `prefab.hpp` and `prefab.cpp`, and `engine/script` gains
+`src/script_api_prefab.cpp`. `editor` gains `prefab_asset.hpp` and `prefab_asset.cpp`. `aero_tests` gains
+`scene_prefab_test.cpp` and `script_prefab_test.cpp`, and the shell binary `tests/editor/prefab_asset_test.cpp`. Docs:
+`docs/09` section 17 and section 9.0, `docs/08` (R39, four unowned handoffs, the mount bullet and the validation debt), the
+phase file, and the scripting, components, editor-assets, cooked-assets and tests rule files.

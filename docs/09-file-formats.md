@@ -1222,9 +1222,9 @@ animation, which, since task 3.5.2, lives in section 13's sibling container (`.a
 that instantiates a cooked mesh with no hierarchy therefore puts every submesh at the origin.
 **That gap was decided at task 3.1.5**: the editor materializes an imported model's node tree into
 scene entities at drop time, so placement lives in the scene file rather than in a cooked container,
-and nothing is baked into vertices. A cooked model/prefab container carrying the node tree remains
-the named residual for a consumer **without** an importer — a script's runtime `spawn()` — and
-belongs to task 4.4.4 (prefab-lite) / Phase 5's pak.
+and nothing is baked into vertices. The residual for a consumer **without** an importer, a script's
+runtime `spawn()`, closed at task 4.4.4 with the `.aeroprefab` (section 17), which carries an entity
+tree as text; a binary form waits for cooked scenes (section 17.6).
 
 The container is **platform-independent**: there is no platform field and no `--platform` flag. That
 changes for textures at task 3.3.2, where BCn/ASTC/ETC2 diverge.

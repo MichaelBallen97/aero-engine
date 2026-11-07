@@ -275,6 +275,16 @@ Subtasks:
 - Save selection as entity-tree asset
 - `spawn(asset, transform)` from script; instantiate from the asset browser
 
+**Outcome:** a saved entity tree is a `.aeroprefab` (`docs/09` section 17), a scene v1 document with exactly one root.
+`engine::Prefab` captures a tree from a World and copies it into one: a flat copy with no link back, and the placement
+composed with the root's stored transform. A script copies one with `engine.spawn(path, transform?)` or
+`engine.spawn(path, position, rotation?, scale?)`; the `res://` path is read through the VM's VFS, under the module
+loader's size cap, and parsed once per World binding, and every refusal is a `TypeError` that leaves the World as it
+was. The Hierarchy's Save as Prefab writes the selection beside a `.meta`, under a unique name, and never overwrites a
+file. `AssetKind::Prefab` drags from the asset browser onto the Viewport, a Hierarchy row or the Hierarchy's empty
+space, and `InstantiatePrefabCommand` makes each drop one history entry. Overrides, nesting and a prefab editing mode
+stay v2; the play session's VFS is 4.7.4's and packing is 5.1.2's.
+
 ---
 
 ## Epic 4.5 — C++ project mode · engine

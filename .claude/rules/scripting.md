@@ -27,6 +27,9 @@ Each rule here was earned by a defect, a green-and-wrong test or a measurement t
   `aero::reflect` PRIVATE for `engine::parseJson`, which also arrives PUBLIC through `aero::scene`.
   Since 4.4.3 it links `aero::platform` PRIVATE for `InputState`, which `vm.hpp` only forward-declares; the edge adds
   no library to any binary, because every executable that links `aero::script` already links `aero::platform`.
+  Since 4.4.4 it links `aero::scene_serialize` PRIVATE when the reflect tools are on (`AERO_SCRIPT_PREFABS`), to parse a
+  `.aeroprefab`: the archive reaches every executable through `$<LINK_ONLY:...>` and its include directory reaches no
+  consumer.
 
 
 ## Scripting
@@ -313,8 +316,7 @@ Debug only (D8: Windows Debug's C stack is the lowest). The merge's record enter
 field initializer beside R35, and D9, which closes the `bindWorld` handoff, in `docs/08-risks.md`.
 
 **What 4.4.2 leaves for later tasks.** 4.4.3 adds input to the same namespace, and its new names join the reserved
-list. 4.4.4 adds `spawn(asset, transform)` as an overload of `spawn()`, which refuses any argument today (WA17). 4.7.4's
-play session binds once per Play, so the entity table lives for one Play, and its `update` calls run the flush. A
+list. 4.4.4 added `spawn(asset, ...)` beside `spawn()`. 4.7.4's play session binds once per Play, so the entity table lives for one Play, and its `update` calls run the flush. A
 `getOrAdd` stays open in `docs/08`.
 
 **What 4.4.3 leaves for later tasks.** 4.7.1 feeds a game `InputState` from the viewport, with points from its
@@ -323,3 +325,21 @@ ImGui's SDL3 backend then opens the first pad itself, with its own fixed 8000 de
 and `unbindInput` at Stop and owns the `newFrame()` cadence under Pause and Step: an edge made while paused is dropped
 by the next `newFrame()`. Phase 5's runtime binds `ctx.input()` and opts in to `System`. 6.1.2's touch joins
 `engine.input`. The three handoffs and R38 (Windows' DirectInput stall) are in `docs/08`.
+
+**`engine.spawn(path, ...)` CHECKS IN ONE ORDER AND LEAVES THE WORLD AS IT WAS (4.4.4).** All three forms run the same
+checks: the argument count, the string, the placement (every kind before any read), then a stop in a build without the
+reflect tools; then a bound World, a `res://` file path, a file source, the file's existence, the size cap (before the
+read and after it), the read, the parse, the one root, the copy and the entity object. Each refusal is a `TypeError` at
+`engine.spawn` that names the script's own path text where it has one, and a copy that cannot be handed to the script is
+destroyed whole. BN30 forbids a built-in component's name in hand-written script source, so `script_api_prefab.cpp` never
+says `Transform`: the placement read and the one `Prefab::instantiate` call live in `script_api_transform.cpp`, behind
+`SpawnPlacement`. `ScriptApi::prefabs` maps a normalized `res://` path to the `Prefab` read under the current binding. It
+empties with the entity table and nothing else empties it, a failed read inserts nothing, and it holds no `JSValue`, so
+an edit to a file reaches the next binding. The size cap is `sourceWithinCap`, the one rule for every script-driven read,
+although a prefab is not charged to the JS heap. `ScriptApi` reaches no deadline, so a read that starts inside a budget
+and overruns it runs to its end; the size cap bounds it (`docs/08`).
+
+**What 4.4.4 leaves for later tasks.** 4.7.4's play session supplies the VFS `spawn` reads through and must serve the
+project's `assets/` under `res://assets/`, which joins the open mount decision in `docs/08`. 5.1.2 packs a `.aeroprefab`
+as text at its `res://` path. Reloading a prefab during a Play, `spawn` with a parent and a script's preload are left out,
+and a renamed prefab breaks a script's `res://` string at the call, with a mapped stack.

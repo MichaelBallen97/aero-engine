@@ -320,3 +320,16 @@ refused-by-cap log.
 lockfile for TypeScript 5.9.3, installed by `npm ci` inside that folder and never at configure. Without node or the
 install the cases skip loudly; `AERO_REQUIRE_TSC=1` makes the skip a failure, and all three CI lanes set it. Run
 ctest with it set locally, as with `AERO_REQUIRE_GPU=1`.
+
+**A WRITE FAILURE THAT FIRES ON EVERY OS AND UNDER EVERY ACCOUNT IS A FOLDER WHERE THE TEMPORARY FILE GOES (4.4.4).**
+`writeTextFileAtomic` writes `<path>.aero-tmp` first, so a folder standing at that name fails the write with no permission
+bits, on Windows and as root too (PE19, I383).
+
+**A VIEWPORT WITH NO IMAGE IS NOT A MISS (4.4.4).** A shader-tools-OFF build lays out no viewport image, and `pickEntity`
+on a zero viewport size collapses the click and every projected point to (0, 0): every non-mesh entity in front of the
+eye sits at distance 0, all of them hit, and the lowest index wins. `ViewportPanel::pickAt`'s comment says otherwise
+(`docs/08`). A case that needs a pick states what the pick hits, in a form that holds in both builds, and a case's OFF
+arm runs only in `reduced.sh`, so run it after a pass that adds cases: it caught I378 before Ship.
+
+**THE ASSET BROWSER DOES NOT DRAW AT 320x180 WITH THE CONSOLE VISIBLE (4.4.4).** A GPU-tier case that needs the browser's
+seams to apply hides the Console and turns the watcher off, as `openSavePrefabApp` and `e63AssetsApp` do.

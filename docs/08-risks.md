@@ -46,6 +46,7 @@
 | **R36** | **Nothing of a script generation is freed before its VM is torn down** (raised by task 4.3.4's plan, 2026-10-31; the module half measured by 4.3.3) — every reload keeps the old generation's module, about 4.3–4.5× its bundle plus about 3 KB of heap (4.3.3, in Release: a 64 MiB VM held 8 632, 1 532 and 165 reloads of 1, 9.4 and 93 KB bundles), and since 4.3.4 its source map, outside the heap: the map's bytes (about 2.4× the bundle) until the generation's first error, then 16–20 bytes per decoded segment. The heap limit refuses one map larger than itself, never the sum, so a long hot-reload session grows with its reload count and nothing else bounds it | Med | Low | **Accepted and documented (4.3.3, 4.3.4).** A new VM is the full reset, and `ScriptLoadResult`'s heap figures let 4.7.4 warn before a full heap. A `VmStats` figure for map bytes is 4.7.4's to ask for if its play loop shows pressure |
 | **R37** | **A script recursing past about 50 levels from a hook fails in Debug builds only** (decided by task 4.4.1, 2026-11-01) — from `onUpdate` the deepest recursion is 56 calls in Debug and 535 in Release at the 512 KiB default stack. The engine's frames below a hook cost nothing measurable, and a realistic hook chain uses 4 / 5 frames' worth. Release recursion from global code reads 536 against 4.1.1's 544; the cause was not investigated | Low | Low | **Accepted (4.4.1, D8):** no larger default stack (above 512 KiB, Windows' 1 MiB main thread needs `/STACK`), no `/STACK`, and no optimised Debug backend (it would cross MSVC's Debug and Release runtimes for one port, unmeasured). Editors and exported games run Release builds. Revisit when a real script needs deeper recursion in Debug |
 | **R38** | **Windows' DirectInput driver can stall a real-driver gamepad start-up for up to a minute** (raised by task 4.4.3's spike, 2026-11-03) — SDL's own comment (`joystick/windows/SDL_dinputjoystick.c:407-411`) warns that DirectInput's initialisation can take a minute with no controller attached. A Context with `GamepadDrivers::System` starts that driver; `VirtualOnly` sets `SDL_HINT_JOYSTICK_DIRECTINPUT` to `0` and skips it, and no CI lane runs `System` on Windows (GP22 runs it on macOS only). Not measured: no Windows host has run it | Med | Med | Time `System`'s Context construction on the Windows validation pass, with and without a pad. If it stalls, the editor (4.7.1) and the runtime (Phase 5) can turn DirectInput off through the hint, at the cost of the pads only DirectInput reads |
+| **R39** | **BS8 can go red on Windows on a branch that touches nothing near it** (raised by task 4.4.4's CI, 2026-11-05) — BS8 (`blender_service_test.cpp:635`) reopens a child's log for a truncating write right after `ToolProcess`'s destructor. The destructor force-kills and destroys with no wait (`tool_process.cpp:78-80`), which on Windows is `TerminateProcess` (`SDL_windowsprocess.c:561`), and the child holds the log through the handle it inherited from `SDL_IOFromFile`, opened by `CreateFileW` with share mode 0 (`SDL_iostream.c:126-128`). A reopen while that handle lives fails, and `writeBytes`'s REQUIRE reads false (`:118`). Seen once: PR #135's run `42014951944`, attempt 1, Windows Release, one case of 2540; Debug passed in the same job, attempt 2 passed with no change, and none of the six earlier failed runs checked names BS8. The cause is read from the source, not reproduced: no Windows host is at hand | Low | Low | A red on this case alone, on a first attempt, is this race: rerun the failed job once, and treat a second red as a defect. The fix is its own small change (an unowned handoff below): wait for the child after the kill in `reset`, or give BS8's reopen a bounded retry |
 
 ---
 
@@ -72,7 +73,7 @@ Decisions deliberately deferred until there is data or the relevant phase arrive
 Work a task found, measured or declined that no task in `docs/tasks/` owns yet. The list moved here from
 `CLAUDE.md`'s state block on 2026-10-26, where a pointer to this section remains.
 
-**EIGHTY-NINE UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**NINETY-THREE UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs in `CLAUDE.md`'s state block (fact
 4's four permitted cases, the inspector-row gap, the closed `File` section, E.1.1's fired thick-line handoff) are
@@ -260,7 +261,8 @@ not repeated here.
   while 4.3.1's `Library/Scripts` mount (ST20–ST22's) makes it read the map's own `../../assets/scripts/<name>.ts`. And
   a load between a publish's map write and its JavaScript write reads the next build's map with the previous
   JavaScript (`vm.hpp` documents it); the transpiler writes the provenance record last, so a reload keyed on the
-  record sees both files of one build. Decided when 4.7.4 mounts the play session's VFS.
+  record sees both files of one build. `engine.spawn` (4.4.4) reads `.aeroprefab` paths through the same VFS, so the
+  mount must also serve the project's `assets/` under `res://assets/`. Decided when 4.7.4 mounts the play session's VFS.
 - **Attaching a script by dropping it on a Hierarchy row or the Viewport** (4.4.1) — a Script asset drops only on an
   asset-field row (`classifyAssetDrop`); a drop on a Hierarchy row or on the Viewport is refused, and validation row G9
   pins that nothing changes. Attaching it there means adding a ScriptComponent and setting its `script` as one
@@ -279,6 +281,18 @@ not repeated here.
   `newFrame()` cadence under Pause and Step; an edge made while paused is dropped by the next `newFrame()`.
 - **The runtime's input** (4.4.3) — for Phase 5's runtime loop: bind `ctx.input()` to the game's VM and opt in to
   `GamepadDrivers::System` (R38 on Windows).
+- **Packing a prefab** (4.4.4) — for 5.1.2: a `.aeroprefab` packs as text at its `res://` path, and a referenced asset is
+  found as a scene's is. A binary form waits for cooked scenes (`docs/09` section 17.6).
+- **A first spawn's read has no deadline** (4.4.4) — `ScriptApi` does not reach the VM's deadline, so a host function
+  cannot stop a read that starts inside a budget and overruns it. The size cap bounds it, and PR20's cold figure (0.31 to
+  0.40 ms for a hundred spawns of a three-entity file) measures the ordinary case. The way out, should a real game show
+  otherwise, is a `deadlinePassed` borrow in `ScriptApi`.
+- **Closing BS8's race** (4.4.4) — R39's fix, small and outside every roadmap task: wait for the child after the kill in
+  `ToolProcess::reset`, or give BS8's reopen a bounded retry.
+- **`ViewportPanel::pickAt`'s comment on a zero viewport** (4.4.4) — `viewport_panel.cpp:459` calls a zero-sized viewport a
+  case where no point hits, and it is not: `ndcToViewportPoints` collapses the click and every projected point to (0, 0),
+  every non-mesh entity in front of the eye sits at distance 0, all of them hit, and the lowest index wins. Measured by
+  I378 in a shader-tools-OFF build. Either the comment or `pickEntity`'s degenerate case changes.
 
 ---
 
@@ -412,6 +426,14 @@ well: `System` with real drivers, its start-up timed on Windows (R38), and a phy
 CI's Windows and Linux lanes ran all 49 new cases green in both configurations on PR #134's run (`41728157319`), so the
 virtual pads attached headless on both; Linux's leak checker, whose suppressions cover nothing of SDL's gamepad code,
 reported nothing, and clang-tidy found nothing on the Linux lane.
+
+**4.4.4 OWES A WINDOWS PAGE AND A LINUX PAGE.** No manual pass has run off macOS. Of the page's eleven rows, row 10
+(`leaks` over the 61 engine cases) is NOT EXECUTABLE there, and the other ten are owed by hand, every real right-click
+and real drag among them. Row 1's bound is 16.6 ms on any host. CI's Windows and Linux lanes ran every new case in both
+configurations on PR #135's run (`42014951944`, attempt 2), 228 / 228 and 233 / 233 with no new case skipped, so the exact
+float comparisons in PW23–PW25 and I370, I373–I375's Asset Browser at 320x180 and PE19's write failure held under MSVC and
+GCC. Linux's leak checker reported nothing, PR19's full cache at shutdown included, and clang-tidy found nothing on the
+Linux lane. The same run's attempt 1 was red on BS8 alone (R39).
 
 **METHOD TRAPS FOR DRIVING THE EDITOR, ALL MEASURED.** A pending TCC prompt stalls the editor to ~0.2% CPU
 with a window that **NEVER RENDERS** (a black capture); the prompts **CASCADE**, one per bundle identity, and

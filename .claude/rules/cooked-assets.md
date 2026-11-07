@@ -494,11 +494,10 @@ copied verbatim, `MeshRenderer` naming `(assetGuid, meshIndex)` — so placement
 file** rather than in a cooked container, and nothing is baked into vertices. That is why nothing in
 `engine/assets` moved for it: the gap was never the cook's to close.
 
-**The residual, narrower and with an owner.** A cooked model/prefab container carrying the node tree
-is still the right answer for a consumer that has **no importer** — a script's runtime `spawn()`, a
-`.pak` loading a prefab with no editor present — and it belongs to task 4.4.4 (prefab-lite) /
-Phase 5's pak. Until then, the only way a node tree reaches a scene is through the editor's
-instantiation planner.
+**The residual closed at 4.4.4.** A consumer with **no importer**, a script's runtime `spawn()` or a
+`.pak` with no editor present, reads a `.aeroprefab` (`docs/09` section 17), an entity tree as text.
+There is no cooked form: a prefab ships in the pak as the text it is (5.1.2), and a binary form waits
+for cooked scenes (section 17.6).
 
 **Two of the things section 9.0 lists as unstored have a home elsewhere and were never part of this
 gap**: skeletons and inverse bind matrices live in `docs/09` section 12's sibling container

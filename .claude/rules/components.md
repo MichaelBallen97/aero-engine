@@ -79,3 +79,8 @@ routes the field through 3.1.5's own matrix.
 **`AERO_LABELS` NEEDS `AERO_RANGE(0, N-1)` ON THE SAME FIELD (E.5.2)**, and the editor's `namedSelectorRow`
 re-checks it, falling back to the drag. **A new reflect-gen annotation arm goes ABOVE the unknown-`engine::`
 catch-all** (`S24`), and a new `FieldUiMeta` member is appended LAST, so older customs stay byte-identical.
+
+**`engine::Prefab` HOLDS NO COMPONENT LIST (4.4.4).** Its copy walks the registration table through the public `addRaw`, so
+a component added later copies with no change there, and PW5 goes red on a hard-coded list. A type the destination World
+has not registered is skipped with one WARN per type per copy. `Prefab` needs no reflection and no EnTT, so it compiles
+in every configuration, and a public editor header may name it.
