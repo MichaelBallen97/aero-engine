@@ -523,7 +523,7 @@ TEST_CASE("scene register: swap_elements on the pool keeps each entity's value f
         const SceneEntity first = engine::scene::internal::toEntt(entities[0]);
         ErasedStorage* pool = nullptr;
         for (auto&& entry : registry->storage()) {
-            if (entry.second.type() != entt::type_id<SceneEntity>() && entry.second.contains(first)) {
+            if (entry.second.info() != entt::type_id<SceneEntity>() && entry.second.contains(first)) {
                 pool = &entry.second;
             }
         }

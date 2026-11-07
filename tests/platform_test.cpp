@@ -147,7 +147,7 @@ TEST_CASE("platform: basePath does not follow the current directory (BP2)") {
 TEST_CASE("platform: basePath is a copy that outlives SDL_Quit (BP3)") {
     std::string during;
     {
-        engine::platform::Context ctx{{.headless = true}};
+        const engine::platform::Context ctx{{.headless = true}};
         REQUIRE(ctx.valid());
         during = engine::platform::basePath();
     }

@@ -2073,13 +2073,13 @@ namespace {
 
 [[nodiscard]] std::string prefabEntity(int id, int parent, std::string_view components = "{}") {
     // A root has no "parent" key: the key is an integer >= 1 (docs/09 §2.2).
-    const std::string parentKey = parent == 0 ? std::string{} : ", \"parent\": " + std::to_string(parent);
-    return "{ \"id\": " + std::to_string(id) + ", \"name\": \"e" + std::to_string(id) + "\"" + parentKey +
-           ", \"components\": " + std::string{components} + " }";
+    const std::string parentKey = parent == 0 ? std::string{} : R"(, "parent": )" + std::to_string(parent);
+    return R"({ "id": )" + std::to_string(id) + R"(, "name": "e)" + std::to_string(id) + R"(")" + parentKey +
+           R"(, "components": )" + std::string{components} + " }";
 }
 
 [[nodiscard]] std::string prefabText(const std::vector<std::string>& entities) {
-    std::string text = "{ \"version\": 1, \"entities\": [";
+    std::string text = R"({ "version": 1, "entities": [)";
     for (std::size_t i = 0; i < entities.size(); ++i) {
         text += (i == 0 ? "" : ", ") + entities[i];
     }
@@ -2122,9 +2122,9 @@ TEST_CASE("scene_serialize: loadPrefabText gives a scene-stage failure with no p
 }
 
 TEST_CASE("scene_serialize: loadPrefabText keeps an entity whose component is unknown, with one WARN (PT6)") {
-    ScriptWarnCapture capture;
+    const ScriptWarnCapture capture;
     const PrefabLoadResult result =
-        loadPrefabText(prefabText({prefabEntity(1, 0, "{ \"game::Velocity\": { \"x\": 1.0 } }")}));
+        loadPrefabText(prefabText({prefabEntity(1, 0, R"({ "game::Velocity": { "x": 1.0 } })")}));
     REQUIRE(result.prefab.has_value());
     CHECK(result.prefab->entityCount() == 1);
     CHECK(capture.count() == 1);
