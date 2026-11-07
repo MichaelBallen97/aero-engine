@@ -1420,6 +1420,26 @@ if(AERO_REFLECT_TOOLS)
 endif()
 
 # ---------------------------------------------------------------------------------------------
+# task 4.5.2: the C++ project template's writer as a stand-alone tool, for tests/sdk/template.cmake. In every
+# configuration, so its .cpp stays in linux-debug's compile database for CI's clang-tidy; EXCLUDE_FROM_ALL, so it is in
+# no `all`. It compiles the writer's own sources with aero::core alone: the SDK build must not need the editor.
+include("${CMAKE_SOURCE_DIR}/cmake/embed.cmake")
+add_executable(aero_sdk_project_writer EXCLUDE_FROM_ALL
+    sdk/project_writer_tool.cpp
+    ${CMAKE_SOURCE_DIR}/editor/src/cpp_project_template.cpp
+    ${CMAKE_SOURCE_DIR}/editor/src/text_file.cpp)
+target_include_directories(aero_sdk_project_writer PRIVATE ${CMAKE_SOURCE_DIR}/editor/include)
+target_link_libraries(aero_sdk_project_writer PRIVATE aero::core)
+aero_embed_text_files(aero_sdk_project_writer
+    HEADER "${CMAKE_SOURCE_DIR}/editor/src/cpp_project_template_data.hpp"
+    NAMESPACE engine::editor::embedded
+    FILES
+        cppProjectCmakeTemplate=${CMAKE_SOURCE_DIR}/editor/templates/cpp-project/CMakeLists.txt.in
+        cppProjectMainTemplate=${CMAKE_SOURCE_DIR}/editor/templates/cpp-project/main.cpp.in
+        cppProjectReadmeTemplate=${CMAKE_SOURCE_DIR}/editor/templates/cpp-project/README.md.in
+        cppProjectGitignoreTemplate=${CMAKE_SOURCE_DIR}/editor/templates/cpp-project/gitignore.in)
+
+# ---------------------------------------------------------------------------------------------
 # task 4.5.1: the AERO_SDK configuration. The entries exist only in an SDK tree (the *-sdk presets), so every other
 # configuration's `ctest -N` is unchanged. sdk.refusals runs cmake/sdk_check.cmake alone under `cmake -P`, one
 # combination per arm, and needs no build.
@@ -1453,5 +1473,12 @@ if(AERO_SDK)
     add_test(NAME sdk.mini_game COMMAND ${CMAKE_COMMAND} ${_aero_sdk_args}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/sdk/mini_game.cmake)
     set_tests_properties(sdk.mini_game PROPERTIES
+        FIXTURES_REQUIRED sdk_prefix RESOURCE_LOCK sdk_prefix TIMEOUT 1500 SKIP_REGULAR_EXPRESSION "sdk: SKIPPED")
+
+    # The generated C++ project: the tool writes it, the README's own commands build it against that prefix, and it runs.
+    add_test(NAME sdk.template COMMAND ${CMAKE_COMMAND} ${_aero_sdk_args}
+        -DWRITER=$<TARGET_FILE:aero_sdk_project_writer>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/sdk/template.cmake)
+    set_tests_properties(sdk.template PROPERTIES
         FIXTURES_REQUIRED sdk_prefix RESOURCE_LOCK sdk_prefix TIMEOUT 1500 SKIP_REGULAR_EXPRESSION "sdk: SKIPPED")
 endif()

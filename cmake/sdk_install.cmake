@@ -10,6 +10,8 @@ foreach(_sdk_layer IN ITEMS core assets audio platform rhi render reflect scene 
 endforeach()
 unset(_sdk_layer)
 add_dependencies(aero_sdk aero_shaders)
+# task 4.5.2: sdk.template runs the template's writer, so an SDK build compiles it (tests/ ran before this file).
+add_dependencies(aero_sdk aero_sdk_project_writer)
 
 # The prefix is laid out by install(FILES) and install(DIRECTORY) and described by a hand-written package, never
 # install(TARGETS) or install(EXPORT): this file reads what an export would have generated from the build instead of
