@@ -2140,3 +2140,17 @@ TEST_CASE("scene_serialize: a loaded prefab saves back to the same text (PT7)") 
     CHECK(saveWorldText(again.prefab->world()) == text);
     CHECK(text.find("\"z\": 3") != std::string::npos);
 }
+
+TEST_CASE("scene_serialize: a loaded prefab carries each entity's name from the text, on the first load (PT8)") {
+    const PrefabLoadResult result =
+        loadPrefabText(prefabText({prefabEntity(1, 0), prefabEntity(2, 1), prefabEntity(3, 1)}));
+    REQUIRE(result.prefab.has_value());
+    const World& world = result.prefab->world();
+    const Entity root = result.prefab->root();
+    CHECK(world.name(root) == "e1");
+    std::vector<std::string> children;
+    world.eachChild(root, [&](Entity child) { children.emplace_back(world.name(child)); });
+    REQUIRE(children.size() == 2U);
+    CHECK(children[0] == "e2");
+    CHECK(children[1] == "e3");
+}

@@ -4,7 +4,8 @@
 #
 # Ids: SDK12 one translation unit per header builds, SDK13 the include allowlist holds over every installed header,
 # SDK14 the allowlist refuses what it must, SDK15 a third-party include fails to build, SDK16 the two compile-time
-# contracts of World::registerComponent hold.
+# contracts of World::registerComponent hold, SDK30 a type outside the plain-value contract (const, volatile or a
+# reference) is refused by name.
 cmake_minimum_required(VERSION 3.28)
 include("${CMAKE_CURRENT_LIST_DIR}/sdk_common.cmake")
 
@@ -127,10 +128,24 @@ struct ThrowingMove {
 };
 void registerIt(engine::World& world) { world.registerComponent<ThrowingMove>(\"ThrowingMove\"); }
 ")
+foreach(qualifier IN ITEMS "const" "volatile")
+    file(WRITE "${negative}/${qualifier}_type.cpp" "#include <aero/scene/world.hpp>
+struct Plain {
+    float value = 0.0f;
+};
+void registerIt(engine::World& world) { world.registerComponent<${qualifier} Plain>(\"Plain\"); }
+")
+endforeach()
+file(WRITE "${negative}/reference_type.cpp" "#include <aero/scene/world.hpp>
+struct Plain {
+    float value = 0.0f;
+};
+void registerIt(engine::World& world) { world.registerComponent<Plain&>(\"Plain\"); }
+")
 file(WRITE "${negative}/CMakeLists.txt" "cmake_minimum_required(VERSION 3.28)
 project(sdk_negative LANGUAGES CXX)
 find_package(AeroEngine CONFIG REQUIRED)
-foreach(unit IN ITEMS third_party over_aligned throwing_move)
+foreach(unit IN ITEMS third_party over_aligned throwing_move const_type volatile_type reference_type)
     add_library(neg_\${unit} OBJECT \${unit}.cpp)
     target_link_libraries(neg_\${unit} PRIVATE aero::engine)
     target_compile_features(neg_\${unit} PRIVATE cxx_std_20)
@@ -156,5 +171,8 @@ endfunction()
 sdk_expect_build_failure(SDK15 neg_third_party "entt/entt.hpp")
 sdk_expect_build_failure(SDK16 neg_over_aligned "drop the alignas")
 sdk_expect_build_failure(SDK16 neg_throwing_move "mark its move constructor noexcept")
+sdk_expect_build_failure(SDK30 neg_const_type "remove the const, volatile or reference")
+sdk_expect_build_failure(SDK30 neg_volatile_type "remove the const, volatile or reference")
+sdk_expect_build_failure(SDK30 neg_reference_type "remove the const, volatile or reference")
 
-message(STATUS "sdk.headers: SDK12 to SDK16 passed (${headerCount} headers)")
+message(STATUS "sdk.headers: SDK12 to SDK16 and SDK30 passed (${headerCount} headers)")

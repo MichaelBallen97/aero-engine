@@ -20,6 +20,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -43,6 +44,20 @@ struct Velocity {
 
 struct GameTag {};
 struct OtherTag {};
+
+// An empty class (so a tag) that counts its live objects. A tag stores nothing, so no object of it may outlive the
+// call that made it: a page that held one would leave `live` raised.
+struct CountedTag {
+    inline static int live = 0;
+
+    CountedTag() { ++live; }
+    CountedTag(const CountedTag&) { ++live; }
+    CountedTag(CountedTag&&) noexcept { ++live; }
+    CountedTag& operator=(const CountedTag&) = default;
+    CountedTag& operator=(CountedTag&&) noexcept = default;
+    ~CountedTag() { --live; }
+};
+static_assert(std::is_empty_v<CountedTag>);
 
 struct Named {
     std::string text = "default";
@@ -575,4 +590,69 @@ TEST_CASE("scene register: a T whose copy throws leaves the entity without it an
         CHECK(w.componentCount<Fragile>() == 4U);
     }
     CHECK(Fragile::live == before);
+}
+
+TEST_CASE("scene register: a second registration of one type makes no second pool (RG18)") {
+    World w;
+    engine::scene::internal::Registry* registry = engine::scene::internal::WorldAccess::registry(w);
+    REQUIRE(registry != nullptr);
+    const auto poolCount = [registry] {
+        std::size_t pools = 0;
+        for (auto&& entry : registry->storage()) {
+            static_cast<void>(entry);
+            ++pools;
+        }
+        return pools;
+    };
+    const std::size_t builtins = poolCount();
+    w.registerComponent<Velocity>("game::Velocity");
+    CHECK(poolCount() == builtins + 1U);
+    w.add<Velocity>(w.create(), Velocity{Vec3{1.0F, 0.0F, 0.0F}});
+
+    const LogCount log;  // the second call with another name warns; this case does not count it
+    w.registerComponent<Velocity>("game::Velocity");
+    CHECK(poolCount() == builtins + 1U);
+    w.registerComponent<Velocity>("another::Name");
+    CHECK(poolCount() == builtins + 1U);
+    // A tag takes the same path.
+    w.registerComponent<GameTag>("game::GameTag");
+    CHECK(poolCount() == builtins + 2U);
+    w.registerComponent<GameTag>("game::GameTag");
+    CHECK(poolCount() == builtins + 2U);
+    CHECK(w.componentCount<Velocity>() == 1U);
+}
+
+TEST_CASE("scene register: a tag never constructs an object into a payload page (RG17)") {
+    const int before = CountedTag::live;
+    {
+        World w;
+        w.registerComponent<CountedTag>("game::CountedTag");
+        const ComponentTypeId id = componentTypeId<CountedTag>();
+        const Entity a = w.create();
+        const Entity b = w.create();
+        const Entity c = w.create();
+        w.add<CountedTag>(a);
+        CHECK(CountedTag::live == before);
+        w.addRaw(id, b, nullptr);
+        CHECK(CountedTag::live == before);
+        {
+            const CountedTag value;
+            CHECK(CountedTag::live == before + 1);
+            w.addRaw(id, c, &value);
+        }
+        CHECK(CountedTag::live == before);
+        const Entity d = w.create();
+        CHECK(w.copyComponent(id, a, d));
+        CHECK(CountedTag::live == before);
+        // Enough tags to open a second and a third page, were a page ever made for a tag.
+        for (int i = 0; i < 2100; ++i) {
+            w.add<CountedTag>(w.create());
+        }
+        CHECK(CountedTag::live == before);
+        CHECK(w.componentCount<CountedTag>() == 2104U);
+        CHECK(w.remove<CountedTag>(a));
+        CHECK(w.destroy(b));
+        CHECK(CountedTag::live == before);
+    }
+    CHECK(CountedTag::live == before);
 }

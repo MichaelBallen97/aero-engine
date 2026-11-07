@@ -124,6 +124,25 @@ TEST_CASE("cpp_project: every name yields a valid CMake identifier (CP2)") {
     }
 }
 
+TEST_CASE("cpp_project: each identifier range keeps its own edge bytes and drops the byte beside it (CP18)") {
+    // The first and last byte of '0'-'9', 'A'-'Z' and 'a'-'z' stay; the byte just outside each range becomes '_'.
+    CHECK(ed::cppProjectIdentifier("0") == "game_0");
+    CHECK(ed::cppProjectIdentifier("9") == "game_9");
+    CHECK(ed::cppProjectIdentifier("A") == "game_A");
+    CHECK(ed::cppProjectIdentifier("Z") == "game_Z");
+    CHECK(ed::cppProjectIdentifier("a") == "game_a");
+    CHECK(ed::cppProjectIdentifier("z") == "game_z");
+    CHECK(ed::cppProjectIdentifier("_") == "game__");
+    CHECK(ed::cppProjectIdentifier("/") == "game__");  // one below '0'
+    CHECK(ed::cppProjectIdentifier(":") == "game__");  // one above '9'
+    CHECK(ed::cppProjectIdentifier("@") == "game__");  // one below 'A'
+    CHECK(ed::cppProjectIdentifier("[") == "game__");  // one above 'Z'
+    CHECK(ed::cppProjectIdentifier("`") == "game__");  // one below 'a'
+    CHECK(ed::cppProjectIdentifier("{") == "game__");  // one above 'z'
+    // All twelve in one name.
+    CHECK(ed::cppProjectIdentifier("/0:9@AZ[`az{") == "game__0_9_AZ__az_");
+}
+
 TEST_CASE("cpp_project: the literal body escapes with three octal digits and nothing wider (CP3)") {
     CHECK(ed::cppStringLiteralBody("\"") == "\\\"");
     CHECK(ed::cppStringLiteralBody("\\") == "\\\\");
