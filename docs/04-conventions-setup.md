@@ -97,9 +97,8 @@ this repository.
 
 - **What `sdk.*` proves.** Six ctest entries, run by `ctest --preset <os>-sdk`: `sdk.refusals` (each refusal and the MSVC
   runtime pin, under `cmake -P`), `sdk.install` (the fixture: it re-creates the prefix on every run), `sdk.prefix` (the
-  layout, then a copy of
-  the prefix at a path with a space in it serves a fresh consumer that builds and runs, with no reference to the old path
-  or to vcpkg), `sdk.headers` (every installed header compiles alone, every `#include` in one is `<aero/...>` or a
+  layout, then the prefix, moved to a path with a space in it, serves a fresh consumer that builds and runs, with no
+  reference to the old path or to vcpkg), `sdk.headers` (every installed header compiles alone, every `#include` in one is `<aero/...>` or a
   standard header, and a planted third-party include fails to build) and `sdk.mini_game` (the C++ mini-game, built against
   the prefix alone and run `--scripted` from another folder) and, since 4.5.2, `sdk.template` (the C++ project template's
   four files, written into a folder with a space in its name, built from the README's own commands and run).
