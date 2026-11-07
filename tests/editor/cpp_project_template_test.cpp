@@ -192,6 +192,7 @@ TEST_CASE("cpp_project: no token survives an ordinary name and the README holds 
     CHECK(readme.find("--frames <n>") != std::string::npos);
     CHECK(readme.find("world.registerComponent<T>") != std::string::npos);
     CHECK(readme.find("AERO_COMPONENT") != std::string::npos);
+    CHECK(readme.find("MultiThreadedDLL") != std::string::npos);
 }
 
 TEST_CASE("cpp_project: each embedded template is exactly the file it was built from (CP8)") {

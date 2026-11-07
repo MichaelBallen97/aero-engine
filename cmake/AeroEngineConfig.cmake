@@ -7,10 +7,16 @@
 # aero_third_party::<name>, an implementation detail: they carry no include directory, so no third-party header can
 # reach a consumer's compile line.
 
-# The refusal comes first, so that `cmake -DMSVC=1 -DCMAKE_BUILD_TYPE=Debug -P` reaches it with no project.
-if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
-    message(FATAL_ERROR "AeroEngine: the SDK is Release, and MSVC cannot link a Debug program against it "
-                        "(/MDd against /MD). Configure with -DCMAKE_BUILD_TYPE=Release.")
+# MSVC first, so that `cmake -DMSVC=1 ... -P` reaches it with no project: under -P this file stops at find_dependency.
+# The SDK uses the release DLL runtime (/MD), and MSVC cannot link /MDd code against it (LNK2038). Every target defined
+# after find_package(AeroEngine) gets that runtime in every configuration, under every generator.
+if(MSVC)
+    if(DEFINED CMAKE_MSVC_RUNTIME_LIBRARY AND NOT CMAKE_MSVC_RUNTIME_LIBRARY STREQUAL "MultiThreadedDLL")
+        message(FATAL_ERROR "AeroEngine: the SDK uses the release DLL runtime (/MD) in every configuration, and "
+                            "CMAKE_MSVC_RUNTIME_LIBRARY is '${CMAKE_MSVC_RUNTIME_LIBRARY}'. "
+                            "Set it to MultiThreadedDLL, or leave it unset.")
+    endif()
+    set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
 endif()
 if(TARGET aero::engine)
     return()

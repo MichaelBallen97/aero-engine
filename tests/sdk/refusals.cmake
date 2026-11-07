@@ -54,30 +54,114 @@ _sdk_expect_refused("reflect tools OFF"    AERO_REFLECT_TOOLS     Release OFF OF
 
 message(STATUS "sdk.refusals: SDK1 and SDK2 passed")
 
-# SDK3: the package config refuses a Debug build under MSVC before it does anything else, so `-P` with MSVC=1 reaches
-# the message with no project and no prefix. A Release build under MSVC does not reach it.
+# The package config's MSVC block sits above its find_dependency, so `-P` with MSVC=1 reaches it with no project and no
+# prefix. _sdk_config_run runs it, tracing when asked: the trace goes to stderr, and is read together with stdout.
+# CMake exits 1 on every run, accepted or not (the config stops at find_dependency(Threads) under -P), so the exit code
+# decides nothing. An empty argument is an argument not passed.
 get_filename_component(_sdk_cmake_dir "${CHECK}" DIRECTORY)
 set(_sdk_config "${_sdk_cmake_dir}/AeroEngineConfig.cmake")
-execute_process(
-    COMMAND ${CMAKE_COMMAND} -DMSVC=1 -DCMAKE_BUILD_TYPE=Debug -P ${_sdk_config}
-    RESULT_VARIABLE _rc
-    OUTPUT_VARIABLE _out
-    ERROR_VARIABLE _err)
-if(_rc EQUAL 0)
-    message(FATAL_ERROR "SDK3: the package config accepted a Debug build under MSVC")
-endif()
-string(FIND "${_out}${_err}" "/MDd" _at)
-if(_at EQUAL -1)
-    message(FATAL_ERROR "SDK3: the Debug refusal does not say /MDd:\n${_out}${_err}")
-endif()
-execute_process(
-    COMMAND ${CMAKE_COMMAND} -DMSVC=1 -DCMAKE_BUILD_TYPE=Release -P ${_sdk_config}
-    RESULT_VARIABLE _rc
-    OUTPUT_VARIABLE _out
-    ERROR_VARIABLE _err)
-string(FIND "${_out}${_err}" "/MDd" _at)
-if(NOT _at EQUAL -1)
-    message(FATAL_ERROR "SDK3: a Release build under MSVC reached the Debug refusal:\n${_out}${_err}")
+
+# _sdk_config_run(<out> <traced> <msvc> <build-type> <configuration-types> <runtime>)
+function(_sdk_config_run out traced msvc buildType configurationTypes runtime)
+    set(flags "")
+    if(traced)
+        set(flags --trace-expand --trace-format=json-v1)
+    endif()
+    set(defines "")
+    if(msvc)
+        list(APPEND defines -DMSVC=1)
+    endif()
+    if(NOT "${buildType}" STREQUAL "")
+        list(APPEND defines "-DCMAKE_BUILD_TYPE=${buildType}")
+    endif()
+    if(NOT "${configurationTypes}" STREQUAL "")
+        string(REPLACE ";" "\\;" escaped "${configurationTypes}")
+        list(APPEND defines "-DCMAKE_CONFIGURATION_TYPES=${escaped}")
+    endif()
+    if(NOT "${runtime}" STREQUAL "")
+        list(APPEND defines "-DCMAKE_MSVC_RUNTIME_LIBRARY=${runtime}")
+    endif()
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} ${flags} ${defines} -P ${_sdk_config}
+        OUTPUT_VARIABLE _o
+        ERROR_VARIABLE _e)
+    set(${out} "${_o}${_e}" PARENT_SCOPE)
+endfunction()
+
+# A pin line holds the `set` of the runtime variable to the SDK's runtime. The text is split into lines with its own
+# semicolons made into commas first, so no line is split in two.
+function(_sdk_has_pin result output)
+    set(${result} FALSE PARENT_SCOPE)
+    set(_isSet "\"cmd\":\"set\"")
+    set(_isPin "\"args\":\\[\"CMAKE_MSVC_RUNTIME_LIBRARY\",\"MultiThreadedDLL\"\\]")
+    string(REPLACE ";" "," _text "${output}")
+    string(REPLACE "\n" ";" _lines "${_text}")
+    foreach(_line IN LISTS _lines)
+        if(_line MATCHES "${_isSet}" AND _line MATCHES "${_isPin}")
+            set(${result} TRUE PARENT_SCOPE)
+        endif()
+    endforeach()
+endfunction()
+
+# A run is refused when its output holds the config's own prefix. A refused run is never traced: the trace repeats the
+# message's tokens, and CMake re-wraps a FATAL_ERROR text, so a test looks for single tokens and never for phrases.
+function(_sdk_is_refused result output)
+    string(FIND "${output}" "AeroEngine:" _at)
+    if(_at EQUAL -1)
+        set(${result} FALSE PARENT_SCOPE)
+    else()
+        set(${result} TRUE PARENT_SCOPE)
+    endif()
+endfunction()
+
+# _sdk_expect_pinned(<id> <label> <msvc> <build-type> <configuration-types>): the run pins the runtime and is not
+# refused.
+function(_sdk_expect_pinned id label msvc buildType configurationTypes)
+    _sdk_config_run(out ON ${msvc} "${buildType}" "${configurationTypes}" "")
+    _sdk_has_pin(pinned "${out}")
+    _sdk_is_refused(refused "${out}")
+    if(refused)
+        message(FATAL_ERROR "${id}: ${label} was refused:\n${out}")
+    endif()
+    if(NOT pinned)
+        message(FATAL_ERROR "${id}: ${label} never set CMAKE_MSVC_RUNTIME_LIBRARY to MultiThreadedDLL")
+    endif()
+endfunction()
+
+# SDK3: a single-config MSVC run pins the runtime under Debug and under Release alike, and refuses neither.
+_sdk_expect_pinned(SDK3 "a Debug build type" 1 Debug "")
+_sdk_expect_pinned(SDK3 "a Release build type" 1 Release "")
+
+# SDK28: a multi-config MSVC run sets no build type and still pins; a run outside MSVC pins nothing and is not refused.
+_sdk_expect_pinned(SDK28 "Debug;Release configuration types with no build type" 1 "" "Debug;Release")
+_sdk_config_run(out ON 0 "" "Debug;Release" "")
+_sdk_has_pin(pinned "${out}")
+_sdk_is_refused(refused "${out}")
+if(pinned OR refused)
+    message(FATAL_ERROR "SDK28: a run outside MSVC pinned (${pinned}) or was refused (${refused}):\n${out}")
 endif()
 
-message(STATUS "sdk.refusals: SDK3 passed")
+# SDK29: a runtime the project chose is refused by name, never overwritten; the SDK's own runtime is accepted; outside
+# MSVC nothing is read.
+function(_sdk_expect_runtime label msvc runtime expectRefused)
+    _sdk_config_run(out OFF ${msvc} "" "" "${runtime}")
+    _sdk_is_refused(refused "${out}")
+    if(NOT refused STREQUAL expectRefused)
+        message(FATAL_ERROR "SDK29: ${label}: refused is ${refused}, not ${expectRefused}:\n${out}")
+    endif()
+    if(expectRefused)
+        foreach(token IN ITEMS CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
+            string(FIND "${out}" "${token}" at)
+            if(at EQUAL -1)
+                message(FATAL_ERROR "SDK29: ${label} was refused but the output does not name ${token}:\n${out}")
+            endif()
+        endforeach()
+    endif()
+endfunction()
+
+_sdk_expect_runtime("a static runtime" 1 "MultiThreaded" TRUE)
+_sdk_expect_runtime("a per-configuration runtime" 1 "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL" TRUE)
+_sdk_expect_runtime("the SDK's runtime" 1 "MultiThreadedDLL" FALSE)
+_sdk_expect_runtime("a static runtime outside MSVC" 0 "MultiThreaded" FALSE)
+
+message(STATUS "sdk.refusals: SDK3, SDK28 and SDK29 passed")

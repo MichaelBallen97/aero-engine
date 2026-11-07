@@ -21,8 +21,10 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=<engine>/buil
 cmake --build build --config Release
 ```
 
-The SDK is built with its own compiler, and this project must be built with that one. A Debug build on Windows is
-refused, because the SDK is a Release build.
+The SDK is built with its own compiler, and this project must be built with that one. The SDK is a Release build. On
+Windows it uses the release DLL runtime (`/MD`), and `find_package(AeroEngine)` gives that runtime to every target
+defined after it, in every configuration: a Debug build links and runs, unoptimised and without the debug runtime. A
+project that sets `CMAKE_MSVC_RUNTIME_LIBRARY` to anything but `MultiThreadedDLL` is refused.
 
 ## Run
 
