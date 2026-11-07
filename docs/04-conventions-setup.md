@@ -100,7 +100,12 @@ this repository.
   the prefix at a path with a space in it serves a fresh consumer that builds and runs, with no reference to the old path
   or to vcpkg), `sdk.headers` (every installed header compiles alone, every `#include` in one is `<aero/...>` or a
   standard header, and a planted third-party include fails to build) and `sdk.mini_game` (the C++ mini-game, built against
-  the prefix alone and run `--scripted` from another folder). CI runs the preset on all three lanes, in a tree of its own.
+  the prefix alone and run `--scripted` from another folder) and, since 4.5.2, `sdk.template` (the C++ project template's
+  four files, written into a folder with a space in its name, built from the README's own commands and run).
+  CI runs the preset on all three lanes, in a tree of its own.
+- **The project template (4.5.2).** A new C++ project is given a `CMakeLists.txt`, a hello-cube `src/main.cpp`, a
+  `README.md` and a `.gitignore`, rendered from `editor/templates/cpp-project/`. The files are specified in
+  `docs/09-file-formats.md` section 4.12, and the generated README is the build guide for a game.
 - **One Release SDK per OS.** The archives are per architecture and per compiler, and the SDK is Release only. A game
   links the engine statically, which is why there is no shared engine: `componentTypeId` is a property of one program
   image (`docs/03`).

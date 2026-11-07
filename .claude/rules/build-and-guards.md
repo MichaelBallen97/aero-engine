@@ -104,6 +104,11 @@ configure, and the answer is to re-run it.
 8 and Check B from 111 to 113 `editor/src/*.cpp` files. It writes into `Library/Scripts/`, the reason `project_state.cpp`
 is listed. Check A's `::copy` also forbids `std::copy` and `std::ranges::copy` there.
 
+**`editor/src/cpp_project_template.cpp` IS THE NINTH FILE IN CHECK A (4.5.2)**, and Check B went from 114 to 115. It fills a
+project folder and must never delete, rename or copy. `tests/project-no-delete/no_delete_e2e.cmake` seeds it too: self-test
+1 refuses a scratch tree that lacks a named file, so a tenth entry in `FORBIDDEN_FILES` needs a seed there or stage 1 exits 2.
+Stage 20 plants `::copy` in it and expects exit 1.
+
 ## The C++ SDK (4.5.1)
 
 - **An imported target is directory-scoped.** At root scope `if(TARGET EnTT::EnTT)` is FALSE, so a `TARGET` test passes

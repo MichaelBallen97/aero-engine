@@ -333,3 +333,18 @@ PRODUCTION, NOT ONLY IN TESTS — R2 IS ANSWERED.** With a project opened throug
 the open was **PERMITTED**. The two paths share **no leading segment**, so no lexical comparison could have
 accepted it — D4 step 4 is the only thing that did. **Delete the rescue and an ordinary open under `/tmp`
 is refused outright.** Validate on a NON-symlinked root unless symlinks are the thing under test.
+
+## The C++ project template (task 4.5.2)
+
+- **The `.in` files under `editor/templates/cpp-project/` are 7-bit ASCII, LF, with no tab.** `embed_run.cmake` refuses
+  anything else at build time, and `.gitattributes` keeps LF on a Windows checkout. The `.in` suffix keeps them out of
+  clang-format, clang-tidy and the CMake guards' sweeps.
+- **The render is one left-to-right pass, never `std::string::replace`.** A project name may hold `@`, `{` and `}`, so a
+  sequential replace can expand a token inside a name already substituted. Replaced text is never rescanned.
+- **The title is data, never a format string.** `@AERO_PROJECT_TITLE@` sits inside one string literal in `main.cpp.in`, as
+  the window's title, and nowhere near a `printf`-style call. The identifier is `game_` plus the sanitised name, the only
+  form that reaches CMake.
+- **`cpp_project_template.cpp` includes no editor header beyond its own and `text_file.hpp`.** `tests/sdk/` compiles that
+  translation unit with `aero::core` alone, so an editor include there breaks the SDK build, not the editor's.
+- **`writeCppProject` writes a file only when nothing is at the path** (`fileExists`, so a directory wearing the name
+  counts), and it is in `check-project-no-delete.sh`'s Check A.

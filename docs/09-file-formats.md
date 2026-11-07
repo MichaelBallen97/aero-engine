@@ -629,6 +629,50 @@ copy, and opening the project replaces a copy that differs.
 No golden fixtures: the declarations' text is pinned by the drift cases that compare it with a live VM and by the
 `typescript.*` ctest cases that compile it, not by a stored copy.
 
+### 4.12 The C++ project's files (task 4.5.2)
+
+A C++ project (`language` `cpp`, §4.2) is given four files by `writeCppProject`, rendered from the project's name by
+`renderCppProject` from `editor/templates/cpp-project/`. A TypeScript project is given none of them, and the C++ project
+gets no `tsconfig.json` or declarations (§4.11).
+
+| File | Kind | Written | Committed |
+|---|---|---|---|
+| `<projectRoot>/CMakeLists.txt` | the project | only when nothing is at the path | yes, by whoever owns the project |
+| `<projectRoot>/src/main.cpp` | the project | only when nothing is at the path | yes, by whoever owns the project |
+| `<projectRoot>/README.md` | the project | only when nothing is at the path | yes, by whoever owns the project |
+| `<projectRoot>/.gitignore` | the project | only when nothing is at the path | yes, by whoever owns the project |
+
+**The files are the project's own.** The writer never reads, merges or rewrites a file after creating it. A file already
+at a path wins, and so does a directory wearing the name; a second run reports every file unchanged and leaves its bytes
+and modification time alone. One file failing (a file named `src`, say) does not stop the others, and the writer removes
+and renames nothing of its own. An empty project root fails every file and touches nothing. The folder the files land in
+is made by the caller.
+
+| File | Holds |
+|---|---|
+| `CMakeLists.txt` | `find_package(AeroEngine CONFIG REQUIRED)` and `aero_add_game(<identifier> src/main.cpp)` (docs/04, "The C++ SDK") |
+| `src/main.cpp` | the hello-cube: a window, a lit cube that spins, a camera and a light; it includes `<aero/...>` and standard headers only |
+| `README.md` | the build commands, the run line for each OS, the keys, and how a game registers its own components |
+| `.gitignore` | the single line `build/` |
+
+**Three tokens, one pass.** Each template holds `@AERO_PROJECT_ID@`, `@AERO_PROJECT_TITLE@` and `@AERO_PROJECT_NAME@`.
+
+| Token | Replaced with | Reaches |
+|---|---|---|
+| `@AERO_PROJECT_ID@` | `game_` followed by the name with every byte outside `[A-Za-z0-9_]` replaced by `_` | CMake's project and target names, and the executable's name |
+| `@AERO_PROJECT_TITLE@` | the name as a C string literal's body: `"` and `\` backslash-escaped, every byte under 0x20, 0x7F or over 0x7F as a backslash and exactly three octal digits | the string literal that is the window's title in `main.cpp` |
+| `@AERO_PROJECT_NAME@` | the name, byte for byte | the README's heading |
+
+The name passes the rules of §4.3, which still admit `test`, `all`, `CMAKE`, a leading digit and every non-ASCII byte,
+and which admit `@`, `{` and `}`. The `game_` prefix closes the reserved CMake names and the leading-digit class at once,
+so the identifier needs no table. The literal's escapes are always three digits, so a digit that follows an escaped byte
+cannot join it, and every byte in the file stays 7-bit, so a compiler's code page cannot change a name. The render walks
+each template once from the start and appends: replaced text is never rescanned, so a project named `@AERO_PROJECT_ID@`
+keeps that text literally. The title reaches the window as data and never as a format string.
+
+The New Project call that writes these files is 4.6.1's. Until then the writer has no product caller, and the test that
+builds and runs a generated project (`sdk.template`) is the one caller.
+
 ## 5. Asset meta format v1
 
 > Enforced in code by `editor/src/asset_meta.cpp` (the pure parse/write/lifecycle half) and
