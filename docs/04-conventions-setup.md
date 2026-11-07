@@ -95,8 +95,9 @@ this repository.
   | `animation_cook.hpp`, `audio_cook.hpp`, `mesh_cook.hpp`, `skeleton_cook.hpp`, `texture_cook.hpp`, `bc_block.hpp` | cooking happens at tool time |
   | `cooked_script.hpp` | `.aeroscript` exists only in TypeScript projects |
 
-- **What `sdk.*` proves.** Six ctest entries, run by `ctest --preset <os>-sdk`: `sdk.refusals` (each refusal, under
-  `cmake -P`), `sdk.install` (the fixture: it re-creates the prefix on every run), `sdk.prefix` (the layout, then a copy of
+- **What `sdk.*` proves.** Six ctest entries, run by `ctest --preset <os>-sdk`: `sdk.refusals` (each refusal and the MSVC
+  runtime pin, under `cmake -P`), `sdk.install` (the fixture: it re-creates the prefix on every run), `sdk.prefix` (the
+  layout, then a copy of
   the prefix at a path with a space in it serves a fresh consumer that builds and runs, with no reference to the old path
   or to vcpkg), `sdk.headers` (every installed header compiles alone, every `#include` in one is `<aero/...>` or a
   standard header, and a planted third-party include fails to build) and `sdk.mini_game` (the C++ mini-game, built against
@@ -109,9 +110,12 @@ this repository.
 - **One Release SDK per OS.** The archives are per architecture and per compiler, and the SDK is Release only. A game
   links the engine statically, which is why there is no shared engine: `componentTypeId` is a property of one program
   image (`docs/03`).
-- **Windows Debug is refused.** MSVC cannot link a Debug program (`/MDd`) against a Release archive (`/MD`).
-  `AeroEngineConfig.cmake` stops a consumer configured with `CMAKE_BUILD_TYPE=Debug` on MSVC before it reads anything
-  else, and says to configure Release.
+- **Windows: the release runtime in every configuration.** The SDK is a Release build, and on Windows it uses the release
+  DLL runtime (`/MD`). MSVC cannot link `/MDd` code against it (LNK2038), so `find_package(AeroEngine)` sets
+  `CMAKE_MSVC_RUNTIME_LIBRARY` to `MultiThreadedDLL`, and every target defined after it gets that runtime in every
+  configuration and under every generator: a Debug build links and runs, unoptimised and without the debug runtime. A
+  project that sets the variable to anything else is refused, by name. A target defined before the `find_package` call
+  keeps CMake's default runtime.
 
 ---
 

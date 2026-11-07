@@ -129,4 +129,7 @@ Stage 20 plants `::copy` in it and expects exit 1.
 - **A consumer build passes `--parallel 3`.** `ctest --preset <os>-sdk` starts builds the build hook cannot see.
 - **The prefix is a test fixture.** `sdk.install` removes and re-creates `<build>/sdk-test/prefix` on every run; the
   preset's `installDir` is never touched by a test.
+- **The MSVC runtime pin lives in `AeroEngineConfig.cmake`, never in `aero_add_game`.** The tree's `windows-debug` builds the
+  mini-game through `aero_add_game` against `/MDd` layers (`samples/CMakeLists.txt`), so a pin there would break that lane.
+  Whatever `sdk.refusals` tests sits above the config's `find_dependency`, because under `-P` the file stops there.
 - **`ctest -N` in an SDK tree is 233 + 6**; every other configuration stays 233, because the entries exist only under `AERO_SDK`.
