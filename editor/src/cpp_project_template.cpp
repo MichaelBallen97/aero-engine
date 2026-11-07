@@ -65,7 +65,7 @@ struct Replacements {
 }
 
 // The parent folder of a relative path with a '/', "" when it has none.
-[[nodiscard]] std::string_view parentOf(std::string_view relativePath) noexcept {
+[[nodiscard]] std::string_view parentOf(std::string_view relativePath) {
     const std::size_t slash = relativePath.rfind('/');
     return slash == std::string_view::npos ? std::string_view{} : relativePath.substr(0, slash);
 }
