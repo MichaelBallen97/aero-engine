@@ -1,8 +1,10 @@
 #pragma once
 // Aero Engine -- the C++ project template (task 4.5.2): the four files a new C++ project is given, rendered from the
-// project's name. PURE: no filesystem include, no logging; the same name yields the same bytes.
+// project's name. The render is PURE: no filesystem include, no logging; the same name yields the same bytes. The
+// writer puts the four files into a project folder and never deletes, renames or copies (check A's ninth file).
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -23,5 +25,23 @@ struct CppProjectFile {
 [[nodiscard]] std::string cppStringLiteralBody(std::string_view bytes);
 // PURE: the same name yields the same bytes. One left-to-right pass: replaced text is never rescanned.
 [[nodiscard]] std::array<CppProjectFile, CPP_PROJECT_FILE_COUNT> renderCppProject(std::string_view projectName);
+
+enum class CppProjectWrite : std::uint8_t { Written, Unchanged, Failed };
+
+struct CppProjectFileOutcome {
+    std::string_view relativePath;
+    CppProjectWrite state = CppProjectWrite::Failed;
+    std::string error;  // "" unless Failed
+};
+
+struct CppProjectReport {
+    std::array<CppProjectFileOutcome, CPP_PROJECT_FILE_COUNT> files;
+    [[nodiscard]] bool ok() const noexcept;  // no file Failed
+};
+
+// Creates each file only when nothing is at its path: a directory wearing the name counts. Overwrites nothing and
+// removes nothing. One file's failure does not stop the others. An empty root fails every file and touches nothing.
+// Never logs: the caller turns a report into a WARN.
+[[nodiscard]] CppProjectReport writeCppProject(std::string_view projectRootUtf8, std::string_view projectName);
 
 }  // namespace engine::editor

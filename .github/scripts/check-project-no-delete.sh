@@ -73,6 +73,7 @@ readonly FORBIDDEN_FILES=(
   "editor/src/asset_cache.cpp"      # task 3.1.2 (D18)
   "editor/src/project_state.cpp"    # task E.4.1 (D9) -- writes into Library/, must never delete
   "editor/src/script_transpiler.cpp"  # task 4.3.1 -- writes Library/Scripts/, must never delete
+  "editor/src/cpp_project_template.cpp"  # task 4.5.2 -- fills a project folder, must never delete
 )
 
 # remove_all | std::filesystem::remove | std::filesystem::rename | ::copy -- exactly the four tokens

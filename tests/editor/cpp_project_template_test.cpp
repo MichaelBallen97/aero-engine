@@ -2,21 +2,27 @@
 // ImGui, no GPU, no window, and UNGATED -- every case here must be PRESENT and PASSING in all three configurations.
 // Do NOT define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN; shell_test.cpp supplies main().
 #include <aero/editor/cpp_project_template.hpp>
+#include <aero/editor/text_file.hpp>
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <ostream>  // the 0.4.1 MSVC trap: this TU CHECKs std::string_view
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace {
 
 namespace ed = engine::editor;
+namespace fs = std::filesystem;
 
 constexpr std::size_t CMAKE_FILE = 0;
 constexpr std::size_t MAIN_FILE = 1;
@@ -237,4 +243,193 @@ TEST_CASE("cpp_project: the first file a new author reads names only engine and 
     const std::size_t lineStart = text.rfind('\n', token) + 1;
     const std::size_t lineEnd = text.find('\n', token);
     CHECK(text.substr(lineStart, lineEnd - lineStart).find(".title = \"@AERO_PROJECT_TITLE@\"") != std::string::npos);
+}
+
+// ---- The writer (CP10-CP16) ------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::string_view DEMO_NAME = "Demo";
+
+// A unique temp directory whose name carries the case id, removing itself. A tree this case made, in the tests only.
+class TempDir {
+public:
+    explicit TempDir(std::string_view caseId, const std::u8string& leaf = u8"") {
+        std::error_code ec;
+        dirPath = fs::temp_directory_path(ec) / ("aero_cpp_project_" + std::string(caseId));
+        if (!leaf.empty()) {
+            dirPath /= fs::path(leaf);
+        }
+        fs::remove_all(dirPath, ec);
+        fs::create_directories(dirPath, ec);
+    }
+    ~TempDir() {
+        std::error_code ec;
+        fs::remove_all(dirPath, ec);
+    }
+    TempDir(const TempDir&) = delete;
+    TempDir& operator=(const TempDir&) = delete;
+    TempDir(TempDir&&) = delete;
+    TempDir& operator=(TempDir&&) = delete;
+
+    [[nodiscard]] static std::string utf8Of(const fs::path& path) {
+        const std::u8string bytes = path.u8string();
+        std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        std::ranges::replace(text, '\\', '/');
+        return text;
+    }
+    [[nodiscard]] std::string utf8() const { return utf8Of(dirPath); }
+    [[nodiscard]] std::string join(std::string_view leaf) const { return utf8() + '/' + std::string(leaf); }
+    [[nodiscard]] const fs::path& path() const noexcept { return dirPath; }
+
+private:
+    fs::path dirPath;
+};
+
+[[nodiscard]] std::string readAll(const std::string& path) {
+    const ed::FileReadResult read = ed::readTextFile(path);
+    return read.text.value_or(std::string("<unreadable>"));
+}
+
+void putBytes(const std::string& path, std::string_view bytes) {
+    std::ofstream out(fs::path(std::u8string(reinterpret_cast<const char8_t*>(path.data()), path.size())),
+                      std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+[[nodiscard]] std::size_t countEntries(const fs::path& folder) {
+    std::error_code ec;
+    std::size_t count = 0;
+    for (auto it = fs::recursive_directory_iterator(folder, ec); !ec && it != fs::recursive_directory_iterator();
+         it.increment(ec)) {
+        ++count;
+    }
+    return count;
+}
+
+[[nodiscard]] bool anyTempLeft(const fs::path& folder) {
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(folder, ec); !ec && it != fs::recursive_directory_iterator();
+         it.increment(ec)) {
+        if (it->path().filename().string().find(".aero-tmp") != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST_CASE("cpp_project: an empty folder is given the four files, bytes as rendered (CP10)") {
+    const TempDir dir("CP10");
+    const auto rendered = ed::renderCppProject(DEMO_NAME);
+    const ed::CppProjectReport report = ed::writeCppProject(dir.utf8(), DEMO_NAME);
+    CHECK(report.ok());
+    for (std::size_t i = 0; i < ed::CPP_PROJECT_FILE_COUNT; ++i) {
+        CAPTURE(rendered[i].relativePath);
+        CHECK(report.files[i].relativePath == rendered[i].relativePath);
+        CHECK(report.files[i].state == ed::CppProjectWrite::Written);
+        CHECK(report.files[i].error.empty());
+        CHECK(readAll(dir.join(rendered[i].relativePath)) == rendered[i].text);
+    }
+    CHECK(fs::is_directory(dir.path() / "src"));
+}
+
+TEST_CASE("cpp_project: a second run changes nothing, bytes and modification times alike (CP11)") {
+    const TempDir dir("CP11");
+    REQUIRE(ed::writeCppProject(dir.utf8(), DEMO_NAME).ok());
+    const auto rendered = ed::renderCppProject(DEMO_NAME);
+    // Move every time into the past, so a rewrite could not hide behind a clock tick.
+    const auto past = fs::file_time_type::clock::now() - std::chrono::hours(48);
+    std::error_code ec;
+    for (const ed::CppProjectFile& file : rendered) {
+        fs::last_write_time(dir.path() / std::string(file.relativePath), past, ec);
+        REQUIRE_FALSE(ec);
+    }
+    const ed::CppProjectReport report = ed::writeCppProject(dir.utf8(), DEMO_NAME);
+    CHECK(report.ok());
+    for (std::size_t i = 0; i < ed::CPP_PROJECT_FILE_COUNT; ++i) {
+        CAPTURE(rendered[i].relativePath);
+        CHECK(report.files[i].state == ed::CppProjectWrite::Unchanged);
+        CHECK(readAll(dir.join(rendered[i].relativePath)) == rendered[i].text);
+        CHECK(fs::last_write_time(dir.path() / std::string(rendered[i].relativePath), ec) == past);
+    }
+}
+
+TEST_CASE("cpp_project: a hand-edited main.cpp survives while the others are created (CP12)") {
+    const TempDir dir("CP12");
+    REQUIRE(ed::ensureDirectory(dir.join("src")).empty());
+    putBytes(dir.join("src/main.cpp"), "int main() { return 7; }\n");
+    const ed::CppProjectReport report = ed::writeCppProject(dir.utf8(), DEMO_NAME);
+    CHECK(report.ok());
+    CHECK(report.files[0].state == ed::CppProjectWrite::Written);
+    CHECK(report.files[1].state == ed::CppProjectWrite::Unchanged);
+    CHECK(report.files[2].state == ed::CppProjectWrite::Written);
+    CHECK(report.files[3].state == ed::CppProjectWrite::Written);
+    CHECK(readAll(dir.join("src/main.cpp")) == "int main() { return 7; }\n");
+}
+
+TEST_CASE("cpp_project: a directory wearing a file's name counts as present and is left alone (CP13)") {
+    const TempDir dir("CP13");
+    REQUIRE(ed::ensureDirectory(dir.join("README.md")).empty());
+    putBytes(dir.join("README.md/keep.txt"), "kept");
+    const ed::CppProjectReport report = ed::writeCppProject(dir.utf8(), DEMO_NAME);
+    CHECK(report.ok());
+    CHECK(report.files[0].state == ed::CppProjectWrite::Written);
+    CHECK(report.files[1].state == ed::CppProjectWrite::Written);
+    CHECK(report.files[2].state == ed::CppProjectWrite::Unchanged);
+    CHECK(report.files[3].state == ed::CppProjectWrite::Written);
+    CHECK(fs::is_directory(dir.path() / "README.md"));
+    CHECK(readAll(dir.join("README.md/keep.txt")) == "kept");
+}
+
+TEST_CASE("cpp_project: a file named src fails src/main.cpp alone and is not removed (CP14)") {
+    const TempDir dir("CP14");
+    putBytes(dir.join("src"), "not a folder");
+    const ed::CppProjectReport report = ed::writeCppProject(dir.utf8(), DEMO_NAME);
+    CHECK_FALSE(report.ok());
+    CHECK(report.files[0].state == ed::CppProjectWrite::Written);
+    CHECK(report.files[1].state == ed::CppProjectWrite::Failed);
+    CHECK_FALSE(report.files[1].error.empty());
+    CHECK(report.files[2].state == ed::CppProjectWrite::Written);
+    CHECK(report.files[3].state == ed::CppProjectWrite::Written);
+    CHECK(fs::is_regular_file(dir.path() / "src"));
+    CHECK(readAll(dir.join("src")) == "not a folder");
+}
+
+TEST_CASE("cpp_project: a root that is a file, or empty, fails every file and writes nothing (CP15)") {
+    const TempDir dir("CP15");
+    putBytes(dir.join("root-is-a-file"), "x");
+    const std::size_t before = countEntries(fs::current_path());
+
+    const ed::CppProjectReport onFile = ed::writeCppProject(dir.join("root-is-a-file"), DEMO_NAME);
+    CHECK_FALSE(onFile.ok());
+    for (const ed::CppProjectFileOutcome& outcome : onFile.files) {
+        CAPTURE(outcome.relativePath);
+        CHECK(outcome.state == ed::CppProjectWrite::Failed);
+        CHECK_FALSE(outcome.error.empty());
+    }
+    CHECK(readAll(dir.join("root-is-a-file")) == "x");
+
+    const ed::CppProjectReport onEmpty = ed::writeCppProject("", DEMO_NAME);
+    CHECK_FALSE(onEmpty.ok());
+    for (const ed::CppProjectFileOutcome& outcome : onEmpty.files) {
+        CAPTURE(outcome.relativePath);
+        CHECK(outcome.state == ed::CppProjectWrite::Failed);
+        CHECK(outcome.error == "no project root");
+    }
+    CHECK(countEntries(fs::current_path()) == before);
+}
+
+TEST_CASE("cpp_project: a root holding a space and non-ASCII bytes succeeds and leaves no temp behind (CP16)") {
+    const TempDir dir("CP16", u8"sp ace \u00f1 dir");
+    const ed::CppProjectReport report = ed::writeCppProject(dir.utf8(), DEMO_NAME);
+    CHECK(report.ok());
+    const auto rendered = ed::renderCppProject(DEMO_NAME);
+    for (std::size_t i = 0; i < ed::CPP_PROJECT_FILE_COUNT; ++i) {
+        CAPTURE(rendered[i].relativePath);
+        CHECK(report.files[i].state == ed::CppProjectWrite::Written);
+        CHECK(readAll(dir.join(rendered[i].relativePath)) == rendered[i].text);
+    }
+    CHECK_FALSE(anyTempLeft(dir.path().parent_path()));
 }
