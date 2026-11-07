@@ -30,6 +30,9 @@ struct FileReadResult {
 // "" == success. ATOMIC: writes <path>.aero-tmp, CLOSES it, renames over `path`.
 [[nodiscard]] std::string writeTextFileAtomic(std::string_view absolutePathUtf8, std::string_view text);
 [[nodiscard]] bool fileExists(std::string_view absolutePathUtf8);
+// True when anything is at the path, a symlink whose target is missing included: it asks about the entry itself and
+// never follows a link, which is what fileExists does.
+[[nodiscard]] bool entryExists(std::string_view absolutePathUtf8);
 
 inline constexpr std::size_t HASH_CHUNK_BYTES = static_cast<std::size_t>(1024U) * 1024U;
 

@@ -79,10 +79,11 @@ struct Replacements {
     return path;
 }
 
-// One file: present (a directory wearing the name counts) -> Unchanged; else its parent, then the atomic write.
+// One file: present (a directory wearing the name counts, and so does a symlink with no target) -> Unchanged; else its
+// parent, then the atomic write.
 [[nodiscard]] CppProjectFileOutcome writeOne(std::string_view projectRoot, const CppProjectFile& file) {
     const std::string path = joinUnder(projectRoot, file.relativePath);
-    if (fileExists(path)) {
+    if (entryExists(path)) {
         return {.relativePath = file.relativePath, .state = CppProjectWrite::Unchanged, .error = {}};
     }
     if (const std::string_view parent = parentOf(file.relativePath); !parent.empty()) {

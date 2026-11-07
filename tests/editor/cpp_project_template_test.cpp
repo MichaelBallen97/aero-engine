@@ -456,3 +456,28 @@ TEST_CASE("cpp_project: a root holding a space and non-ASCII bytes succeeds and 
     }
     CHECK_FALSE(anyTempLeft(dir.path().parent_path()));
 }
+
+TEST_CASE("cpp_project: a dangling symlink at a template path is present and stays a symlink (CP17)") {
+    const TempDir dir("CP17");
+    const fs::path link = dir.path() / "CMakeLists.txt";
+    const fs::path target = dir.path() / "missing-target";
+    std::error_code makeEc;
+    fs::create_symlink(target, link, makeEc);
+    if (makeEc) {
+        MESSAGE("CP17: no symlink can be made here (" << makeEc.message() << "), so it asserts nothing more");
+        return;
+    }
+    const ed::CppProjectReport report = ed::writeCppProject(dir.utf8(), DEMO_NAME);
+    CHECK(report.ok());
+    CHECK(report.files[0].state == ed::CppProjectWrite::Unchanged);
+    CHECK(report.files[1].state == ed::CppProjectWrite::Written);
+    CHECK(report.files[2].state == ed::CppProjectWrite::Written);
+    CHECK(report.files[3].state == ed::CppProjectWrite::Written);
+
+    std::error_code statusEc;
+    CHECK(fs::is_symlink(fs::symlink_status(link, statusEc)));
+    std::error_code readEc;
+    CHECK(fs::read_symlink(link, readEc) == target);
+    std::error_code targetEc;
+    CHECK_FALSE(fs::exists(fs::symlink_status(target, targetEc)));
+}

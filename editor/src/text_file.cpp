@@ -105,6 +105,11 @@ bool fileExists(std::string_view absolutePathUtf8) {
     return std::filesystem::exists(pathFromUtf8(absolutePathUtf8), ec);
 }
 
+bool entryExists(std::string_view absolutePathUtf8) {
+    std::error_code ec;
+    return std::filesystem::exists(std::filesystem::symlink_status(pathFromUtf8(absolutePathUtf8), ec));
+}
+
 FileHashResult hashFileContents(std::string_view absolutePathUtf8) {
     std::error_code ec;
     const std::filesystem::path fsPath = pathFromUtf8(absolutePathUtf8);

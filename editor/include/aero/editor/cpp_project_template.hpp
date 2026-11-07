@@ -39,9 +39,9 @@ struct CppProjectReport {
     [[nodiscard]] bool ok() const noexcept;  // no file Failed
 };
 
-// Creates each file only when nothing is at its path: a directory wearing the name counts. Overwrites nothing and
-// removes nothing. One file's failure does not stop the others. An empty root fails every file and touches nothing.
-// Never logs: the caller turns a report into a WARN.
+// Creates each file only when nothing is at its path: a directory wearing the name counts, and so does a symlink
+// whose target is missing. Overwrites nothing and removes nothing. One file's failure does not stop the others. An
+// empty root fails every file and touches nothing. Never logs: the caller turns a report into a WARN.
 [[nodiscard]] CppProjectReport writeCppProject(std::string_view projectRootUtf8, std::string_view projectName);
 
 }  // namespace engine::editor
