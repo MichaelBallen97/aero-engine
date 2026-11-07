@@ -53,3 +53,31 @@ _sdk_expect_refused("shader tools OFF"     AERO_SHADER_TOOLS      Release OFF OF
 _sdk_expect_refused("reflect tools OFF"    AERO_REFLECT_TOOLS     Release OFF OFF ON  OFF)
 
 message(STATUS "sdk.refusals: SDK1 and SDK2 passed")
+
+# SDK3: the package config refuses a Debug build under MSVC before it does anything else, so `-P` with MSVC=1 reaches
+# the message with no project and no prefix. A Release build under MSVC does not reach it.
+get_filename_component(_sdk_cmake_dir "${CHECK}" DIRECTORY)
+set(_sdk_config "${_sdk_cmake_dir}/AeroEngineConfig.cmake")
+execute_process(
+    COMMAND ${CMAKE_COMMAND} -DMSVC=1 -DCMAKE_BUILD_TYPE=Debug -P ${_sdk_config}
+    RESULT_VARIABLE _rc
+    OUTPUT_VARIABLE _out
+    ERROR_VARIABLE _err)
+if(_rc EQUAL 0)
+    message(FATAL_ERROR "SDK3: the package config accepted a Debug build under MSVC")
+endif()
+string(FIND "${_out}${_err}" "/MDd" _at)
+if(_at EQUAL -1)
+    message(FATAL_ERROR "SDK3: the Debug refusal does not say /MDd:\n${_out}${_err}")
+endif()
+execute_process(
+    COMMAND ${CMAKE_COMMAND} -DMSVC=1 -DCMAKE_BUILD_TYPE=Release -P ${_sdk_config}
+    RESULT_VARIABLE _rc
+    OUTPUT_VARIABLE _out
+    ERROR_VARIABLE _err)
+string(FIND "${_out}${_err}" "/MDd" _at)
+if(NOT _at EQUAL -1)
+    message(FATAL_ERROR "SDK3: a Release build under MSVC reached the Debug refusal:\n${_out}${_err}")
+endif()
+
+message(STATUS "sdk.refusals: SDK3 passed")

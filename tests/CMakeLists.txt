@@ -1424,4 +1424,23 @@ if(AERO_SDK)
     add_test(NAME sdk.refusals COMMAND ${CMAKE_COMMAND}
         -DCHECK=${CMAKE_SOURCE_DIR}/cmake/sdk_check.cmake
         -P ${CMAKE_CURRENT_SOURCE_DIR}/sdk/refusals.cmake)
+
+    # The three drivers that read an installed prefix. One argument list, so a consumer is configured with the tree's
+    # own generator, compiler and build type and no toolchain. sdk.install removes and re-creates <WORK_ROOT>/prefix
+    # on every run (the fixture); the other two require it and, with it, hold the lock: sdk.prefix renames the prefix
+    # for a moment, and a `ctest -j` must not see that.
+    set(_aero_sdk_args
+        -DSOURCE_DIR=${CMAKE_SOURCE_DIR} -DBUILD_DIR=${CMAKE_BINARY_DIR}
+        -DWORK_ROOT=${CMAKE_CURRENT_BINARY_DIR}/sdk-test
+        -DCONSUMER_GENERATOR=${CMAKE_GENERATOR} -DCONSUMER_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
+        -DCONSUMER_CXX_COMPILER=${CMAKE_CXX_COMPILER} -DCONSUMER_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -DCONSUMER_IS_MSVC=${MSVC})
+    foreach(_aero_sdk_case IN ITEMS install prefix headers)
+        add_test(NAME sdk.${_aero_sdk_case} COMMAND ${CMAKE_COMMAND} ${_aero_sdk_args}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/sdk/${_aero_sdk_case}.cmake)
+        set_tests_properties(sdk.${_aero_sdk_case} PROPERTIES RESOURCE_LOCK sdk_prefix TIMEOUT 1500)
+    endforeach()
+    unset(_aero_sdk_case)
+    set_tests_properties(sdk.install PROPERTIES FIXTURES_SETUP sdk_prefix)
+    set_tests_properties(sdk.prefix sdk.headers PROPERTIES FIXTURES_REQUIRED sdk_prefix)
 endif()

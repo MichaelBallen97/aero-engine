@@ -53,6 +53,11 @@ if(AERO_SDK)
     include(cmake/sdk_check.cmake)
 endif()
 
+# task 4.5.1: aero_add_game() and the folder it copies the shaders from. Unconditional, so a sample's CMakeLists reads
+# the same in the tree and against an installed prefix (the package defines both itself, cmake/AeroEngineConfig.cmake).
+set(AERO_ENGINE_SHADERS_DIR "${CMAKE_BINARY_DIR}/shaders")
+include(cmake/aero_add_game.cmake)
+
 # task 2.1.2: aero_assert_golden_rule() -- project rule #1 (docs/00, docs/03) enforced at the LINK and
 # INCLUDE-DIRECTORY level, called at the very end of this file (below). No option() gate, unlike every
 # other module in this cluster: none of the existing AERO_* options disables an INVARIANT.
