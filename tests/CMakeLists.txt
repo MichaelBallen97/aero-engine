@@ -597,7 +597,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/project_ui_view_test.cpp         # task E.6.4 — the Welcome and New Project model (WL, NP)
                editor/script_types_test.cpp            # task 4.2.2 — the declarations and tsconfig writer (DT8+)
                editor/esbuild_tool_test.cpp            # task 4.3.1 — the pinned esbuild and its pure rules (EB)
-               editor/script_transpiler_test.cpp)      # task 4.3.1 — the transpile driver over a real esbuild (ST)
+               editor/script_transpiler_test.cpp       # task 4.3.1 — the transpile driver over a real esbuild (ST)
+               editor/cpp_project_template_test.cpp)   # task 4.5.2 — the C++ project template's pure render (CP)
 # task 4.3.1: aero::script joins so that script_transpiler_test.cpp's ST20-ST22 evaluate the editor's own transpiled
 # output in the engine's VM. Tests sit outside the boundary rule (the aero_tests precedent); aero_editor_core itself
 # does not link it, and the editor binary does not either.
@@ -647,7 +648,9 @@ target_compile_definitions(aero_editor_shell_test PRIVATE
     # task 4.2.2: DT10 compares the editor's two embedded texts with the files they were built from. Paths, not
     # flags: the declarations are the build's own output (the target property, so nothing restates it).
     AERO_SCRIPT_DECLARATIONS_FILE="${_aero_script_declarations_file}"
-    AERO_TSCONFIG_TEMPLATE_FILE="${CMAKE_SOURCE_DIR}/editor/templates/tsconfig.json.in")
+    AERO_TSCONFIG_TEMPLATE_FILE="${CMAKE_SOURCE_DIR}/editor/templates/tsconfig.json.in"
+    # task 4.5.2: CP8 compares the four embedded C++ project templates with their files. A path, not a flag.
+    AERO_CPP_PROJECT_TEMPLATE_DIR="${CMAKE_SOURCE_DIR}/editor/templates/cpp-project")
 
 # task 3.2.4 (F13): a real subprocess the process layer can spawn on every CI lane, with NO Blender
 # installed. `cmake -E true|false|sleep|echo|cat|touch|copy_directory` covers start, non-blocking poll,

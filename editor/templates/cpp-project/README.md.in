@@ -1,0 +1,47 @@
+# @AERO_PROJECT_NAME@
+
+A C++ game built against the Aero Engine SDK: a window, a lit cube that spins, and a camera and a light to see it by.
+It is the hello-cube of the engine's C++ project template. `src/main.cpp` is the whole game.
+
+## Build
+
+The game builds against an installed engine, never against its source tree. In the engine checkout, configure its SDK
+preset, build it and install it (`<os>` is `macos`, `windows` or `linux`):
+
+```text
+cmake --preset <os>-sdk
+cmake --build --preset <os>-sdk
+cmake --install build/<os>-sdk
+```
+
+Then, from this folder, build the game against that prefix (`<engine>` is the engine checkout):
+
+```text
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=<engine>/build/sdk/<os>-sdk
+cmake --build build --config Release
+```
+
+The SDK is built with its own compiler, and this project must be built with that one. A Debug build on Windows is
+refused, because the SDK is a Release build.
+
+## Run
+
+```text
+./build/@AERO_PROJECT_ID@
+```
+
+With Visual Studio's generator the executable is `build\Release\@AERO_PROJECT_ID@.exe`. The build copies the shaders
+into a `shaders` folder beside the executable.
+
+`--frames <n>` stops after n frames and prints one line, `hello-cube: frames=<n> updates=<u>`.
+
+| Key | Does |
+|---|---|
+| Arrow keys | move the cube |
+| Escape | quit |
+
+## Your own components
+
+A game registers its own components with `world.registerComponent<T>("name")` before it uses them, as `main.cpp` does
+for `Spin`. A component needs no `AERO_COMPONENT` marker: outside the engine's code generator it compiles and does
+nothing.

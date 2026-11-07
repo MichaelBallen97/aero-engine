@@ -1,0 +1,129 @@
+// hello-cube: a window, a lit cube, a camera and a light. Each frame turns the cube and counts the update, the
+// arrow keys move it and Escape quits. `--frames <n>` stops after n frames. Only <aero/...> and standard headers.
+#include <aero/core/math.hpp>
+#include <aero/core/time.hpp>
+#include <aero/core/vfs.hpp>
+#include <aero/platform/platform.hpp>
+#include <aero/render/renderer.hpp>
+#include <aero/rhi/rhi.hpp>
+#include <aero/scene/camera.hpp>
+#include <aero/scene/light.hpp>
+#include <aero/scene/mesh_renderer.hpp>
+#include <aero/scene/transform.hpp>
+#include <aero/scene/world.hpp>
+#include <aero/scene_render/scene_renderer.hpp>
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+
+namespace {
+
+using namespace engine;
+
+constexpr int EXIT_NO_GPU = 3;
+constexpr float MOVE_SPEED = 3.0F;  // units per second
+
+// A component of this game. A game registers its own components with World::registerComponent before using them.
+struct Spin {
+    float radiansPerSecond = 1.5F;
+};
+
+int run(int frameLimit) {
+    platform::Context ctx;
+    std::optional<platform::Window> window;
+    if (ctx.valid()) {
+        // The title is data, never a format string.
+        window = ctx.createWindow({.title = "@AERO_PROJECT_TITLE@", .width = 960, .height = 540});
+    }
+    std::optional<rhi::Device> device;
+    if (window) {
+        device = rhi::Device::create();
+    }
+    if (!window || !device) {
+        std::printf("hello-cube: no GPU device\n");
+        return EXIT_NO_GPU;
+    }
+    std::optional<render::Renderer> renderer = render::Renderer::create(*device, *window, {.depth = true});
+    VirtualFileSystem shaders;  // the build copies the shaders into a folder beside the executable
+    shaders.mount(std::make_unique<DirectoryBackend>(platform::basePath() + "shaders"));
+    std::optional<scene_render::SceneRenderer> sceneRenderer;
+    if (renderer) {
+        sceneRenderer =
+            scene_render::SceneRenderer::create(*device, shaders, renderer->colorFormat(), renderer->depthFormat());
+    }
+    if (!sceneRenderer) {
+        std::printf("hello-cube: cannot create the renderer (are the shaders beside the executable?)\n");
+        return 1;
+    }
+
+    World world;
+    world.registerComponent<Spin>("game::Spin");
+    const Entity camera = world.create();
+    const Quat tilt = fromAxisAngle(Vec3::unitX(), radians(-15.0F));
+    world.add<Transform>(camera, Transform{.position = {0.0F, 2.0F, 6.0F}, .rotation = tilt});
+    world.add<Camera>(camera);
+    const Entity sun = world.create();
+    world.add<Transform>(sun, Transform{.rotation = fromAxisAngle(Vec3::unitX(), radians(-55.0F))});
+    world.add<DirectionalLight>(sun);
+    const Entity cube = world.create();
+    world.add<Transform>(cube);
+    world.add<MeshRenderer>(cube, MeshRenderer{.primitive = 0, .color = {0.2F, 0.6F, 0.9F}});
+    world.add<Spin>(cube);
+
+    FrameClock clock;
+    clock.setMaxDeltaSeconds(0.05F);
+    int frames = 0;
+    int updates = 0;
+    bool running = true;
+    while (running && (frameLimit < 0 || frames < frameLimit)) {
+        ctx.newFrame();
+        platform::Event event;
+        while (ctx.pollEvent(event)) {
+            if (event.type == platform::EventType::Quit || event.type == platform::EventType::WindowClose) {
+                running = false;
+            }
+        }
+        clock.tick();
+        const platform::InputState& input = ctx.input();
+        using platform::Key;
+        running = running && !input.keyDown(Key::Escape);
+        const float dt = clock.deltaSeconds();
+        const float moveX = (input.keyDown(Key::Right) ? 1.0F : 0.0F) - (input.keyDown(Key::Left) ? 1.0F : 0.0F);
+        const float moveY = (input.keyDown(Key::Up) ? 1.0F : 0.0F) - (input.keyDown(Key::Down) ? 1.0F : 0.0F);
+        world.each<Transform, Spin>([&](Entity /*entity*/, Transform& transform, const Spin& spin) {
+            const Quat turn = fromAxisAngle(Vec3::unitY(), spin.radiansPerSecond * dt);
+            transform.rotation = normalize(turn * transform.rotation);
+            transform.position += Vec3{moveX, moveY, 0.0F} * (MOVE_SPEED * dt);
+            ++updates;
+        });
+        ++frames;
+
+        std::optional<render::Frame> frame = renderer->beginFrame(rhi::Color{0.05F, 0.06F, 0.08F, 1.0F});
+        if (frame) {
+            sceneRenderer->render(world, *frame);
+            static_cast<void>(renderer->endFrame(std::move(*frame)));
+        }
+    }
+    std::printf("hello-cube: frames=%d updates=%d\n", frames, updates);
+    return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    int frameLimit = -1;  // -1: run until Escape or the window closes
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
+            frameLimit = std::atoi(argv[++i]);
+        } else {
+            std::printf("usage: %s [--frames <n>]\n", argv[0]);
+            return 2;
+        }
+    }
+    return run(frameLimit);
+}
