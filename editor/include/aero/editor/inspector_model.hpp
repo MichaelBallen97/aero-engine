@@ -302,6 +302,9 @@ struct InspectorDrawRecord {
     // alpha byte alone (GetColorU32 scales it by Style.Alpha); never a flag set beside the call.
     std::uint32_t addComponentDashColour = 0U;
     std::uint32_t addComponentLabelColour = 0U;
+    // The `col` of the first vertex the hover or active fill added, off the same vertex buffer; 0 when no fill drew
+    // (and on a frame that draws no button).
+    std::uint32_t addComponentFillColour = 0U;
 };
 
 }  // namespace engine::editor

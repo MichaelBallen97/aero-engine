@@ -89,8 +89,11 @@
                                                 // The scene_asset_loader.hpp precedent, one file over.
 #include "rhi_test_support.hpp"
 
+#include <SDL3/SDL_events.h>      // task 4.7.1 (I409): the mouse events the ImGui backend reads
 #include <SDL3/SDL_filesystem.h>  // task 2.3.3 I5: SDL_GetBasePath(), matching imgui_layer.cpp:38
 #include <SDL3/SDL_joystick.h>    // task 4.7.1 (I403): a virtual pad the Context's own subsystem sees
+#include <SDL3/SDL_mouse.h>       // task 4.7.1 (I409): SDL_BUTTON_LEFT
+#include <SDL3/SDL_video.h>       // task 4.7.1 (I409): the window's id, found by its title
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -33082,6 +33085,163 @@ TEST_CASE("editor: Add Component draws disabled while the game plays and as befo
     drawFrames(2);
     CHECK(r.addComponentDashColour == editDash);
     CHECK(r.addComponentLabelColour == editLabel);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.7.1 (I408): a frame that draws no Add Component records no colour ---------------------------------------
+TEST_CASE("editor: Add Component's recorded colours read 0 on a frame that draws no button (task 4.7.1, I408)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window = ctx.createWindow(
+        {.title = "add component colours i408", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());
+    const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    app->requestPanelFocus("Inspector");
+    // One recorded draw: the Inspector drew exactly one fresh frame, so no earlier frame's record can pass.
+    const auto drawOnce = [&] {
+        const std::uint64_t before = inspector->drawRecord().framesRecorded;
+        REQUIRE(app->tick());
+        REQUIRE(inspector->drawRecord().framesRecorded == before + 1U);
+    };
+    e62Ticks(*app, 3);
+    drawOnce();
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    CHECK(r.addComponentDashVertices > 0);
+    CHECK(r.addComponentDashColour != 0U);
+    CHECK(r.addComponentLabelColour != 0U);
+
+    app->selection().clear();
+    drawOnce();
+    CHECK(r.addComponentDashVertices == 0);
+    CHECK(r.addComponentDashColour == 0U);
+    CHECK(r.addComponentLabelColour == 0U);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.7.1 (I409): a press held across Play
+// ---------------------------------------------------------------------
+TEST_CASE("editor: a press held across Play never leaves Add Component an undimmed fill (task 4.7.1, I409)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "held press i409", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+
+    // The ImGui backend reads the SDL events the Context polls and ignores any other window's: this case owns the
+    // only window (the editor renames it, so a title would not find it).
+    int windowCount = 0;
+    SDL_Window** const windows = SDL_GetWindows(&windowCount);
+    REQUIRE(windows != nullptr);
+    CAPTURE(windowCount);
+    const SDL_WindowID windowId = windowCount == 1 ? SDL_GetWindowID(windows[0]) : 0U;
+    SDL_free(std::bit_cast<void*>(windows));  // SDL owns the list; the bit_cast spells the pointer-to-pointer step
+    REQUIRE(windowId != 0U);
+    const auto moveTo = [windowId](float x, float y) {
+        SDL_Event e{};
+        e.type = SDL_EVENT_MOUSE_MOTION;
+        e.motion.windowID = windowId;
+        e.motion.which = 1;
+        e.motion.x = x;
+        e.motion.y = y;
+        REQUIRE(SDL_PushEvent(&e));
+    };
+    const auto button = [windowId](bool down, float x, float y) {
+        SDL_Event e{};
+        e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        e.button.windowID = windowId;
+        e.button.which = 1;
+        e.button.button = SDL_BUTTON_LEFT;
+        e.button.down = down;
+        e.button.clicks = 1;
+        e.button.x = x;
+        e.button.y = y;
+        REQUIRE(SDL_PushEvent(&e));
+    };
+
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());
+    const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    app->requestPanelFocus("Inspector");
+    e62Ticks(*app, 3);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.addComponentDashVertices > 0);
+    const float centreX = (r.addComponentMin.x + r.addComponentMax.x) * 0.5F;
+    const float centreY = (r.addComponentMin.y + r.addComponentMax.y) * 0.5F;
+    const float height = r.addComponentMax.y - r.addComponentMin.y;
+    const std::uint32_t activeEdit =
+        engine::editor::toImU32(engine::editor::chromeRoleColor(engine::editor::ChromeRole::Active));
+    const std::size_t entries = app->commands().count();
+    const std::size_t entities = app->world().entityCount();
+
+    // In Edit the press makes the button active, and it stays active with the pointer off it: the Active fill draws.
+    moveTo(centreX, centreY);
+    button(true, centreX, centreY);
+    REQUIRE(app->tick());
+    CHECK(r.addComponentFillColour == activeEdit);
+    const float offY = r.addComponentMin.y - height;  // above the button, still inside the Inspector
+    moveTo(centreX, offY);
+    REQUIRE(app->tick());
+    CHECK(r.addComponentFillColour == activeEdit);
+
+    // Play with the press held. A draw is "in play" when its outline carries the disabled alpha (read off the draw
+    // list): the tick that starts Play draws its Inspector frame first, in Edit. Measured at d65bdfe plus the record
+    // fields: Play's focus hand-off ends the press before the first locked draw, so no fill draws in play (branch B).
+    constexpr std::uint32_t ALPHA_SHIFT = 24U;
+    app->requestPlayControl(PlayControl::Play);
+    int playDraws = 0;
+    for (int tick = 0; tick < 8 && playDraws < 2; ++tick) {
+        const std::uint64_t before = inspector->drawRecord().framesRecorded;
+        REQUIRE(app->tick());
+        REQUIRE(inspector->drawRecord().framesRecorded == before + 1U);
+        const bool dimmed = (r.addComponentDashColour >> ALPHA_SHIFT) < 255U;
+        if (dimmed) {
+            ++playDraws;
+            CAPTURE(tick);
+            CHECK(r.addComponentFillColour == 0U);
+        }
+    }
+    REQUIRE((app->playSession().mode() == PlayMode::Playing));
+    REQUIRE(playDraws == 2);  // ANTI-VACUITY: two locked frames were drawn and read
+
+    // Released: no fill, no popup's choice made, nothing recorded on the undo stack.
+    button(false, centreX, offY);
+    REQUIRE(app->tick());
+    CHECK(r.addComponentFillColour == 0U);
+    CHECK(app->commands().count() == entries);
+    CHECK(app->world().entityCount() == entities);
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();

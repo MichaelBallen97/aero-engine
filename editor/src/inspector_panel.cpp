@@ -187,6 +187,9 @@ void InspectorPanel::onDraw(PanelContext& context) {
     drawRecordValue.addComponentDashed = false;
     drawRecordValue.addComponentFirstDashWidth = 0.0F;
     drawRecordValue.addComponentFirstDashGap = 0.0F;
+    drawRecordValue.addComponentDashColour = 0U;  // 0 when nothing was drawn: a frame that returns below keeps none
+    drawRecordValue.addComponentLabelColour = 0U;
+    drawRecordValue.addComponentFillColour = 0U;
     headersSubmittedValue = 0;  // task E.6.1: a PER-FRAME count, taken before any early return below
     // task E.6.1 (I289): this frame's geometry, likewise before any early return. drawAxisRow writes the two
     // axis values, so a frame that draws no axis row reads 0 for both.
@@ -859,11 +862,14 @@ void InspectorPanel::drawAddComponent(PanelContext& context, Entity primary) {
     const ImVec2 max = ImGui::GetItemRectMax();
     ImDrawList* const list = ImGui::GetWindowDrawList();
     const float rounding = ImGui::GetStyle().FrameRounding;
+    const int fillVertices = list->VtxBuffer.Size;
     if (ImGui::IsItemActive()) {
         roleFill(list, min, max, ChromeRole::Active, rounding);
     } else if (ImGui::IsItemHovered()) {
         roleFill(list, min, max, ChromeRole::Hover, rounding);
     }
+    drawRecordValue.addComponentFillColour =
+        list->VtxBuffer.Size > fillVertices ? list->VtxBuffer[fillVertices].col : 0U;
     // What the list RECEIVES across the outline, never a flag set beside the call (the code-review round's finding
     // 11): each dash is one AddRectFilled at alpha 255 with no rounding, four vertices (imgui_draw.cpp:1530-1538).
     const int dashVertices = list->VtxBuffer.Size;
