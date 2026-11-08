@@ -185,7 +185,7 @@ ProjectLoadOutcome loadProjectFrom(std::string_view pathUtf8) {
 }
 
 ProjectCreateOutcome createProject(std::string_view locationUtf8, std::string_view nameUtf8,
-                                   std::string_view engineVersionUtf8) {
+                                   std::string_view engineVersionUtf8, ProjectLanguage language) {
     ProjectCreateOutcome out;
 
     // 1. The name, LEXICALLY -- nothing touched yet.
@@ -269,7 +269,7 @@ ProjectCreateOutcome createProject(std::string_view locationUtf8, std::string_vi
     ProjectManifest manifest;
     manifest.name = std::string(nameUtf8);
     manifest.engineVersion = std::string(engineVersionUtf8);
-    manifest.language = NEW_PROJECT_LANGUAGE;  // task E.6.4 (D13)
+    manifest.language = language;
     manifest.assetsPath = "assets";
     manifest.scenesPath = "scenes";
     const std::string manifestPath = utf8FromPath(target / std::string(PROJECT_FILE_NAME));

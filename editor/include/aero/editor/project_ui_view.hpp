@@ -8,7 +8,7 @@
 #include <aero/editor/asset_view.hpp>          // TextWidth
 #include <aero/editor/editor_glyphs.hpp>       // AERO_GLYPH_MIDDLE_DOT
 #include <aero/editor/panel_chrome_model.hpp>  // ChromeRole, ItemRectRecord
-#include <aero/editor/project.hpp>             // NewProjectTargetFacts, ProjectLanguage, NEW_PROJECT_LANGUAGE
+#include <aero/editor/project.hpp>             // NewProjectTargetFacts, ProjectLanguage
 
 #include <array>
 #include <cstddef>
@@ -72,7 +72,7 @@ inline constexpr std::array<LanguageCard, 2> NEW_PROJECT_LANGUAGE_CARDS{{
     {ProjectLanguage::Cpp, "C++", "Native code, built for each platform."},
     {ProjectLanguage::Ts, "TypeScript", "Embedded scripts, no toolchain to export."},
 }};
-// The card drawn selected: the language Create writes (NEW_PROJECT_LANGUAGE), never a stored choice.
+// The card drawn selected: TypeScript, the language the form starts in.
 [[nodiscard]] bool languageCardSelected(ProjectLanguage language) noexcept;
 [[nodiscard]] std::string_view languageCardTitle(ProjectLanguage language) noexcept;
 

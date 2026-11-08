@@ -244,7 +244,7 @@ TEST_CASE("project ui: the footer summarises today's fields (task E.6.4, NP7)") 
     CHECK(ed::newProjectFooterSummary("") == "TypeScript");
     CHECK(ed::newProjectFooterSummary("Kart") == "Kart " AERO_GLYPH_MIDDLE_DOT " TypeScript");
     CHECK(ed::newProjectFooterSummary("50%d ##x") == "50%d ##x " AERO_GLYPH_MIDDLE_DOT " TypeScript");  // verbatim
-    CHECK(ed::languageCardTitle(ed::NEW_PROJECT_LANGUAGE) == "TypeScript");
+    CHECK(ed::languageCardTitle(ed::ProjectLanguage::Ts) == "TypeScript");
 }
 
 TEST_CASE("project ui: the language control shows what Create writes, and names 4.6.1 (task E.6.4, NP8)") {

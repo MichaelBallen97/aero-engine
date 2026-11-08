@@ -366,7 +366,7 @@ void drawLanguageCards(ImDrawList* list, const NewProjectDialogLayout& layout, N
     const auto strongWidth = [](std::string_view text) { return faceTextWidth(PanelFace::Strong, text); };
     const auto smallWidth = [](std::string_view text) { return faceTextWidth(PanelFace::BodySmall, text); };
     // D18: ONE disabled pair around both cards, whatever the build -- task 4.6.1 owns the choice, and the card drawn
-    // selected is the language Create writes (NEW_PROJECT_LANGUAGE).
+    // selected is TypeScript, the language the form starts in.
     ImGui::BeginDisabled();
     for (std::size_t i = 0; i < NEW_PROJECT_LANGUAGE_CARDS.size(); ++i) {
         const LanguageCard& card = NEW_PROJECT_LANGUAGE_CARDS[i];

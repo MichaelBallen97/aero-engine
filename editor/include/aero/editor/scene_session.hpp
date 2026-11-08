@@ -4,11 +4,12 @@
 // engine's serialization bridge -- every rule below is reachable from the ungated tier-0
 // aero_editor_shell_test, with no window and no GPU. Held by FILE PLACEMENT (R12), exactly like every
 // other header under editor/include.
-#include <aero/editor/command_stack.hpp>  // CommandContext + CommandStack; forward decls only inside
-#include <aero/editor/project.hpp>        // task 2.6.1: ProjectSession/ProjectFlow/ProjectContext/RecentProjects
-#include <aero/editor/text_file.hpp>      // task 2.6.1 (D12): the three file-bytes declarations moved here;
-                                          // every existing call site and every existing test compiles
-                                          // unchanged.
+#include <aero/editor/command_stack.hpp>         // CommandContext + CommandStack; forward decls only inside
+#include <aero/editor/cpp_project_template.hpp>  // task 4.6.1: CppProjectReport (std only)
+#include <aero/editor/project.hpp>               // task 2.6.1: ProjectSession/ProjectFlow/ProjectContext/RecentProjects
+#include <aero/editor/text_file.hpp>             // task 2.6.1 (D12): the three file-bytes declarations moved here;
+                                                 // every existing call site and every existing test compiles
+                                                 // unchanged.
 
 #include <aero/scene/prefab.hpp>  // task 4.4.4: engine::Prefab, an aero::scene type, so no serialization type is named
 
@@ -17,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace engine::editor {
 
@@ -294,7 +296,10 @@ struct NewProjectForm {
     bool open = false;     // the modal is up -> shell_ui's `fileEnabled` MUST include !open (F10)
     std::string name;      // edited by the modal
     std::string location;  // absolute parent directory, from the ProjectLocation dialog or typed
-    std::string error;     // last inline validation/creation message; "" when clean
+    // task 4.6.1 (call 1): preselected every time the dialog opens -- `form = {}` resets it. The language is fixed at
+    // creation: nothing writes project.json afterwards.
+    ProjectLanguage language = ProjectLanguage::Ts;
+    std::string error;  // last inline validation/creation message; "" when clean
     // IN -- set by the modal's buttons, consumed and cleared OUTSIDE the draw walk. A button may not
     // scaffold a project or swap a World from inside its own frame (.claude/rules/editor.md's
     // "record one pending action and apply it after the walk"); `name`/`location` are the only fields
@@ -431,8 +436,14 @@ struct FileFlow {
 
 // Validate, scaffold, then hand off to the same adopt path. One ERROR on failure, one INFO on success.
 // NEVER re-reads the file it just wrote (A24) -- that would be a second INFO.
+// task 4.6.1: a C++ project also gets the four template files, written once here and never again; one WARN per file
+// that failed (the project stays open and the result stays true: the missing files can be added by hand).
 [[nodiscard]] bool createAndOpenProject(CommandContext& context, CommandStack& commands, SceneSession& session,
-                                        ProjectContext& project, std::string_view location, std::string_view name);
+                                        ProjectContext& project, std::string_view location, std::string_view name,
+                                        ProjectLanguage language);
+// task 4.6.1: one line per template file that Failed, in the report's order -- "editor: could not write
+// '<root>/<path>' of the C++ template -- <error>". Written and Unchanged produce none. Pure.
+[[nodiscard]] std::vector<std::string> cppTemplateWarnings(const CppProjectReport& report, std::string_view root);
 
 // ONE frame's worth of the File flow. Consumes flow.requested / flow.choice, may swap the scene, may
 // launch a dialog through `host`, may set flow.quitConfirmed. ImGui-FREE: the shell TU only DRAWS.

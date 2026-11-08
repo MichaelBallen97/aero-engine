@@ -121,6 +121,8 @@
 #include <vector>
 
 namespace {
+
+constexpr auto TS = engine::editor::ProjectLanguage::Ts;
 // Case C emits 12 000 records. console=false keeps them out of the suite's output; the destructor
 // restores the engine defaults. initLogging() does NOT clear the callback (log.cpp:81-88 touches only
 // the logger and the level), so this cannot detach the console panel's own sink -- which is exactly
@@ -2433,7 +2435,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     // BLOCKING-2 (code review): opening a project here (via `.projectPath`) dirties the recents list
@@ -2481,7 +2483,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     // BLOCKING-2 (code review): requestOpenProject() below dirties the recents list on the tick that
@@ -2557,7 +2559,7 @@ TEST_CASE("editor: a dirty scene guards requestOpenProject behind the modal (tas
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
@@ -2599,7 +2601,7 @@ TEST_CASE("editor: restoreLastProject opens the first recents entry at create() 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     engine::editor::RecentProjects recents;
@@ -2641,7 +2643,7 @@ TEST_CASE("editor: restoreLastProject = false never reads the recents file (task
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     engine::editor::RecentProjects recents;
@@ -2690,7 +2692,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     // ⛔ `.recentProjectsPath` is MANDATORY, not defensive: step 4 below opens a project through
@@ -2957,7 +2959,7 @@ TEST_CASE("editor: the asset scan runs on open and the key space lines up (task 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     const std::string assetsRoot = created.root + "/assets";
@@ -3015,12 +3017,14 @@ TEST_CASE("editor: the asset scan follows a runtime project swap, one tick later
     }
 
     const std::string locationA = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome createdA = engine::editor::createProject(locationA, "GameA", "0.1.0");
+    const engine::editor::ProjectCreateOutcome createdA =
+        engine::editor::createProject(locationA, "GameA", "0.1.0", TS);
     REQUIRE(createdA.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(createdA.root + "/assets/only_in_a.txt", "a").empty());
 
     const std::string locationB = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome createdB = engine::editor::createProject(locationB, "GameB", "0.1.0");
+    const engine::editor::ProjectCreateOutcome createdB =
+        engine::editor::createProject(locationB, "GameB", "0.1.0", TS);
     REQUIRE(createdB.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(createdB.root + "/assets/only_in_b.txt", "b").empty());
 
@@ -3069,7 +3073,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
 
@@ -3187,7 +3191,7 @@ TEST_CASE("editor: the import cache exists after the first scan and the second s
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     const std::string assetsRoot = created.root + "/assets";
@@ -3266,7 +3270,7 @@ TEST_CASE("editor: an edited asset is detected and the change is scoped to that 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     const std::string assetsRoot = created.root + "/assets";
@@ -3330,7 +3334,7 @@ TEST_CASE("editor: requestAssetReimport drives Reimport All without a button cli
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     const std::string assetsRoot = created.root + "/assets";
@@ -3455,7 +3459,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     const std::string assetsRoot = created.root + "/assets";
@@ -3526,7 +3530,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(writeBinaryFixture(assetsRoot + "/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -3588,7 +3592,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     // R3: chosen to fail at stbi_info_from_memory, never reaching a decode loop -- ASCII text named
@@ -3638,7 +3642,7 @@ TEST_CASE("editor: the resident thumbnail count never exceeds the cap (task 3.1.
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     // More files than the small 320x180 window can show at once -- the content itself is IDENTICAL
@@ -3690,7 +3694,7 @@ TEST_CASE("editor: every asset browser draw path stays balanced (task 3.1.3, I39
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(writeBinaryFixture(assetsRoot + "/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -3829,12 +3833,14 @@ TEST_CASE(
     }
 
     const std::string locationA = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome createdA = engine::editor::createProject(locationA, "GameA", "0.1.0");
+    const engine::editor::ProjectCreateOutcome createdA =
+        engine::editor::createProject(locationA, "GameA", "0.1.0", TS);
     REQUIRE(createdA.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(writeBinaryFixture(createdA.root + "/assets/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
 
     const std::string locationB = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome createdB = engine::editor::createProject(locationB, "GameB", "0.1.0");
+    const engine::editor::ProjectCreateOutcome createdB =
+        engine::editor::createProject(locationB, "GameB", "0.1.0", TS);
     REQUIRE(createdB.problem == engine::editor::CreateProblem::Ok);
 
     std::optional<engine::editor::EditorApp> app =
@@ -3881,7 +3887,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     const std::string orphanMetaPath = assetsRoot + "/gone.png.meta";
@@ -4009,7 +4015,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(writeBinaryFixture(assetsRoot + "/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -4135,7 +4141,7 @@ TEST_CASE("editor: a created file is reflected with no requestAssetRescan() call
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
 
@@ -4186,7 +4192,7 @@ TEST_CASE("editor: a changed file gets a new ContentHash and SourceChanged (task
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
 
@@ -4233,7 +4239,7 @@ TEST_CASE("editor: a deleted file leaves the database with no user action (task 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/second.txt", "two").empty());
@@ -4280,7 +4286,7 @@ TEST_CASE("editor: the steady state is silent -- the loop detector (task 3.1.4, 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
 
@@ -4323,7 +4329,7 @@ TEST_CASE("editor: enabled == false stops detection; re-enabling resumes it (tas
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
 
@@ -4385,7 +4391,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(writeBinaryFixture(assetsRoot + "/tex.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -4445,7 +4451,7 @@ TEST_CASE("editor: a manual rescan is not re-reported by the watcher (task 3.1.4
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
 
@@ -4558,7 +4564,7 @@ TEST_CASE("imgui_layer: a manual rescan while deferring is not re-reported (I51,
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string target = created.root + "/assets/first.txt";
     REQUIRE(engine::editor::writeTextFileAtomic(target, "one").empty());
@@ -4861,7 +4867,7 @@ TEST_CASE("editor: selecting a model imports it exactly once (task 3.2.1, I53, A
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", MINIMAL_GLTF_TEXT).empty());
 
@@ -4916,7 +4922,7 @@ TEST_CASE("editor: a rescan invalidates the cached result and re-imports exactly
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", MINIMAL_GLTF_TEXT).empty());
 
@@ -4969,7 +4975,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/notes.txt", "hello").empty());
 
@@ -5049,7 +5055,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/chain.gltf", HIERARCHY_GLTF_TEXT).empty());
 
@@ -5097,7 +5103,7 @@ TEST_CASE("editor: the Import Details panel draws its Failed state without crash
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/broken.gltf", DAMAGED_GLTF_TEXT).empty());
 
@@ -5144,7 +5150,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", MINIMAL_GLTF_TEXT).empty());
 
@@ -5255,7 +5261,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     // The ONLY issue this project has -- no orphan, no invalid .meta, no hash/write failure -- so
     // drawIssues()'s `total` is driven ENTIRELY by report.importFailureTotal here. BEFORE this fix,
@@ -5308,7 +5314,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.fbx", MINIMAL_FBX_TEXT).empty());
 
@@ -5363,7 +5369,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.fbx", MINIMAL_FBX_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/b.gltf", MINIMAL_GLTF_TEXT).empty());
@@ -5420,7 +5426,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/chain.fbx", HIERARCHY_FBX_TEXT).empty());
 
@@ -5469,7 +5475,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/deep.fbx", truncatedFbxText()).empty());
 
@@ -5525,7 +5531,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/broken.fbx", DAMAGED_FBX_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/bad-scale.fbx", MALFORMED_FBX_TEXT).empty());
@@ -5584,7 +5590,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.fbx", MINIMAL_FBX_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/b.gltf", MINIMAL_GLTF_TEXT).empty());
@@ -5641,7 +5647,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.obj", MINIMAL_OBJ_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/obj_fixture.mtl", MINIMAL_MTL_TEXT).empty());
@@ -5742,7 +5748,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/b.gltf", MINIMAL_GLTF_TEXT).empty());
@@ -5798,7 +5804,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
 
@@ -5852,7 +5858,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
     // An INVALID sidecar, which D7 forbids repairing -- so the record's GUID is permanently nil.
@@ -5909,7 +5915,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
 
@@ -6119,7 +6125,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
 
@@ -6304,7 +6310,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string blendPath = created.root + "/assets/statue.blend";
     REQUIRE(engine::editor::writeTextFileAtomic(blendPath, OPAQUE_BLEND_TEXT).empty());
@@ -6472,7 +6478,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
 
@@ -6617,7 +6623,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/rig.dae", SKINNED_DAE_TEXT).empty());
 
@@ -6670,7 +6676,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/scan.ply", TEXTURED_PLY_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/part.stl", TRIANGLE_STL_TEXT).empty());
@@ -6797,7 +6803,7 @@ TEST_CASE("editor: the material target is STICKY across selections (task 3.4.2, 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.aeromat", MINIMAL_AEROMAT_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/second.aeromat", SECOND_AEROMAT_TEXT).empty());
@@ -6881,7 +6887,7 @@ TEST_CASE("editor: a rejected .aeromat draws its error and refuses Apply (task 3
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string badPath = created.root + "/assets/bad.aeromat";
     REQUIRE(engine::editor::writeTextFileAtomic(badPath, REJECT_AEROMAT_TEXT).empty());
@@ -6976,7 +6982,7 @@ TEST_CASE("editor: the Material panel draws every state and every slot arm (task
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
@@ -7100,7 +7106,7 @@ TEST_CASE("editor: edit -> dirty -> Apply writes canonical bytes; Revert round-t
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string materialPath = created.root + "/assets/edit.aeromat";
     REQUIRE(engine::editor::writeTextFileAtomic(materialPath, MINIMAL_AEROMAT_TEXT).empty());
@@ -7196,7 +7202,7 @@ TEST_CASE("editor: the preview and the viewport both render in ONE frame (task 3
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(
         engine::editor::writeTextFileAtomic(created.root + "/assets/preview.aeromat", MINIMAL_AEROMAT_TEXT).empty());
@@ -7278,7 +7284,7 @@ TEST_CASE("editor: a blend material latches the preview renderer's opaque WARN (
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/blend.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -7364,7 +7370,7 @@ TEST_CASE("editor: a hidden Material panel renders nothing and still edits (task
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string materialPath = created.root + "/assets/hidden.aeromat";
     REQUIRE(engine::editor::writeTextFileAtomic(materialPath, MINIMAL_AEROMAT_TEXT).empty());
@@ -7467,7 +7473,7 @@ TEST_CASE("editor: a slot GUID loads through decode -> cook -> parse -> upload (
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/tex.aeromat", MINIMAL_AEROMAT_TEXT).empty());
@@ -7596,7 +7602,7 @@ TEST_CASE("editor: a broken image fails ONCE and stays failed (task 3.4.2, I92, 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/broken.aeromat", MINIMAL_AEROMAT_TEXT).empty());
@@ -7728,7 +7734,7 @@ TEST_CASE("editor: New Material creates, mints and selects, all outside the draw
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
 
@@ -7828,7 +7834,7 @@ TEST_CASE("editor: Apply echoes ONCE and the rescan behind it writes zero bytes 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     const std::string materialPath = assetsRoot + "/echo.aeromat";
@@ -8138,7 +8144,7 @@ TEST_CASE("editor: a RESIZED Material panel never binds a released preview textu
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/resize.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -8248,7 +8254,7 @@ TEST_CASE("editor: the error state shows NO picture, not the last material's (ta
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/good.aeromat", MINIMAL_AEROMAT_TEXT).empty());
@@ -8326,7 +8332,7 @@ TEST_CASE("editor: a non-zero uvSet latches ONE preview WARN (task 3.4.2, I101, 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/uv.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -8433,7 +8439,7 @@ TEST_CASE("editor: the viewport draws through an HDR pass into a depth-free outp
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -8494,7 +8500,7 @@ TEST_CASE("editor: two viewport frames at different sizes resolve without a stre
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -8544,7 +8550,7 @@ TEST_CASE("editor: the viewport's tonemap params are sanitized on write and vali
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -8796,7 +8802,7 @@ TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -8912,7 +8918,7 @@ TEST_CASE("editor: the viewport owns a DebugDraw, runs the slot, and it costs NO
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -8982,7 +8988,7 @@ TEST_CASE("editor: a pushed line and billboard are drawn and DRAINED by renderSc
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -9190,7 +9196,7 @@ TEST_CASE("editor: overflow in the viewport drops, counts and warns EXACTLY ONCE
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -9284,7 +9290,7 @@ TEST_CASE("editor: the grid toggle really controls what the batch carries (task 
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -9367,7 +9373,7 @@ TEST_CASE("editor: the grid toggle defaults ON, round-trips, and is safe when Un
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -9480,7 +9486,7 @@ struct LoaderProject {
 [[nodiscard]] std::unique_ptr<LoaderProject> makeLoaderProject() {
     auto project = std::make_unique<LoaderProject>();
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     project->root = created.root;
     project->assetsRoot = created.root + "/assets";
@@ -9823,7 +9829,7 @@ struct DropFixture {
 
 [[nodiscard]] DropFixture makeDropProject() {
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     DropFixture fixture{.root = created.root, .assetsRoot = created.root + "/assets"};
     REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/two.gltf", SL_TWO_MESH_GLTF_TEXT).empty());
@@ -10596,7 +10602,7 @@ TEST_CASE("editor: a view snap lands on the canonical pose about an UNCHANGED pi
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -10821,7 +10827,8 @@ TEST_CASE("editor: what cancels a running view snap, and what does NOT (task E.1
             AERO_SKIP_OR_FAIL("no GPU device");
         }
         const std::string location = uniqueProjectLocation();
-        const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+        const engine::editor::ProjectCreateOutcome created =
+            engine::editor::createProject(location, "MyGame", "0.1.0", TS);
         REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
         std::optional<engine::editor::EditorApp> app =
             engine::editor::EditorApp::create(*device, *window, ctx,
@@ -10896,7 +10903,7 @@ TEST_CASE("editor: the widget's press claim and the SetOrthographic call site (t
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -11045,7 +11052,7 @@ TEST_CASE("editor: the projection toggle reaches the real matrix and the panel k
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -11234,7 +11241,7 @@ TEST_CASE("editor: an EMPTY selection issues no mask pass and no composite (task
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -11284,7 +11291,7 @@ TEST_CASE("editor: one selected mesh entity issues ONE mask pass and ONE composi
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -11455,7 +11462,8 @@ TEST_CASE("editor: the selection mask set is cleared on EVERY renderScene exit (
             AERO_SKIP_OR_FAIL("no GPU device");
         }
         const std::string location = uniqueProjectLocation();
-        const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+        const engine::editor::ProjectCreateOutcome created =
+            engine::editor::createProject(location, "MyGame", "0.1.0", TS);
         REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
         std::optional<engine::editor::EditorApp> app =
             engine::editor::EditorApp::create(*device, *window, ctx,
@@ -11878,7 +11886,7 @@ TEST_CASE("editor: the Gizmos toggle really controls what the batch carries (tas
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -11947,7 +11955,7 @@ TEST_CASE("editor: the Gizmos toggle defaults ON, round-trips, and is safe when 
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -12016,7 +12024,7 @@ TEST_CASE("editor: the icon atlas really reached the GPU (task E.2.3, I130)") {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -12114,7 +12122,7 @@ TEST_CASE("editor: selecting a light draws its gizmo through the real panel (tas
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -12252,7 +12260,7 @@ TEST_CASE("editor: the icon atlas is released -- no leaked texture or sampler at
             CAPTURE(round);
             const std::string location = uniqueProjectLocation();
             const engine::editor::ProjectCreateOutcome created =
-                engine::editor::createProject(location, "MyGame", "0.1.0");
+                engine::editor::createProject(location, "MyGame", "0.1.0", TS);
             REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
             std::optional<engine::editor::EditorApp> app =
                 engine::editor::EditorApp::create(*device, *window, ctx,
@@ -12320,7 +12328,7 @@ TEST_CASE("editor: the preview draws the scene's sky, and only while the panel d
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(
         engine::editor::writeTextFileAtomic(created.root + "/assets/preview.aeromat", MINIMAL_AEROMAT_TEXT).empty());
@@ -12396,7 +12404,7 @@ TEST_CASE("editor: the scene's Environment reaches the material preview's PIXELS
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(
         engine::editor::writeTextFileAtomic(created.root + "/assets/preview.aeromat", MINIMAL_AEROMAT_TEXT).empty());
@@ -12572,7 +12580,7 @@ TEST_CASE("editor: the no-sun notice follows the RESOLUTION, not the intensity (
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     std::optional<engine::editor::EditorApp> app =
@@ -12768,7 +12776,7 @@ TEST_CASE("editor: the View popover opens, closes, and MOVES NO RECT (task E.2.4
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -12850,7 +12858,7 @@ TEST_CASE("editor: hiding the view-axis widget hides its PRESS CLAIM too (task E
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -12953,7 +12961,7 @@ TEST_CASE("editor: the viewport strip carries only MODE controls (task E.2.4, I1
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -13031,7 +13039,7 @@ TEST_CASE("editor: selecting a material raises the Material panel (task E.3.2, I
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -13098,7 +13106,7 @@ TEST_CASE("editor: selecting an importable model raises Import Details (task E.3
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     // The CONTENTS need not import: SessionState becomes Failed, which is settled AND claimed, and the
     // router reads the session's own classification rather than the file (D1).
@@ -13160,7 +13168,7 @@ TEST_CASE("editor: a file no importer claims routes nothing (task E.3.2, I151, A
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.png", "png?").empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", "not a gltf").empty());
@@ -13226,7 +13234,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -13297,7 +13305,7 @@ TEST_CASE("editor: with the preference off nothing latches at all (task E.3.2, I
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -13377,7 +13385,7 @@ TEST_CASE("editor: a hidden target panel DROPS the route and stays hidden (task 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -13432,7 +13440,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", "not a gltf").empty());
 
@@ -13503,7 +13511,7 @@ TEST_CASE("editor: the material session's stickiness is OBSERVED, not restated (
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.png", "png?").empty());
@@ -13558,7 +13566,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -14147,7 +14155,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/stone.aeromat", SECOND_AEROMAT_TEXT).empty());
@@ -14892,7 +14900,7 @@ struct PickerFixture {
 // .wav nor .ktx2 is thumbnail-decodable at all, so nothing any of these cases drives ever decodes them.
 [[nodiscard]] PickerFixture makePickerProject(bool withTextures) {
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     PickerFixture fixture{.root = created.root, .assetsRoot = created.root + "/assets"};
     REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/hero.obj", MINIMAL_OBJ_TEXT).empty());
@@ -15776,7 +15784,7 @@ TEST_CASE("editor: the Material preview is derived from the panel's height (task
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/height.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -15883,7 +15891,7 @@ TEST_CASE("editor: a short Material panel still edits and still previews (task E
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/short.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -16080,7 +16088,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
@@ -16423,7 +16431,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
@@ -16575,7 +16583,7 @@ namespace {
 // A scaffolded project in a fresh temp location. `scenes` are written verbatim under the root.
 [[nodiscard]] std::string makeStateProject(std::initializer_list<std::string_view> scenes) {
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::size_t extra = 1;
     for (const std::string_view relative : scenes) {
@@ -17077,7 +17085,7 @@ TEST_CASE("editor: a restored scene's assets resolve on the startup path (task E
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     // The model and a PINNED sidecar, so the scene below can name the GUID the scan will find: a valid
     // .meta is never rewritten (3.1.1's D6), so this GUID is the one the database serves.
@@ -17284,7 +17292,7 @@ namespace {
 // above always names its project "MyGame"; I187 asserts projectName() == "ProjB", which needs this.
 [[nodiscard]] std::string makeNamedProject(std::string_view name) {
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, name, "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, name, "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     return created.root;
 }
@@ -17896,7 +17904,7 @@ namespace {
 // here but the asset bytes.
 [[nodiscard]] std::string makeAssetOpProject() {
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::ensureDirectory(created.root + "/assets/a").empty());
     REQUIRE(engine::editor::ensureDirectory(created.root + "/assets/textures").empty());
@@ -18774,7 +18782,7 @@ TEST_CASE("editor: the Asset Browser lists no ignored name, and the scan agrees 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsDir = created.root + "/assets/";  // createProject leaves it EMPTY
     REQUIRE(writeBinaryFixture(assetsDir + "wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -18843,7 +18851,7 @@ TEST_CASE("editor: a folder with a roster name is still listed and still scanned
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsDir = created.root + "/assets/";
     REQUIRE(writeBinaryFixture(assetsDir + "wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -18903,7 +18911,7 @@ TEST_CASE("editor: Show hidden reveals a dotfile and never an ignored name (task
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsDir = created.root + "/assets/";
     REQUIRE(writeBinaryFixture(assetsDir + "wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -19040,7 +19048,7 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsDir = created.root + "/assets/";
     REQUIRE(writeBinaryFixture(assetsDir + "wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -19371,7 +19379,7 @@ TEST_CASE("editor: a material thumbnail is RENDERED, never decoded, and the avai
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
                                                 materialText("Studio Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
@@ -19459,7 +19467,7 @@ TEST_CASE("editor: one walk spends two budgets, and three older materials starve
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     // THE LAYOUT SETTLES FIRST, WITH NOTHING TO DRAW. The dockspace's very first frame draws the Bottom slot at
@@ -19557,7 +19565,7 @@ TEST_CASE("editor: releaseKey releases the right store, and never a key on scree
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
                                                 materialText("Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
@@ -19644,11 +19652,11 @@ TEST_CASE("editor: every thumbnail and slot texture is released before ~Device (
         }
         const std::string locationA = uniqueProjectLocation();
         const engine::editor::ProjectCreateOutcome createdA =
-            engine::editor::createProject(locationA, "GameA", "0.1.0");
+            engine::editor::createProject(locationA, "GameA", "0.1.0", TS);
         REQUIRE(createdA.problem == engine::editor::CreateProblem::Ok);
         const std::string locationB = uniqueProjectLocation();
         const engine::editor::ProjectCreateOutcome createdB =
-            engine::editor::createProject(locationB, "GameB", "0.1.0");
+            engine::editor::createProject(locationB, "GameB", "0.1.0", TS);
         REQUIRE(createdB.problem == engine::editor::CreateProblem::Ok);
 
         engine::GuidGenerator generator{0xE45A235ULL};
@@ -19736,7 +19744,7 @@ TEST_CASE("editor: the rendered thumbnail is a lit sphere in front of the studio
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/red.aeromat",
                                                 materialText("Red", engine::Vec3{0.9F, 0.05F, 0.05F}))
@@ -19835,7 +19843,7 @@ TEST_CASE("editor: a thumbnail is a function of its key alone, whatever the scen
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/red.aeromat",
                                                 materialText("Red", engine::Vec3{0.9F, 0.05F, 0.05F}))
@@ -19926,7 +19934,7 @@ TEST_CASE("editor: a malformed .aeromat is read once and rendered once, ever (ta
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string badPath = created.root + "/assets/bad.aeromat";
     REQUIRE(engine::editor::writeTextFileAtomic(badPath, "{ this is not a material").empty());
@@ -19964,7 +19972,7 @@ TEST_CASE("editor: a rename keeps the key, and the subtitle follows the new name
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
                                                 materialText("Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
@@ -20031,7 +20039,7 @@ TEST_CASE("editor: an Apply reaches the tile through the watcher, with no manual
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
                                                 materialText("Studio Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
@@ -20090,7 +20098,7 @@ TEST_CASE("editor: the Inspector's material row asks for its own card and carrie
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
                                                 materialText("Studio Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
@@ -20485,7 +20493,7 @@ TEST_CASE("editor: a material renders only while its tile is on screen -- the vi
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     // Two FOLDERS, so the root listing shows no material tile at all: nothing is drawn, nothing renders.
@@ -23699,7 +23707,7 @@ struct E62Project {
 };
 [[nodiscard]] E62Project e62ProjectWithOneAsset() {
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(writeBinaryFixture(created.root + "/assets/red.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
     return E62Project{.location = location, .root = created.root};
@@ -24892,7 +24900,7 @@ void e63Front(engine::editor::EditorApp& app, const char* panelId, const char* s
                                                                     std::initializer_list<std::string_view> files,
                                                                     float bottomDockFraction) {
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     for (const std::string_view relative : files) {
         const std::filesystem::path path = std::filesystem::path(created.root + "/assets") / std::string(relative);
@@ -25927,7 +25935,7 @@ TEST_CASE("editor: the reference field -- an inset frame, a swatch or a well, an
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/swatch.aeromat",
                                                 materialText("Swatch", engine::Vec3{0.8F, 0.1F, 0.1F}))
@@ -27642,7 +27650,7 @@ TEST_CASE("editor: Material cards -- eight, panel-owned bits, Apply primary, bot
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
@@ -27828,7 +27836,7 @@ TEST_CASE("editor: a card's body is clipped to its padded width (task E.6.3, I34
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/full.aeromat", FULL_AEROMAT_TEXT).empty());
     std::optional<engine::editor::EditorApp> app =
@@ -27926,7 +27934,7 @@ TEST_CASE("editor: Import Details and Project Settings draw as cards; the row fi
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     SUBCASE("a cached .blend: the Blender card and the six import cards") {
@@ -29948,7 +29956,7 @@ constexpr std::string_view SCRIPT_ENEMY_SOURCE = "export const hp: number = 3;\n
 // independent scripts/enemy.ts. Returns the project root.
 [[nodiscard]] std::string makeScriptProject(bool withEnemy) {
     const engine::editor::ProjectCreateOutcome created =
-        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     writeScriptProjectFile(created.root, "assets/scripts/player.ts", SCRIPT_PLAYER_SOURCE);
     writeScriptProjectFile(created.root, "assets/scripts/util.ts", SCRIPT_UTIL_SOURCE);
@@ -30129,7 +30137,7 @@ TEST_CASE("editor: a C++ project's .ts files are never transpiled (task 4.3.1, I
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const engine::editor::ProjectCreateOutcome created =
-        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     engine::editor::ProjectManifest manifest = created.manifest;
     manifest.language = engine::editor::ProjectLanguage::Cpp;
@@ -30207,7 +30215,7 @@ TEST_CASE("editor: a missing esbuild is one Console error and never wedges the e
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const engine::editor::ProjectCreateOutcome created =
-        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     writeScriptProjectFile(created.root, "assets/scripts/player.ts", SCRIPT_ENEMY_SOURCE);
     const std::string missing = created.root + "/no_such_esbuild";
@@ -30357,7 +30365,7 @@ TEST_CASE(
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const engine::editor::ProjectCreateOutcome created =
-        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     writeScriptProjectFile(created.root, "assets/scripts/mover.ts",
                            "export default class Mover extends engine.Script {\n    speed = 2;\n}\n");
@@ -30437,7 +30445,7 @@ TEST_CASE("editor: the ScriptComponent picker offers no asset of another kind be
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const engine::editor::ProjectCreateOutcome created =
-        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     writeScriptProjectFile(created.root, "assets/scripts/mover.ts",
                            "export default class Mover extends engine.Script {\n    speed = 2;\n}\n");
@@ -30523,7 +30531,7 @@ constexpr std::uint8_t PREFAB_KIND = static_cast<std::uint8_t>(engine::editor::A
 // block above, and a prefab drop needs no shader.
 [[nodiscard]] std::string makePrefabDropProject() {
     const engine::editor::ProjectCreateOutcome created =
-        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/crate.aeroprefab", CRATE_PREFAB_TEXT).empty());
     return created.root;
@@ -30779,7 +30787,7 @@ namespace {
 // A new project with an empty `assets/sub` folder, for the cases that navigate the browser into it.
 [[nodiscard]] std::string makeSavePrefabProject() {
     const engine::editor::ProjectCreateOutcome created =
-        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::error_code ec;
     std::filesystem::create_directories(created.root + "/assets/sub", ec);

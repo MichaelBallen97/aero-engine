@@ -40,6 +40,8 @@ using engine::editor::SceneContainment;
 
 namespace {
 
+constexpr auto TS = engine::editor::ProjectLanguage::Ts;
+
 // A unique temp directory that removes itself on destruction -- the Nth TU-local copy of this shape
 // (scene_session_test.cpp:60-92, project_files_test.cpp:43-90). Kept TU-local: ~30 lines, no new
 // header, no new target_include_directories.
@@ -498,7 +500,7 @@ TEST_CASE("scene_containment: findEnclosingProject, all six arms (CN18, D8/D9)")
     std::error_code ec;
     // Built with createProject(), never a hand-written manifest -- the name must come from the same
     // writer loadProjectFrom() reads, or the case asserts two spellings of one thing agreeing.
-    const ProjectCreateOutcome created = engine::editor::createProject(tmp.utf8(), "ProjB", "0.1.0");
+    const ProjectCreateOutcome created = engine::editor::createProject(tmp.utf8(), "ProjB", "0.1.0", TS);
     REQUIRE(created.problem == CreateProblem::Ok);
     const std::string sceneInProjB = created.root + "/scenes/x.scene.json";
     REQUIRE(engine::editor::writeTextFileAtomic(sceneInProjB, "{}").empty());
@@ -617,7 +619,7 @@ TEST_CASE("scene_containment: the walk never offers the project that is ALREADY 
     std::error_code ec;
     std::filesystem::create_directories(tmp.pathOf("real"), ec);  // createProject requires an EXISTING location
     REQUIRE_FALSE(static_cast<bool>(ec));
-    const ProjectCreateOutcome created = engine::editor::createProject(tmp.join("real"), "ProjA", "0.1.0");
+    const ProjectCreateOutcome created = engine::editor::createProject(tmp.join("real"), "ProjA", "0.1.0", TS);
     REQUIRE(created.problem == CreateProblem::Ok);
 
     SUBCASE("through a symlinked spelling of the open root (symlink-capable hosts only)") {

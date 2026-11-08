@@ -54,7 +54,7 @@ namespace {
 
 }  // namespace
 
-bool languageCardSelected(ProjectLanguage language) noexcept { return language == NEW_PROJECT_LANGUAGE; }
+bool languageCardSelected(ProjectLanguage language) noexcept { return language == ProjectLanguage::Ts; }
 
 std::string_view languageCardTitle(ProjectLanguage language) noexcept {
     for (const LanguageCard& card : NEW_PROJECT_LANGUAGE_CARDS) {
@@ -180,7 +180,7 @@ NewProjectLine fitNewProjectLine(const NewProjectLine& line, float available, co
 }
 
 std::string newProjectFooterSummary(std::string_view name) {
-    const std::string_view language = languageCardTitle(NEW_PROJECT_LANGUAGE);
+    const std::string_view language = languageCardTitle(ProjectLanguage::Ts);
     if (name.empty()) {
         return std::string(language);
     }
