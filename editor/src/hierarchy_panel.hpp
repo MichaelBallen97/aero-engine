@@ -209,6 +209,8 @@ private:
     std::string badgeScratch;
     std::string metaScratch;
     HierarchyDrawRecord drawRecordValue;  // drawRecord()'s value, named apart from it
+    // task 4.7.1 (D4): the scene lock, read once at the top of onDraw and held for the whole frame.
+    bool lockedFrame = false;
 };
 
 }  // namespace engine::editor

@@ -115,6 +115,9 @@ struct ShellUiState {
     // OUT, one-shot: the control the toolbar accepted this frame (a click, a request or a chord). EditorApp applies
     // it after drawShellUi.
     std::optional<PlayControl> playControlPressed;
+    // OUT, one-shot: a Quit (the chord or File > Exit) pressed while a game plays. It sets no FileFlow request:
+    // EditorApp stops the game first and then raises the guarded quit, so the guard judges the edit-mode document.
+    bool guardedQuitRequested = false;
 };
 
 // task 2.5.1 (plan A14): everything the File menu needs that PanelContext deliberately does NOT

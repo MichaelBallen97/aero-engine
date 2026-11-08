@@ -112,6 +112,7 @@
 #include <optional>
 #include <ostream>  // MSVC alone needs the complete type to stringify a string_view inside a CHECK
 #include <regex>    // task E.6.1 (I286): the one style writer, as a set claim
+#include <set>      // task 4.7.1 (I399): the set of files that push a command
 #include <span>     // task 3.2.4, I78: std::as_bytes over the fingerprint's own text
 #include <sstream>
 #include <string>
@@ -21407,7 +21408,9 @@ TEST_CASE("editor: the Create glue no tier can click holds as source text (task 
                 shell[i].find("drawCreateKindItem(") != std::string::npos ||
                 shell[i].find("drawCreateMenuItems(") != std::string::npos) {
                 CAPTURE(shell[i]);
-                CHECK(shell[i].find("fileEnabled") != std::string::npos);
+                // task 4.7.1: `editEnabled` is `fileEnabled` with the scene lock folded in (I399 pins the line).
+                CHECK((shell[i].find("fileEnabled") != std::string::npos ||
+                       shell[i].find("editEnabled") != std::string::npos));
                 ++checked;
             }
         }
@@ -25442,7 +25445,7 @@ TEST_CASE("editor: the Hierarchy's search gate and tree child as source text (ta
     // block, which closes before the tree child opens. A careless `if` (one that drops the field's term) is otherwise
     // invisible: the record would still say "gated" while the keys fire.
     const std::size_t recordAt = soleLineContaining(code, "drawRecordValue.shortcutsLive = shortcutsLive;");
-    const std::size_t ifAt = soleLineContaining(code, "if (shortcutsLive) {");
+    const std::size_t ifAt = soleLineContaining(code, "if (shortcutsLive && !lockedFrame) {");
     CHECK(nextCodeLine(code, gateAt + 1U) == recordAt);
     CHECK(nextCodeLine(code, recordAt + 1U) == ifAt);
     const std::size_t ifCloseAt = blockCloseAt(ifAt);
@@ -25525,7 +25528,8 @@ TEST_CASE("editor: every E.6.3 request is drained under its control's predicate 
         const std::size_t drainAt = soleLineContaining(code, "pendingBeginRename.has_value() &&");
         CHECK(code[drainAt].find("shortcutsLive") != std::string::npos);
         CHECK(code[drainAt].find("noModal") != std::string::npos);
-        CHECK(countLinesContaining(code, "if (shortcutsLive) {") == 1U);  // F2 reads the same verdict (I312)
+        CHECK(countLinesContaining(code, "if (shortcutsLive && !lockedFrame) {") ==
+              1U);  // F2 reads the same verdict (I312)
         resetFollowsGate(code, drainAt, "pendingBeginRename.reset();");
     }
     SUBCASE("the Inspector's component menu") {
@@ -28802,7 +28806,7 @@ TEST_CASE("editor: a rename whose field stops drawing ends as the field would (t
         CHECK(code[elseAt].find("} else {") != std::string::npos);
         CHECK(code[nextCodeLine(code, elseAt + 1U)].find("cancelRename();") != std::string::npos);
         CHECK(countLinesContaining(code, "commitRename(context, ") == 2U);  // the arm and the check, nothing else
-        CHECK(countLinesContaining(code, "cancelRename();") == 2U);
+        CHECK(countLinesContaining(code, "cancelRename();") == 3U);         // the check, its arm, and 4.7.1's lock
         // The frame is written where the field is submitted -- the statement after its call -- and by the BeginRename
         // arm, and nowhere else: a third writer could keep a field that no longer draws looking fresh.
         CHECK(countLinesContaining(code, "renameFieldFrame = ImGui::GetFrameCount();") == 2U);
@@ -32309,4 +32313,238 @@ TEST_CASE("editor: the Viewport's play gates are written once, as source text (t
 
     CHECK(countLinesContaining(code, "sceneCamera ? nullptr : &cameraView") == 1U);
     CHECK(countLinesContaining(code, "ImGuizmo::GetStyle()") == 2U);  // I125(e) still holds
+}
+
+// ---- task 4.7.1 (I396-I399): the scene lock and a Quit that stops play first -------------------------------------
+TEST_CASE(
+    "editor: the scene refuses every edit while the game plays and takes them again after Stop "
+    "(task 4.7.1, I396)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play lock i396", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makePrefabDropProject();
+    std::optional<engine::editor::EditorApp> app = openPrefabDropApp(ctx, *window, *device, root);
+    REQUIRE(app.has_value());
+    const std::optional<engine::Guid> prefab = app->assetGuidForPath("crate.aeroprefab");
+    REQUIRE(prefab.has_value());
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+
+    // One applied edit before Play, so Undo has something to take and the lock is what refuses it.
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());
+    REQUIRE(app->commands().canUndo());
+    app->requestPanelFocus("Inspector");
+    REQUIRE(app->tick());
+
+    app->requestPlayControl(PlayControl::Play);
+    REQUIRE(app->tick());
+    REQUIRE((app->playSession().mode() == PlayMode::Playing));
+    REQUIRE(app->tick());
+    const std::string pathBefore(app->scenePath());
+    const std::size_t entitiesBefore = app->world().entityCount();
+    const std::size_t countBefore = app->commands().count();
+    const std::size_t appliedBefore = app->commands().appliedCount();
+    const std::size_t refusalsBefore = app->playLockRefusalCount();
+    const std::string savePath = root + "/play_lock.scene.json";
+    REQUIRE_FALSE(std::filesystem::exists(savePath));
+    const auto unchanged = [&] {
+        CHECK(app->world().entityCount() == entitiesBefore);
+        CHECK(app->commands().count() == countBefore);
+        CHECK(app->commands().appliedCount() == appliedBefore);
+        CHECK(std::string(app->scenePath()) == pathBefore);
+        CHECK_FALSE(std::filesystem::exists(savePath));
+    };
+
+    app->requestUndo();
+    REQUIRE(app->tick());
+    unchanged();
+    app->requestRedo();
+    REQUIRE(app->tick());
+    unchanged();
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());
+    unchanged();
+    app->requestHierarchyAssetDrop(*prefab, PREFAB_KIND, engine::Entity{});
+    REQUIRE(app->tick());
+    unchanged();
+    const std::uint64_t inspectorDrawn = app->panelDrawnCount("Inspector");
+    app->requestInspectorNamedSelection("engine::MeshRenderer", "primitive", 1);
+    REQUIRE(app->tick());
+    unchanged();
+    CHECK(app->panelDrawnCount("Inspector") > inspectorDrawn);  // the seam met a panel that drew, and wrote nothing
+    app->requestNewScene();
+    REQUIRE(app->tick());
+    unchanged();
+    app->requestSaveSceneAs(savePath);
+    REQUIRE(app->tick());
+    unchanged();
+    CHECK(app->playLockRefusalCount() == refusalsBefore + 6U);  // undo, redo, create, drop and the two file actions
+    CHECK_FALSE(app->unsavedChangesPromptOpen());               // an abandoned request raised no prompt either
+
+    // ANTI-VACUITY: the same requests do their work once the game has stopped.
+    app->requestPlayControl(PlayControl::Stop);
+    REQUIRE(app->tick());
+    REQUIRE((app->playSession().mode() == PlayMode::Edit));
+    REQUIRE(app->tick());
+    auto* const cube = [&]() -> const engine::MeshRenderer* {
+        const engine::Entity primary = app->selection().primary();
+        return primary.valid() ? app->world().get<engine::MeshRenderer>(primary) : nullptr;
+    }();
+    const bool reflected = app->world().findComponentType("engine::MeshRenderer") != engine::ComponentTypeId{} &&
+                           engine::editor::componentFieldsAreReflected(
+                               app->world(), app->world().findComponentType("engine::MeshRenderer"));
+    if (cube != nullptr && reflected) {
+        REQUIRE(cube->primitive == 0U);
+        const std::size_t before = app->commands().appliedCount();
+        app->requestInspectorNamedSelection("engine::MeshRenderer", "primitive", 1);
+        REQUIRE(app->tick());
+        CHECK(cube->primitive == 1U);
+        CHECK(app->commands().appliedCount() == before + 1U);
+    }
+    const std::size_t appliedStopped = app->commands().appliedCount();
+    app->requestUndo();
+    REQUIRE(app->tick());
+    CHECK(app->commands().appliedCount() + 1U == appliedStopped);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the toolbar's Undo is off while the game plays and back after Stop (task 4.7.1, I397)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play lock i397", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    using engine::editor::PlayControl;
+    const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    e62Ticks(*app, 2);
+    REQUIRE(app->commands().canUndo());
+    CHECK(r.undo.enabled);  // Edit
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+    REQUIRE(app->commands().canUndo());  // the stack still holds the entry: only the lock is in the way
+    CHECK_FALSE(r.undo.enabled);         // Playing
+
+    app->requestPlayControl(PlayControl::Pause);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == engine::editor::PlayMode::Paused));
+    CHECK_FALSE(r.undo.enabled);  // Paused
+
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == engine::editor::PlayMode::Edit));
+    CHECK(r.undo.enabled);  // after Stop
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a guarded Quit stops play first and then judges the edit-mode document (task 4.7.1, I398)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play lock i398", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    SUBCASE("(a) a clean scene: the quit goes through in the tick that stops the game") {
+        std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+        REQUIRE(app.has_value());
+        REQUIRE(app->commands().isClean());
+        app->requestPlayControl(PlayControl::Play);
+        e62Ticks(*app, 2);
+        REQUIRE((app->playSession().mode() == PlayMode::Playing));
+        app->requestGuardedQuit();
+        CHECK(app->tick() == false);
+        CHECK((app->playSession().mode() == PlayMode::Edit));
+        app.reset();
+    }
+    SUBCASE("(b) a dirty scene: the unsaved-changes prompt opens on the stopped document") {
+        std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+        REQUIRE(app.has_value());
+        app->requestCreateEntity(engine::editor::CreateKind::Cube);
+        e62Ticks(*app, 2);
+        REQUIRE_FALSE(app->commands().isClean());
+        app->requestPlayControl(PlayControl::Play);
+        e62Ticks(*app, 2);
+        REQUIRE((app->playSession().mode() == PlayMode::Playing));
+        app->requestGuardedQuit();
+        CHECK(app->tick());
+        CHECK((app->playSession().mode() == PlayMode::Edit));
+        CHECK(app->unsavedChangesPromptOpen());
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    }
+}
+
+TEST_CASE("editor: every command pusher reads the lock and the menu bar's chords read it once (task 4.7.1, I399)") {
+    const std::filesystem::path srcRoot(AERO_EDITOR_SRC_DIR);
+    std::set<std::string> pushers;
+    std::size_t scanned = 0;
+    std::error_code ec;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(srcRoot, ec)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".cpp") {
+            continue;
+        }
+        ++scanned;
+        const std::vector<std::string> code = editorSourceCodeLines(entry.path().string());
+        const bool pushes =
+            countLinesContaining(code, "commands.push(") + countLinesContaining(code, "commandStack.push(") > 0U;
+        if (!pushes) {
+            continue;
+        }
+        pushers.insert(entry.path().filename().string());
+        CAPTURE(entry.path().filename().string());
+        CHECK((countLinesContaining(code, "sceneLocked(") + countLinesContaining(code, "play.active()") +
+                   countLinesContaining(code, "playSessionValue.active()") >
+               0U));
+    }
+    CHECK_FALSE(ec);
+    CHECK(scanned > 50U);  // anti-vacuity: the walk really read the directory
+    CHECK((pushers == std::set<std::string>{"editor_app.cpp", "hierarchy_panel.cpp", "inspector_panel.cpp",
+                                            "viewport_panel.cpp"}));
+
+    const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+    for (const std::string_view chord :
+         {"ImGuiMod_Ctrl | ImGuiKey_N,", "ImGuiMod_Ctrl | ImGuiKey_O,", "ImGuiMod_Ctrl | ImGuiKey_S,",
+          "ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S,", "ImGuiMod_Ctrl | ImGuiKey_Z,",
+          "ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z,"}) {
+        CAPTURE(chord);
+        const std::size_t at = soleLineContaining(shell, chord);
+        CHECK((shell[at].find("editEnabled") != std::string::npos || shell[at].find("io &&") != std::string::npos));
+        CHECK(shell[at].find("fileEnabled") == std::string::npos);
+    }
+    const std::size_t quitAt = soleLineContaining(shell, "ImGuiMod_Ctrl | ImGuiKey_Q,");
+    CHECK(shell[quitAt].find("fileEnabled") != std::string::npos);
+    CHECK(shell[quitAt].find("editEnabled") == std::string::npos);
+    CHECK(countLinesContaining(shell, "guardedQuitRequested = true") == 2U);  // the chord and Exit
+    CHECK(countLinesContaining(shell, "const bool editEnabled = fileEnabled && !sceneLocked(state.playMode);") == 1U);
+    CHECK(countLinesContaining(shell, "const bool io = editEnabled && sceneIoAvailable();") == 1U);  // O, S, Shift+S
 }

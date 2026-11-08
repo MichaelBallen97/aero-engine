@@ -59,8 +59,17 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
                  bool fileEnabled) {
     // Editor shortcuts go through ImGui's routing, NEVER ctx.input() (D7/E9): a focused InputText
     // must be able to swallow the chord. ImGuiMod_Ctrl is Cmd on macOS automatically (F8).
+    //
+    // task 4.7.1 (D4): `editEnabled` is `fileEnabled` with the scene lock folded in -- every chord and item that
+    // would change the scene or the document takes it. Quit keeps `fileEnabled`: it is never refused, it only
+    // stops the game first (EditorApp), so while a game plays it records a guarded-quit request instead.
+    const bool editEnabled = fileEnabled && !sceneLocked(state.playMode);
     if (fileEnabled && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Q, FILE_SHORTCUT_FLAGS)) {
-        fileMenu.flow.requested = FileAction::Quit;  // D1: the GUARDED quit
+        if (sceneLocked(state.playMode)) {
+            state.guardedQuitRequested = true;
+        } else {
+            fileMenu.flow.requested = FileAction::Quit;  // D1: the GUARDED quit
+        }
     }
 
     // Task 2.4.1. RouteGlobal, exactly like Ctrl+Q above -- which is what makes a focused InputText
@@ -80,10 +89,10 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     // the same leak lets Ctrl+Shift+Z re-create content behind the New Project form after its guard
     // was already answered. History is not File, but it discards and rewrites work just the same, so
     // it takes the same gate.
-    if (fileEnabled && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, HISTORY_SHORTCUT_FLAGS)) {
+    if (editEnabled && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, HISTORY_SHORTCUT_FLAGS)) {
         state.undoRequested = true;
     }
-    if (fileEnabled && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, HISTORY_SHORTCUT_FLAGS)) {
+    if (editEnabled && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, HISTORY_SHORTCUT_FLAGS)) {
         state.redoRequested = true;
     }
     // Ctrl+Y is DELIBERATELY NOT bound (D13): ImGuiMod_Ctrl is Cmd on macOS, so a global Ctrl+Y would
@@ -105,8 +114,8 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
 
     // The three I/O chords additionally require sceneIoAvailable() (D18/AC-6) -- New Scene does not,
     // because it needs no serialization at all.
-    const bool io = fileEnabled && sceneIoAvailable();
-    if (fileEnabled && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_N, FILE_SHORTCUT_FLAGS)) {
+    const bool io = editEnabled && sceneIoAvailable();
+    if (editEnabled && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_N, FILE_SHORTCUT_FLAGS)) {
         fileMenu.flow.requested = FileAction::NewScene;
     }
     if (io && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_O, FILE_SHORTCUT_FLAGS)) {
@@ -129,16 +138,16 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
         // task 2.6.1: New/Open Project, Open Recent, then a separator, before the existing scene
         // items. NONE of the four is ever disabled for sceneIoAvailable() -- the project flow is
         // gate-free (D4), so ioTooltip is not called for any of them.
-        if (ImGui::MenuItem("New Project...", nullptr, false, fileEnabled)) {
+        if (ImGui::MenuItem("New Project...", nullptr, false, editEnabled)) {
             fileMenu.flow.requested = FileAction::NewProject;
         }
-        if (ImGui::MenuItem("Open Project...", nullptr, false, fileEnabled)) {
+        if (ImGui::MenuItem("Open Project...", nullptr, false, editEnabled)) {
             fileMenu.flow.requested = FileAction::OpenProject;
         }
         // BeginMenu obeys the OPPOSITE balance rule from Begin: EndMenu() ONLY when BeginMenu()
         // returned true (.claude/rules/editor.md). An unbalanced call is an IM_ASSERT ABORT in Debug,
         // not a glitch.
-        const bool recentsEnabled = fileEnabled && !fileMenu.project.recents.paths.empty();
+        const bool recentsEnabled = editEnabled && !fileMenu.project.recents.paths.empty();
         if (ImGui::BeginMenu("Open Recent", recentsEnabled)) {
             for (std::size_t i = 0; i < fileMenu.project.recents.paths.size(); ++i) {
                 const std::string& path = fileMenu.project.recents.paths[i];
@@ -160,7 +169,7 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
             ImGui::EndMenu();
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("New Scene", chordHint(host, {.ctrl = true}, "N").c_str(), false, fileEnabled)) {
+        if (ImGui::MenuItem("New Scene", chordHint(host, {.ctrl = true}, "N").c_str(), false, editEnabled)) {
             fileMenu.flow.requested = FileAction::NewScene;
         }
         if (ImGui::MenuItem("Open Scene...", chordHint(host, {.ctrl = true}, "O").c_str(), false, io)) {
@@ -185,7 +194,11 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
         ioTooltip(sceneIoAvailable());
         ImGui::Separator();
         if (ImGui::MenuItem("Exit", chordHint(host, {.ctrl = true}, "Q").c_str(), false, fileEnabled)) {
-            fileMenu.flow.requested = FileAction::Quit;  // D1: the GUARDED quit
+            if (sceneLocked(state.playMode)) {
+                state.guardedQuitRequested = true;
+            } else {
+                fileMenu.flow.requested = FileAction::Quit;  // D1: the GUARDED quit
+            }
         }
         ImGui::EndMenu();
     }
@@ -203,7 +216,7 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
         const std::string undoHint = chordHint(host, {.ctrl = true}, "Z");
         // `fileEnabled` for the same reason the chords take it (Phase 2 audit): a modal owns the
         // input, so the history must not move underneath it. Drawn disabled rather than hidden.
-        if (ImGui::MenuItem(undoText.c_str(), undoHint.c_str(), false, fileEnabled && commands.canUndo())) {
+        if (ImGui::MenuItem(undoText.c_str(), undoHint.c_str(), false, editEnabled && commands.canUndo())) {
             state.undoRequested = true;
         }
         std::string redoText = "Redo";
@@ -212,7 +225,7 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
             redoText += label;
         }
         const std::string redoHint = chordHint(host, {.ctrl = true, .shift = true}, "Z");
-        if (ImGui::MenuItem(redoText.c_str(), redoHint.c_str(), false, fileEnabled && commands.canRedo())) {
+        if (ImGui::MenuItem(redoText.c_str(), redoHint.c_str(), false, editEnabled && commands.canRedo())) {
             state.redoRequested = true;
         }
         ImGui::Separator();
@@ -245,11 +258,11 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     if (ImGui::BeginMenu("Create")) {  // EndMenu ONLY when BeginMenu returned true
         // task E.6.1: through drawCreateKindItem, like the Hierarchy's two Create Empty items, so Empty
         // carries its icon here too (I285).
-        if (drawCreateKindItem("Empty", CreateKind::Empty, fileEnabled)) {
+        if (drawCreateKindItem("Empty", CreateKind::Empty, editEnabled)) {
             state.createRequest = CreateKind::Empty;
         }
         ImGui::Separator();
-        if (const std::optional<CreateKind> typed = drawCreateMenuItems(fileEnabled); typed.has_value()) {
+        if (const std::optional<CreateKind> typed = drawCreateMenuItems(editEnabled); typed.has_value()) {
             state.createRequest = typed;
         }
         ImGui::EndMenu();
@@ -487,6 +500,11 @@ void drawSceneContainmentModal(FileMenuContext& fileMenu) {
 // imgui.cpp:11386), but requestUndo() and requestRedo() can both be called before one tick. A fixed
 // order makes that deterministic and testable; the net effect is a no-op plus two DEBUG lines (E12).
 void applyHistoryRequests(PanelContext& context, ShellUiState& state) {
+    if (sceneLocked(state.playMode)) {  // task 4.7.1 (D4): a request that arrived with the lock is dropped, not kept
+        state.undoRequested = false;
+        state.redoRequested = false;
+        return;
+    }
     CommandContext cmd = toCommandContext(context);
     if (state.undoRequested) {
         state.undoRequested = false;

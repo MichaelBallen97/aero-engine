@@ -688,6 +688,21 @@ bool EditorApp::tick() {
         presented = false;
         return false;
     }
+    // task 4.7.1 (D4, G12): the scene lock on the file flow, applied where a request first lands -- after every event
+    // and before any draw. A Quit stops the game here, so THIS tick's applyFileRequests judges the edit-mode document
+    // (a game that wrote nothing to it leaves it clean, and a dirty one raises the prompt on what Stop restored). Any
+    // other request is ABANDONED, never kept for after Stop (F10): its path goes with it, so a later action cannot
+    // pick up a stale one.
+    if (playSessionValue.active()) {
+        if (fileFlow.requested == FileAction::Quit) {
+            applyPlayControl(PlayControl::Stop);
+        } else if (fileFlow.requested != FileAction::None) {
+            fileFlow.requested = FileAction::None;
+            fileFlow.requestedPath.clear();
+            projectFlow.requestedPath.clear();
+            ++playLockRefusals;
+        }
+    }
     frameClock.tick();
     // task E.6.2 (D14): the RAW delta -- a stall shown honestly, not the 0.25-s clamp -- on the statement after the
     // clock's own tick (I308 pins the adjacency).
@@ -1304,6 +1319,14 @@ bool EditorApp::tick() {
         statusBarText(project.isOpen(), abbreviateHome(projectRoot, homeDirectory), projectRoot, watchState,
                       assetWatcher.status().unreadableDirs, assetCount(), frameReadout, backendLabel,
                       playStatusText(playSessionValue.mode(), playSessionValue.frame()));
+    // task 4.7.1 (D4): a history request that reaches a locked scene is dropped here and counted, the same way the
+    // file flow's are at the top of the tick -- the chords and the Edit menu are already off, so only the seams get
+    // this far.
+    if (playSessionValue.active()) {
+        playLockRefusals += (undoRequested ? 1U : 0U) + (redoRequested ? 1U : 0U);
+        undoRequested = false;
+        redoRequested = false;
+    }
     layer.beginFrame();
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout,
                     .placeUnplacedPanels = placeUnplacedPanels,
@@ -1381,9 +1404,14 @@ bool EditorApp::tick() {
                              newProjectInputApplied};
     pendingNewProjectAnswer = NewProjectAnswer::None;  // task E.6.4 (D27): a request dies with the tick that carried it
     drawShellUi(registry, panelContext, ui, fileMenu);  // menu bar -> dockspace -> panels
-    applyDefaultLayout = ui.applyDefaultLayout;         // drawShellUi clears it once consumed, and re-sets
-                                                        // it for View > Reset Layout
-    placeUnplacedPanels = ui.placeUnplacedPanels;       // cleared once consumed; nothing ever re-arms it
+    // task 4.7.1 (D4): a Quit pressed while a game plays. The request is raised now and the NEXT tick's top stops the
+    // game before applyFileRequests sees it.
+    if (ui.guardedQuitRequested) {
+        requestGuardedQuit();
+    }
+    applyDefaultLayout = ui.applyDefaultLayout;    // drawShellUi clears it once consumed, and re-sets
+                                                   // it for View > Reset Layout
+    placeUnplacedPanels = ui.placeUnplacedPanels;  // cleared once consumed; nothing ever re-arms it
     // task E.6.2 (D7): a committed snap toggle or step is written by the NEXT tick's flush (above), once.
     if (ui.snapCommitted) {
         editorPrefsDirty = true;
@@ -1977,6 +2005,7 @@ std::uint64_t EditorApp::panelDrawnCount(const char* id) const noexcept { return
 std::size_t EditorApp::projectStateWriteCount() const noexcept { return projectStateWrites; }
 
 // ---- task E.4.2: the containment offer's three black-box accessors -------------------------------
+bool EditorApp::unsavedChangesPromptOpen() const noexcept { return fileFlow.confirmOpen; }
 bool EditorApp::sceneContainmentOfferOpen() const noexcept { return fileFlow.containmentOffer.open; }
 std::string_view EditorApp::sceneContainmentOfferProject() const noexcept {
     return fileFlow.containmentOffer.projectRoot;
@@ -2033,6 +2062,10 @@ std::uint32_t EditorApp::viewportUnresolvedMaterials() const noexcept {
 
 // ---- task E.5.2: the create pipeline --------------------------------------------------------------
 void EditorApp::applyCreate(CreateKind kind) {
+    if (playSessionValue.active()) {  // task 4.7.1 (D4): the scene belongs to the game while it plays
+        ++playLockRefusals;
+        return;
+    }
     if (static_cast<std::size_t>(kind) >= CREATE_KIND_COUNT) {
         return;  // defensive: no host can produce one
     }
@@ -2065,6 +2098,10 @@ void EditorApp::applyCreate(CreateKind kind) {
 // from the live World. The payload's `kind` byte was a peek hint and is never authoritative: a record
 // can vanish, or gain a MeshRenderer, between the accept and this drain.
 void EditorApp::applyHierarchyDrop(const HierarchyAssetDrop& drop) {
+    if (playSessionValue.active()) {  // task 4.7.1 (D4): a drop that landed in play is refused, whatever it carries
+        ++playLockRefusals;
+        return;
+    }
     const AssetRecord* const record = assetDatabase.findByGuid(drop.payload.guid);
     if (record == nullptr) {
         AERO_LOG_WARN("assets: the dropped asset is no longer in this project");
@@ -2096,6 +2133,10 @@ void EditorApp::applyHierarchyDrop(const HierarchyAssetDrop& drop) {
 }
 
 void EditorApp::applyViewportDrop(const ViewportAssetDrop& drop) {
+    if (playSessionValue.active()) {  // task 4.7.1 (D4): as the Hierarchy's drop above
+        ++playLockRefusals;
+        return;
+    }
     const AssetRecord* const record = assetDatabase.findByGuid(drop.payload.guid);
     if (record == nullptr) {
         AERO_LOG_WARN("assets: the dropped asset is no longer in this project");

@@ -829,6 +829,11 @@ public:
     // The toolbar's click-equivalent, the requestToolbarTool shape: applied on the NEXT tick through the control's own
     // gate (playControlEnabled), and DROPPED, never deferred, when refused.
     void requestPlayControl(PlayControl control) noexcept { pendingPlayControl = control; }
+    // D4: how many requests the scene lock refused while a game played -- an undo, a redo, a create, a drop, and any
+    // file action but Quit. "Refused" and "never arrived" differ by this count.
+    [[nodiscard]] std::size_t playLockRefusalCount() const noexcept { return playLockRefusals; }
+    // True while the unsaved-changes prompt is up (the guard the file flow raises on a dirty New / Open / Quit).
+    [[nodiscard]] bool unsavedChangesPromptOpen() const noexcept;
     // A platform event for the GPU tier to inject as if the window had polled it: queued, and handled on the NEXT
     // tick after the polled events, through the same handler (so the feed sees it exactly as a real one).
     void requestGameInputEvent(const platform::Event& event) { pendingGameEvents.push_back(event); }
@@ -1158,6 +1163,7 @@ private:
     PlaySession playSessionValue;
     std::optional<PlayControl> pendingPlayControl;
     std::vector<platform::Event> pendingGameEvents;
+    std::size_t playLockRefusals = 0;                       // playLockRefusalCount()'s value
     ShellChromeRecord chromeRecord;                         // shellChromeRecord()'s value, named apart from it
     ProjectUiRecord projectUiRecordValue;                   // task E.6.4: projectUiRecord()'s value
     std::optional<NewProjectInput> pendingNewProjectInput;  // task E.6.4 (D27): applied before a draw

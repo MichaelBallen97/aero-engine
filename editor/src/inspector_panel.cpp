@@ -12,6 +12,7 @@
 #include <aero/editor/entity_presentation.hpp>
 #include <aero/editor/material_card.hpp>
 #include <aero/editor/panel_context.hpp>
+#include <aero/editor/play_session.hpp>  // task 4.7.1: sceneLocked
 #include <aero/editor/project_files.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/editor/thumbnail_cache.hpp>
@@ -125,6 +126,9 @@ struct EditGate {
 // an arm that writes before the push.
 void pushFieldEdit(PanelContext& context, Entity entity, const ComponentEntry& entry, const FieldEntry& field,
                    FieldValue after) {
+    if (sceneLocked(context.play.mode())) {  // task 4.7.1 (D4): no field edit reaches the stack while a game plays
+        return;
+    }
     CommandContext cmd = toCommandContext(context);
     context.commands.push(cmd, std::make_unique<SetFieldCommand>(entity, entry.typeId, field.name, entry.name,
                                                                  field.value, std::move(after)));
@@ -167,6 +171,12 @@ void InspectorPanel::onDraw(PanelContext& context) {
     frameNamedSelection = std::exchange(pendingNamedSelection, std::nullopt);
     frameComponentMenu = std::exchange(pendingComponentMenu, std::nullopt);  // task E.6.3: E.5.2's one-shot shape
     frameCardOpen = std::exchange(pendingCardOpen, std::nullopt);            // task E.6.3 (fix 7): the same shape
+    // task 4.7.1 (D4): the scene is the game's while it plays. The seams that stand in for a click on an editing
+    // control are dropped with the control, as a disabled one drops a click; card disclosure stays live (inspection).
+    if (sceneLocked(context.play.mode())) {
+        frameNamedSelection.reset();
+        frameComponentMenu.reset();
+    }
     ++drawRecordValue.framesRecorded;  // task E.6.3: per-frame counts, before any early return below
     beginCardRecordFrame(drawRecordValue.cards);
     drawRecordValue.cardsOpen = 0;
@@ -311,7 +321,7 @@ void InspectorPanel::drawComponent(PanelContext& context, Entity primary, const 
             ImGui::OpenPopup("##componentMenu");
         }
         if (ImGui::BeginPopup("##componentMenu")) {
-            if (ImGui::MenuItem("Remove Component")) {
+            if (ImGui::MenuItem("Remove Component", nullptr, false, !sceneLocked(context.play.mode()))) {
                 pending = PendingAction{.kind = ActionKind::RemoveComponent, .type = entry.typeId};
             }
             ImGui::EndPopup();  // ONLY when BeginPopup returned true
@@ -330,9 +340,12 @@ void InspectorPanel::drawComponent(PanelContext& context, Entity primary, const 
                 // the card's content channel (imgui.h:3532-3533): legal, I318.
                 ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, labelWidth);
                 ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
+                // task 4.7.1 (D4): every field reads live and none can be edited while a game plays.
+                ImGui::BeginDisabled(sceneLocked(context.play.mode()));
                 for (const FieldEntry& field : entry.fields) {
                     drawField(context, primary, entry, field);
                 }
+                ImGui::EndDisabled();  // 1:1 with BeginDisabled -- nothing between them can leave
                 ImGui::EndTable();
                 drawRecordValue.cards.lastBodyTableMaxX = ImGui::GetItemRectMax().x;  // EndTable's item: OuterRect
                 drawRecordValue.cards.lastBodyTableMinY = ImGui::GetItemRectMin().y;  // where ImGui PLACED it (I336)
@@ -378,6 +391,9 @@ void InspectorPanel::drawFieldResetMenu(PanelContext& context, Entity primary, c
 
 void InspectorPanel::resetField(PanelContext& context, Entity primary, const ComponentEntry& entry,
                                 const FieldEntry& field, FieldValue after) {
+    if (sceneLocked(context.play.mode())) {  // task 4.7.1 (D4): a reset is a push too
+        return;
+    }
     // BOTH SIDES, EXPLICITLY. A reset is a discrete edit, so it must never merge with a drag that was
     // released on the same field a moment earlier -- and a MenuItem inside a per-axis popup claims
     // ActiveId, which EndGroup then forwards, so gateForLastItem() would break the chain on the click
@@ -834,7 +850,10 @@ void InspectorPanel::drawAddComponent(PanelContext& context, Entity primary) {
     const AddComponentLayout layout = addComponentLayout(start.x, ImGui::GetContentRegionAvail().x,
                                                          faceTextWidth(PanelFace::Strong, ADD_COMPONENT_LABEL), s);
     ImGui::SetCursorScreenPos(ImVec2(layout.minX, start.y));
+    // task 4.7.1 (D4): drawn disabled while a game plays; the button below cannot open the popup.
+    ImGui::BeginDisabled(sceneLocked(context.play.mode()));
     const bool pressed = ImGui::InvisibleButton("##addComponentButton", ImVec2(layout.width, layout.height));
+    ImGui::EndDisabled();  // 1:1 with BeginDisabled
     const ImVec2 min = ImGui::GetItemRectMin();
     const ImVec2 max = ImGui::GetItemRectMax();
     ImDrawList* const list = ImGui::GetWindowDrawList();
@@ -898,6 +917,10 @@ void InspectorPanel::drawAddComponent(PanelContext& context, Entity primary) {
 }
 
 void InspectorPanel::applyPending(PanelContext& context, Entity primary) {
+    if (sceneLocked(context.play.mode())) {  // task 4.7.1 (D4): an add or a remove recorded in play is dropped
+        pending = PendingAction{};
+        return;
+    }
     switch (pending.kind) {
         case ActionKind::None:
             break;

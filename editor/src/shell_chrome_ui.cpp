@@ -342,7 +342,8 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
 
         // ---- undo (D9): the button, the chip, the current label in its fixed slot -----------------------------
         const float undoX = pos.x + layout.undoX;
-        const bool undoEnabled = fileEnabled && commands.canUndo();  // the Edit menu item's predicate, ONCE
+        // the Edit menu item's predicate, ONCE (task 4.7.1: the scene lock folded in)
+        const bool undoEnabled = fileEnabled && !sceneLocked(state.playMode) && commands.canUndo();
         ImGui::SetCursorScreenPos(ImVec2(undoX, buttonY));
         // The disabled pair OUTERMOST, so the FrameBorderSize push/pop sit four lines apart -- I307(b)'s window,
         // groupButton's shape. GetItemFlags() after EndDisabled still reads the button's flags.
