@@ -829,6 +829,9 @@ public:
     // while the dialog would let Create be clicked), so it closes the popup the way a click does. No tier can click.
     void requestNewProjectInput(std::string name, std::string location);
     void requestNewProjectAnswer(NewProjectAnswer answer) noexcept { pendingNewProjectAnswer = answer; }
+    // task 4.6.1: a language card's click. Written to the form's language only while the form is open, on the next
+    // tick, and dropped otherwise; the form's language starts at TypeScript every time the dialog opens.
+    void requestNewProjectLanguage(ProjectLanguage language) noexcept;
 
 private:
     // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch
@@ -1138,6 +1141,7 @@ private:
     ProjectUiRecord projectUiRecordValue;                   // task E.6.4: projectUiRecord()'s value
     std::optional<NewProjectInput> pendingNewProjectInput;  // task E.6.4 (D27): applied before a draw
     NewProjectAnswer pendingNewProjectAnswer = NewProjectAnswer::None;  // copied into FileMenuContext, then cleared
+    std::optional<ProjectLanguage> pendingNewProjectLanguage;           // task 4.6.1: applied before a draw
     // DISTINCT NAMES from their accessors, the databasePtr/database() rule -- matching
     // ContextRouter::latches/latchCount() and sceneAssetDirectives/sceneAssetDirectiveCount() above.
     std::size_t focusRouteApplies = 0;

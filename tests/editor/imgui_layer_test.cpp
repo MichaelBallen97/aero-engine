@@ -29347,7 +29347,9 @@ TEST_CASE("editor: a long recents list scrolls inside a window that stays in the
     app.reset();
 }
 
-TEST_CASE("editor: New Project opens centred, Create and the language control disabled (task E.6.4, I352)") {
+TEST_CASE(
+    "editor: New Project opens centred, Create disabled, the language cards enabled with TypeScript selected "
+    "(task E.6.4, I352)") {
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
@@ -29380,10 +29382,10 @@ TEST_CASE("editor: New Project opens centred, Create and the language control di
     CHECK_FALSE(m.create.enabled);  // ImGui's own Disabled flag on the drawn button
     CHECK(m.cancel.enabled);        // ANTI-VACUITY: the record reads an enabled button as enabled
     CHECK(m.browse.enabled);
-    CHECK_FALSE(m.language[0].enabled);  // seed S20: the one BeginDisabled() pair
-    CHECK_FALSE(m.language[1].enabled);
+    CHECK(m.language[0].enabled);  // task 4.6.1: no disabled pair, both cards are controls
+    CHECK(m.language[1].enabled);
     CHECK_FALSE(m.language[0].drawnActive);
-    CHECK(m.language[1].drawnActive);  // TypeScript: what Create writes
+    CHECK(m.language[1].drawnActive);  // TypeScript: the form's language every time the dialog opens
     CHECK(m.location.empty());         // no project open: no pre-fill (scene_session.cpp:610-612)
     CHECK(m.cancel.max.x <= m.create.min.x);
     CHECK(m.create.max.x <= m.windowPos.x + m.windowSize.x);
@@ -29441,8 +29443,8 @@ TEST_CASE("editor: the validation line follows the real probe, and Create follow
     REQUIRE_FALSE(leaf.empty());
     REQUIRE(m.location.size() >= leaf.size());
     CHECK(m.location.compare(m.location.size() - leaf.size(), leaf.size(), leaf) == 0);
-    // The footer summary of today's fields, as drawn (right-elided on a narrow runner: the name still opens it).
-    const std::string summary = engine::editor::newProjectFooterSummary("Kart");
+    // The footer summary of the form's fields, as drawn (right-elided on a narrow runner: the name still opens it).
+    const std::string summary = engine::editor::newProjectFooterSummary("Kart", TS);
     if (m.summary != summary) {
         CHECK(m.summary.rfind("Kart", 0) == 0U);
     }
@@ -29465,6 +29467,116 @@ TEST_CASE("editor: the validation line follows the real probe, and Create follow
     CHECK(m.create.enabled);
     app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
     REQUIRE(app->tick());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the language card is a choice the dialog keeps for one opening only (task 4.6.1, I384)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "new project i384", .width = E64_WINDOW_WIDTH, .height = E64_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    constexpr auto CPP = engine::editor::ProjectLanguage::Cpp;
+    std::optional<engine::editor::EditorApp> app = e64App(*device, *window, ctx, uniqueRecentsFile());
+    const engine::editor::NewProjectRecord& m = app->projectUiRecord().newProject;
+    // The seam applied to a CLOSED form is dropped with its tick: opening afterwards still reads TypeScript.
+    app->requestNewProjectLanguage(CPP);
+    REQUIRE(app->tick());
+    e64OpenNewProject(*app);
+    CHECK(m.language[0].enabled);
+    CHECK(m.language[1].enabled);
+    CHECK_FALSE(m.language[0].drawnActive);
+    CHECK(m.language[1].drawnActive);
+    const std::string tsHint(engine::editor::newProjectLanguageHint(TS));
+    const std::string cppHint(engine::editor::newProjectLanguageHint(CPP));
+    // The hint is right-elided on a narrow runner; its first word still tells the languages apart.
+    CHECK((m.languageHint == tsHint || m.languageHint.rfind("Scripts", 0) == 0U));
+
+    app->requestNewProjectLanguage(CPP);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(m.language[0].drawnActive);
+    CHECK_FALSE(m.language[1].drawnActive);
+    CHECK((m.languageHint == cppHint || m.languageHint.rfind("Adds", 0) == 0U));
+    CHECK(m.summary == engine::editor::newProjectFooterSummary("", CPP));
+
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK_FALSE(m.popupOpenAtEntry);
+    e64OpenNewProject(*app);  // the choice was not remembered (call 1)
+    CHECK_FALSE(m.language[0].drawnActive);
+    CHECK(m.language[1].drawnActive);
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
+    REQUIRE(app->tick());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Create passes the form's language to the project it makes (task 4.6.1, I385)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "new project i385", .width = E64_WINDOW_WIDTH, .height = E64_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    constexpr auto CPP = engine::editor::ProjectLanguage::Cpp;
+    const auto exists = [](std::string_view root, std::string_view file) {
+        std::error_code ec;
+        return std::filesystem::exists(std::filesystem::path(std::string(root)) / std::string(file), ec);
+    };
+    const auto manifestHas = [](std::string_view root, std::string_view needle) {
+        const engine::editor::FileReadResult read = engine::editor::readTextFile(std::string(root) + "/project.json");
+        return read.text.has_value() && read.text->find(needle) != std::string::npos;
+    };
+    std::optional<engine::editor::EditorApp> app = e64App(*device, *window, ctx, uniqueRecentsFile());
+
+    e64OpenNewProject(*app);
+    const std::string dirCpp = uniqueProjectLocation();
+    app->requestNewProjectInput("Kart", dirCpp);
+    app->requestNewProjectLanguage(CPP);
+    const engine::editor::NewProjectRecord& m = app->projectUiRecord().newProject;
+    REQUIRE(e64TickUntil(*app, 4, [&] { return m.state == engine::editor::NewProjectTargetState::CreatesFolder; }) < 4);
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Create);
+    REQUIRE(app->tick());
+    REQUIRE(app->projectIsOpen());
+    const std::string cppRoot(app->projectRoot());
+    CHECK(cppRoot == engine::editor::newProjectTargetPath(dirCpp, "Kart"));
+    CHECK(manifestHas(cppRoot, "\"cpp\""));
+    for (const std::string_view file : {"CMakeLists.txt", "src/main.cpp", "README.md", ".gitignore"}) {
+        CAPTURE(file);
+        CHECK(exists(cppRoot, file));
+    }
+    CHECK_FALSE(exists(cppRoot, "tsconfig.json"));
+    REQUIRE(app->tick());  // the popup closes in ImGui before the next request opens it again
+
+    // The language left alone: TypeScript, and not one of the C++ files.
+    e64OpenNewProject(*app);
+    const std::string dirTs = uniqueProjectLocation();
+    app->requestNewProjectInput("Gear", dirTs);
+    REQUIRE(e64TickUntil(*app, 4, [&] { return m.state == engine::editor::NewProjectTargetState::CreatesFolder; }) < 4);
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Create);
+    REQUIRE(app->tick());
+    const std::string tsRoot(app->projectRoot());
+    CHECK(tsRoot == engine::editor::newProjectTargetPath(dirTs, "Gear"));
+    CHECK(manifestHas(tsRoot, "\"ts\""));
+    CHECK(exists(tsRoot, "tsconfig.json"));
+    CHECK_FALSE(exists(tsRoot, "CMakeLists.txt"));
+    CHECK_FALSE(exists(tsRoot, "src/main.cpp"));
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
@@ -29688,11 +29800,11 @@ TEST_CASE("editor: project_ui.cpp reads no disk, binds its keys, draws every str
         CHECK(countLinesContaining(code, ENTER_BINDS) == 1U);
         CHECK(soleLineContaining(code, "if (dismiss) {") < soleLineContaining(code, "} else if (commit) {"));
     }
-    SUBCASE("(c) the language control: one disabled pair, the one tooltip, the selection Create writes (D18)") {
-        CHECK(countLinesContaining(code, "ImGui::BeginDisabled();") == 1U);  // seed S20
-        CHECK(countLinesContaining(code, "ImGui::EndDisabled();") == 1U);
-        CHECK(countLinesContaining(code, "itemTooltip(LANGUAGE_CONTROL_TOOLTIP)") == 1U);
-        CHECK(countLinesContaining(code, "languageCardSelected(") == 1U);
+    SUBCASE("(c) the language cards: no disabled pair, the selection read from the form, one writer (D18)") {
+        CHECK(countLinesContaining(code, "BeginDisabled(") == 0U);
+        CHECK(countLinesContaining(code, "EndDisabled(") == 0U);
+        CHECK(countLinesContaining(code, "languageCardSelected(card.language, chosen)") == 1U);
+        CHECK(countLinesContaining(code, "chosen = card.language;") == 1U);
         CHECK(countLinesContaining(code, "SetItemTooltip(") == 0U);
     }
     SUBCASE("(d) no user string is ever a label (D9)") {

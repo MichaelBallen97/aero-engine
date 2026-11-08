@@ -54,13 +54,23 @@ namespace {
 
 }  // namespace
 
-bool languageCardSelected(ProjectLanguage language) noexcept { return language == ProjectLanguage::Ts; }
+bool languageCardSelected(ProjectLanguage card, ProjectLanguage chosen) noexcept { return card == chosen; }
 
 std::string_view languageCardTitle(ProjectLanguage language) noexcept {
     for (const LanguageCard& card : NEW_PROJECT_LANGUAGE_CARDS) {
         if (card.language == language) {
             return card.title;
         }
+    }
+    return {};
+}
+
+std::string_view newProjectLanguageHint(ProjectLanguage language) noexcept {
+    switch (language) {
+        case ProjectLanguage::Ts:
+            return "Scripts in TypeScript, run in the editor -- the language is fixed at creation";
+        case ProjectLanguage::Cpp:
+            return "Adds CMakeLists.txt and src/main.cpp -- the language is fixed at creation";
     }
     return {};
 }
@@ -179,8 +189,8 @@ NewProjectLine fitNewProjectLine(const NewProjectLine& line, float available, co
     return fitted;
 }
 
-std::string newProjectFooterSummary(std::string_view name) {
-    const std::string_view language = languageCardTitle(ProjectLanguage::Ts);
+std::string newProjectFooterSummary(std::string_view name, ProjectLanguage chosen) {
+    const std::string_view language = languageCardTitle(chosen);
     if (name.empty()) {
         return std::string(language);
     }
@@ -372,6 +382,7 @@ void beginNewProjectRecordFrame(NewProjectRecord& record) noexcept {
     record.line = NewProjectLine{};
     record.location.clear();
     record.summary.clear();
+    record.languageHint.clear();
     record.nameField = ItemRectRecord{};
     record.locationField = ItemRectRecord{};
     record.browse = ItemRectRecord{};

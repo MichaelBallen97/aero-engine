@@ -1308,6 +1308,12 @@ bool EditorApp::tick() {
         newProjectInputApplied = true;
     }
     pendingNewProjectInput.reset();  // a moved-from optional is still ENGAGED (E.4.3's one-shot rule)
+    // task 4.6.1: the language card's click-equivalent, the same one-shot: written only while the form is open, then
+    // dropped either way. It sets no form one-shot and closes nothing -- the typing-equivalent shape, not an answer.
+    if (pendingNewProjectLanguage.has_value() && projectFlow.form.open) {
+        projectFlow.form.language = *pendingNewProjectLanguage;
+    }
+    pendingNewProjectLanguage.reset();
     const std::string scenesRootForMenu = project.scenesRoot();
     FileMenuContext fileMenu{session,
                              fileFlow,
@@ -2472,6 +2478,9 @@ void EditorApp::requestClearRecentProjects() noexcept { projectFlow.clearRecents
 void EditorApp::requestNewProjectInput(std::string name, std::string location) {
     pendingNewProjectInput = NewProjectInput{std::move(name), std::move(location)};
 }
+
+// task 4.6.1: the same next-tick shape; tick() applies it before the draw, only while the form is open.
+void EditorApp::requestNewProjectLanguage(ProjectLanguage language) noexcept { pendingNewProjectLanguage = language; }
 
 // task E.4.2: the requestUndo()/requestLayoutReset()/requestAssetBrowserViewMode shape -- each records
 // EXACTLY what the modal's own button records, and is applied on the NEXT tick's step-0 drain. Never
