@@ -27,7 +27,9 @@
 #include <aero/rhi/descriptors.hpp>  // task E.2.3: TextureDesc/SamplerDesc for the icon atlas
 #include <aero/rhi/device.hpp>       // task E.2.3: the atlas's create/upload/destroy calls
 #include <aero/rhi/internal/native_device.hpp>
+#include <aero/scene/camera.hpp>         // task 4.7.1: renderScene asks whether the scene has a Camera
 #include <aero/scene/mesh_renderer.hpp>  // task 3.1.5: the Material arm asks the LIVE World
+#include <aero/scene/world.hpp>          // task 4.7.1: World::each<Camera>
 
 #include "editor_theme_ui.hpp"  // task E.6.1: toImU32, toRhiColor
 #include "panel_chrome_ui.hpp"  // task E.6.3: chips, roles, faces, the card fills
@@ -658,6 +660,17 @@ void ViewportPanel::onDraw(PanelContext& context) {
         return;
     }
 
+    // task 4.7.1 (D7): a playing viewport is the GAME's picture, not an editing surface. `inPlay` is read from the
+    // const play session once per frame; the FIRST drawn frame of a session drops every half-finished editor gesture,
+    // so play never moves the editor camera and Stop finds it exactly where Play left it.
+    const bool inPlay = context.play.active();
+    if (inPlay && !drewInPlayValue) {
+        viewSnap.cancel();
+        pickArmed = false;
+        gesture = {};
+    }
+    drewInPlayValue = inPlay;
+
     // Step 5.
     // task 3.6.3: THE TWO RESIZES ARE ADJACENT and driven by the SAME `pixels`, which is what makes
     // the resolve's 1:1 blit true BY CONSTRUCTION rather than by two call sites that could drift.
@@ -713,7 +726,8 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // ImGui::Image submits its item with id 0, so IsItemHovered() works (ItemAdd sets HoveredRect
     // regardless of id) but SetItemKeyOwner does NOT (it returns false for id 0) -- the wheel is
     // claimed by ImGuiWindowFlags_NoScrollWithMouse in options() instead. See plan C1.
-    const bool hovered = ImGui::IsItemHovered();
+    // task 4.7.1: the ONE gate for every hover-read below -- the fly keys, F, the tool keys, the wheel and the pick.
+    const bool hovered = !inPlay && ImGui::IsItemHovered();
     // task E.6.3 (D9): the image rect as ImGui LAID IT OUT -- the item, inset by ImageBorderSize (the theme's is 0) --
     // read here, before any later item replaces the last-item data. The HUD lays out against this, never `avail`.
     const float imageBorder = ImGui::GetStyle().ImageBorderSize;
@@ -731,7 +745,7 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // itself tests the mouse against a RECT, not IsItemHovered, so it is unaffected.
     const bool dragActive = ImGui::GetDragDropPayload() != nullptr;
     const bool inputHovered = hovered && !dragActive;
-    if (dragActive) {
+    if (dragActive && !inPlay) {  // task 4.7.1 (D4): nothing drops into a playing scene
         // A press that began on the image, dragged out to the browser and released would otherwise
         // leave the arm latched into the next frame.
         pickArmed = false;
@@ -749,42 +763,45 @@ void ViewportPanel::onDraw(PanelContext& context) {
         }
     }
 
-    const CameraGestureInput gestureInput{
-        .hovered = inputHovered,
-        .leftDown = ImGui::IsMouseDown(ImGuiMouseButton_Left),
-        .rightDown = ImGui::IsMouseDown(ImGuiMouseButton_Right),
-        .middleDown = ImGui::IsMouseDown(ImGuiMouseButton_Middle),
-        .leftPressed = ImGui::IsMouseClicked(ImGuiMouseButton_Left),
-        .rightPressed = ImGui::IsMouseClicked(ImGuiMouseButton_Right),
-        .middlePressed = ImGui::IsMouseClicked(ImGuiMouseButton_Middle),
-        // F22b: io.KeyCtrl IS ALREADY "Ctrl on Windows/Linux, Cmd on macOS" (imgui.h). Do NOT write
-        // `|| io.KeySuper` -- that would ALSO fire on physical Ctrl on macOS and on the Windows/Super
-        // key elsewhere.
-        .alt = io.KeyAlt,
-        .ctrlOrCmd = io.KeyCtrl};
-    gesture = nextGesture(gesture, gestureInput);
+    if (!inPlay) {  // task 4.7.1 (D7): the editor camera is not driven while the game plays
+        const CameraGestureInput gestureInput{
+            .hovered = inputHovered,
+            .leftDown = ImGui::IsMouseDown(ImGuiMouseButton_Left),
+            .rightDown = ImGui::IsMouseDown(ImGuiMouseButton_Right),
+            .middleDown = ImGui::IsMouseDown(ImGuiMouseButton_Middle),
+            .leftPressed = ImGui::IsMouseClicked(ImGuiMouseButton_Left),
+            .rightPressed = ImGui::IsMouseClicked(ImGuiMouseButton_Right),
+            .middlePressed = ImGui::IsMouseClicked(ImGuiMouseButton_Middle),
+            // F22b: io.KeyCtrl IS ALREADY "Ctrl on Windows/Linux, Cmd on macOS" (imgui.h). Do NOT write
+            // `|| io.KeySuper` -- that would ALSO fire on physical Ctrl on macOS and on the Windows/Super
+            // key elsewhere.
+            .alt = io.KeyAlt,
+            .ctrlOrCmd = io.KeyCtrl};
+        gesture = nextGesture(gesture, gestureInput);
 
-    const bool flying = gesture.gesture == CameraGesture::Fly;
-    // C6: the KEY reads are gated on !io.WantTextInput, exactly like F below -- ImGui::IsKeyDown polls
-    // with ImGuiKeyOwner_Any and is blind to a focused InputText, so without this a rename in the
-    // Hierarchy would both type `wasd` and fly the camera. The MOUSE half is deliberately NOT gated: a
-    // drag must keep working while a field has focus.
-    const bool keysLive = flying && !io.WantTextInput;
-    const CameraInput cameraInput{
-        .dragDelta = (gesture.gesture != CameraGesture::None) ? Vec2{io.MouseDelta.x, io.MouseDelta.y} : Vec2::zero(),
-        // ours when the image is hovered, and STILL ours mid-fly even if the cursor wandered out of
-        // the panel (the drag stays alive under mouse capture, so the speed control must follow it)
-        .wheelNotches = (hovered || flying) ? io.MouseWheel : 0.0F,
-        .viewportHeightPoints = avail.y,  // POINTS (D15) -- NEVER drawExtent().height
-        .gesture = gesture.gesture,
-        .moveForward = keysLive && ImGui::IsKeyDown(ImGuiKey_W),
-        .moveBack = keysLive && ImGui::IsKeyDown(ImGuiKey_S),
-        .moveLeft = keysLive && ImGui::IsKeyDown(ImGuiKey_A),
-        .moveRight = keysLive && ImGui::IsKeyDown(ImGuiKey_D),
-        .moveUp = keysLive && ImGui::IsKeyDown(ImGuiKey_E),    // WORLD +Y
-        .moveDown = keysLive && ImGui::IsKeyDown(ImGuiKey_Q),  // WORLD -Y
-        .fast = keysLive && io.KeyShift};
-    editorCamera.update(cameraInput, context.deltaSeconds);
+        const bool flying = gesture.gesture == CameraGesture::Fly;
+        // C6: the KEY reads are gated on !io.WantTextInput, exactly like F below -- ImGui::IsKeyDown polls
+        // with ImGuiKeyOwner_Any and is blind to a focused InputText, so without this a rename in the
+        // Hierarchy would both type `wasd` and fly the camera. The MOUSE half is deliberately NOT gated: a
+        // drag must keep working while a field has focus.
+        const bool keysLive = flying && !io.WantTextInput;
+        const CameraInput cameraInput{
+            .dragDelta =
+                (gesture.gesture != CameraGesture::None) ? Vec2{io.MouseDelta.x, io.MouseDelta.y} : Vec2::zero(),
+            // ours when the image is hovered, and STILL ours mid-fly even if the cursor wandered out of
+            // the panel (the drag stays alive under mouse capture, so the speed control must follow it)
+            .wheelNotches = (hovered || flying) ? io.MouseWheel : 0.0F,
+            .viewportHeightPoints = avail.y,  // POINTS (D15) -- NEVER drawExtent().height
+            .gesture = gesture.gesture,
+            .moveForward = keysLive && ImGui::IsKeyDown(ImGuiKey_W),
+            .moveBack = keysLive && ImGui::IsKeyDown(ImGuiKey_S),
+            .moveLeft = keysLive && ImGui::IsKeyDown(ImGuiKey_A),
+            .moveRight = keysLive && ImGui::IsKeyDown(ImGuiKey_D),
+            .moveUp = keysLive && ImGui::IsKeyDown(ImGuiKey_E),    // WORLD +Y
+            .moveDown = keysLive && ImGui::IsKeyDown(ImGuiKey_Q),  // WORLD -Y
+            .fast = keysLive && io.KeyShift};
+        editorCamera.update(cameraInput, context.deltaSeconds);
+    }
 
     // drawExtent is step 7's local, in PIXELS -- the ONE place pixels are correct (D15).
     lastAspect =
@@ -794,16 +811,23 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // takes the camera over immediately; AFTER editorCamera.update, so the animation writes LAST and
     // wins; and BEFORE everything downstream, so the gizmo, the pick, the overlay and renderScene all
     // see ONE camera. The same reasoning updateGizmo's own position comment makes, one step earlier.
-    if (gesture.gesture != CameraGesture::None) {
-        viewSnap.cancel();
-    }
-    if (viewSnap.active()) {
-        applyViewPose(editorCamera, viewSnap.advance(context.deltaSeconds));
+    if (!inPlay) {
+        if (gesture.gesture != CameraGesture::None) {
+            viewSnap.cancel();
+        }
+        if (viewSnap.active()) {
+            applyViewPose(editorCamera, viewSnap.advance(context.deltaSeconds));
+        }
     }
 
     // --- 8b''''. the widget's layout and its click. ONE layout, computed here and drawn at step 9x,
     // so the picture and the hit test can never disagree (AC-16).
-    updateViewAxisGizmo(Vec2{imageOrigin.x, imageOrigin.y}, Vec2{avail.x, avail.y}, inputHovered);
+    if (inPlay) {
+        axisLayout = ViewAxisLayout{};  // task 4.7.1: hidden means not computed (the toggle's own rule)
+        axisHover = ViewAxisPick{};
+    } else {
+        updateViewAxisGizmo(Vec2{imageOrigin.x, imageOrigin.y}, Vec2{avail.x, avail.y}, inputHovered);
+    }
 
     // --- 8b'. transform gizmos (task 2.3.3). BETWEEN the camera and picking, and that position is
     // load-bearing in BOTH directions (D4):
@@ -819,7 +843,9 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // frame of lag (D11). Writing context.selection HERE is the HierarchyPanel::applyPending shape
     // (F32): the Image item is submitted and closed, no ImGui tree is open, and no eachChild walk is
     // in flight, which is what .claude/rules/editor.md's "not during a draw walk" actually protects.
-    updatePick(context, Vec2{imageOrigin.x, imageOrigin.y}, Vec2{avail.x, avail.y}, inputHovered);
+    if (!inPlay) {
+        updatePick(context, Vec2{imageOrigin.x, imageOrigin.y}, Vec2{avail.x, avail.y}, inputHovered);
+    }
 
     // D7: F is gated on HOVER, not on focus. This is a REASONED DEVIATION from the chord rule in
     // .claude/rules/editor.md, not an oversight: that rule exists so a focused InputText cannot
@@ -841,7 +867,9 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // camera, so building the overlay any earlier would put the box one frame behind the pixels
     // (INV-2). Drawing here also puts it UNDER the HUD drawn below (the stats card and the hint or fly chips, then
     // the view chip) and OVER the Image above.
-    drawSelectionOverlay(context, Vec2{imageOrigin.x, imageOrigin.y}, Vec2{avail.x, avail.y});
+    if (!inPlay) {
+        drawSelectionOverlay(context, Vec2{imageOrigin.x, imageOrigin.y}, Vec2{avail.x, avail.y});
+    }
 
     // Step 9 (task E.6.3, D9): THE HUD. requestStatsVisible's drain first -- applied only while the chip, the
     // popover's only door, is laid out and no modal is up, the gate the Stats checkbox has (I337), and DROPPED
@@ -851,11 +879,13 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // the speed, and the chip the projection -- with the widget's badge, E.1.3 D15's "two places" still.
     const bool noModal = ImGui::GetTopMostPopupModal() == nullptr;
     const bool statsControlReachable = latchedHudLayout.chip.shown;
-    if (pendingStatsVisible.has_value() && statsControlReachable && noModal) {
+    if (pendingStatsVisible.has_value() && statsControlReachable && noModal && !inPlay) {
         statsVisibleValue = *pendingStatsVisible;
     }
     pendingStatsVisible.reset();  // one tick: the reset runs whichever way the gate answered
-    drawHud(context, hudImageMin, hudImageMax, drawExtent);
+    if (!inPlay) {                // task 4.7.1 (call 8): the HUD and the view chip are editor chrome, hidden in play
+        drawHud(context, hudImageMin, hudImageMax, drawExtent);
+    }
     // Step 9b: RECORD THE INTERACTIVE STRIP'S RECT, in the same screen-space POINTS io.MousePos uses,
     // so updatePick's ARM step can refuse a press the strip owns. `rowStart` is captured before the view chip,
     // the row's only control since task E.6.2 (the `View` button until task E.6.3); the row ENDS at the chip's
@@ -882,8 +912,11 @@ void ViewportPanel::onDraw(PanelContext& context) {
     const ImVec2 rowStart = ImGui::GetCursorScreenPos();
     // task E.6.2 (D18): the view chip alone (`View` until task E.6.3) -- T / R / S and Local / World are the shell
     // toolbar's now.
-    drawViewOptions();  // task 3.6.3
-    const Vec2 rowEnd = viewOptionsButtonMax;
+    if (!inPlay) {
+        drawViewOptions();  // task 3.6.3
+    }
+    // task 4.7.1: in play the row is EMPTY (start == end), so overlayOwnsPress claims no point
+    const Vec2 rowEnd = inPlay ? Vec2{rowStart.x, rowStart.y} : viewOptionsButtonMax;
     overlayRowTopLeft = Vec2{rowStart.x, rowStart.y};
     overlayRowBottomRight = Vec2{rowEnd.x, rowEnd.y};
 
@@ -891,7 +924,9 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // overlay, the interactive row and ImGuizmo's own handles, which were submitted at step 8b'. It
     // reads the SAME axisLayout/axisHover step 8b'''' computed, so what is drawn is exactly what was
     // hit-tested.
-    drawViewAxisGizmo();
+    if (!inPlay) {
+        drawViewAxisGizmo();
+    }
 
     // Step 10: record the request, LAST, after everything succeeded.
     renderRequested = true;
@@ -1004,6 +1039,17 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
 
     // 1. Pessimistic defaults (INV-4) -- before anything below can return.
     gizmoActive = false;
+
+    // task 4.7.1 (D7): no handles in play. The no-target return's shape, so a drag in flight at Play ends as ONE undo.
+    if (context.play.active()) {
+        if (gizmoWasUsing) {
+            context.commands.breakMergeChain();
+        }
+        gizmoWasUsing = false;
+        gizmoWarnLatched = false;
+        ImGuizmo::Enable(false);
+        return;
+    }
 
     // 2. Mode keys. The third gate removes every overlap with fly's W/A/S/D/Q/E (D7): fly's
     // `keysLive` is `flying && !io.WantTextInput` and fly requires RMB held => gesture == Fly, so
@@ -1789,7 +1835,15 @@ void ViewportPanel::renderScene(World& world) {
                                         .eyePosition = editorCamera.position()};
     // buildRenderView + latched WARNs (suppressed for the camera pair, D3) + ForwardRenderer::draw.
     // This is the ONE place in the tree that names render::CameraView, and it is src-private (D2).
-    sceneRenderer->render(world, *sceneFrame, &cameraView);
+    //
+    // task 4.7.1 (D7): in play the scene's own lowest-index Camera draws (the renderer's own walk decides which, given
+    // no override), and only when the scene has none does the editor camera stand in. Edit passes the override always.
+    bool sceneCamera = false;
+    if (drewInPlayValue) {
+        world.each<Camera>([&](Entity, Camera&) { sceneCamera = true; });
+    }
+    lastRenderCameraValue = sceneCamera ? ViewportRenderCamera::Scene : ViewportRenderCamera::Editor;
+    sceneRenderer->render(world, *sceneFrame, sceneCamera ? nullptr : &cameraView);
     // task E.1.1: THE SLOT. AFTER the forward pass, so a Tested line is depth-tested against this
     // frame's geometry; BEFORE endScene, so it records into the still-open HDR pass and goes through
     // the resolve -- and therefore the tonemap -- with everything else. The flush submits its OWN
@@ -1808,7 +1862,7 @@ void ViewportPanel::renderScene(World& world) {
     // NOT finiteness (its own comment says so -- a directly-poisoned NaN survives until the next
     // update() sweeps it). emitDebugGrid's totality gate is what makes that safe: a non-finite
     // camera emits nothing, rejects nothing, and leaves the batch untouched.
-    if (gridEnabledValue) {
+    if (gridEnabledValue && !drewInPlayValue) {  // task 4.7.1: the grid is an editor visual
         (void)render::emitDebugGrid(debugDrawer->batch(), {.eye = editorCamera.position(),
                                                            .focus = editorCamera.pivot(),
                                                            .farPlane = editorCamera.farPlane(),
@@ -1821,7 +1875,7 @@ void ViewportPanel::renderScene(World& world) {
     // Entity: viewport_gizmos.hpp may not name a scene_render type, and this TU already does.
     // task E.6.1: dp, times the UI scale, times the framebuffer scale -- recorded once handed on (I288).
     const float iconSizePixels = VIEWPORT_ICON_SIZE_POINTS * lastUiScale * lastFramebufferScale;
-    if (gizmosEnabledValue) {
+    if (gizmosEnabledValue && !drewInPlayValue) {  // task 4.7.1: so are the light icons and gizmos
         (void)emitViewportGizmos(world,
                                  {.selected = selectionSnapshot,
                                   .primary = selectionPrimary,

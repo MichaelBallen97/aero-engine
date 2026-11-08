@@ -31,6 +31,7 @@ namespace engine::editor {
 class Selection;
 class RootOrder;
 class ProjectSession;  // task 2.6.2 (AC-25): a FORWARD DECLARATION, never an include
+class PlaySession;     // task 4.7.1: a FORWARD DECLARATION, like the project's
 
 struct PanelContext {
     World& world;
@@ -56,6 +57,10 @@ struct PanelContext {
     // I21). `{world, selection, commands, roots}` stopped being a valid initialiser the moment this
     // member landed -- the five construction sites in the tree were all updated with it.
     const ProjectSession& project;
+    // Task 4.7.1: the play mode, read-only -- only EditorApp::applyPlayControl changes it. CONST for the reason the
+    // project is: a panel that could set it would be a second writer. The Viewport reads `active()` to go inert and
+    // to draw the scene's camera; the Inspector and the Hierarchy read `mode()` to lock the scene (Step 10).
+    const PlaySession& play;
     // Task 2.3.1: this frame's SPIKE-CLAMPED delta -- FrameClock::deltaSeconds(), capped at 0.25 s
     // (core/time.hpp), NOT io.DeltaTime. Two reasons the clamped engine clock is the right one: the
     // editor throttles to 20 Hz when unfocused (EditorAppConfig::unfocusedFrameCapHz), and a stall

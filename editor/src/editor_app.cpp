@@ -1347,7 +1347,8 @@ bool EditorApp::tick() {
     // commandStack is the editor's ONE undo history (task 2.4.1 D7); rootOrder is the editor's ONE
     // display order among root entities (task 2.4.2 D10); project is the open project (task 2.6.2
     // D1), CONST so no panel can swap it
-    PanelContext panelContext{sceneWorld, sceneSelection, commandStack, rootOrder, project, frameClock.deltaSeconds()};
+    PanelContext panelContext{sceneWorld,       sceneSelection,           commandStack, rootOrder, project,
+                              playSessionValue, frameClock.deltaSeconds()};
     // task 2.5.1 (plan A14): everything the File menu needs that PanelContext deliberately does not
     // carry (D17), built fresh each frame exactly like panelContext above.
     // task 2.6.1: the SAME named-local requirement as the drain above -- FileDialogHost::projectRoot

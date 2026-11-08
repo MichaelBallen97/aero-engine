@@ -8648,7 +8648,10 @@ TEST_CASE("editor: the tonemap wiring's three source-text invariants hold (task 
         // behavioural witness.
         const std::size_t rowStartAt = soleLineContaining(viewportCode, "const ImVec2 rowStart");
         const std::size_t optionsCallAt = soleLineContaining(viewportCode, "drawViewOptions();");
-        CHECK(nextCodeLine(viewportCode, rowStartAt + 1U) == optionsCallAt);
+        // task 4.7.1: the call sits inside the play gate, which is the first statement after the row's start.
+        const std::size_t playGateAt = nextCodeLine(viewportCode, rowStartAt + 1U);
+        CHECK(viewportCode[playGateAt].find("if (!inPlay) {") != std::string::npos);
+        CHECK(nextCodeLine(viewportCode, playGateAt + 1U) == optionsCallAt);
         const auto namesGizmoBar = [](const std::string& l) { return l.find("drawGizmoBar") != std::string::npos; };
         std::size_t namingGizmoBar = 0;
         std::error_code walkError;
@@ -9060,7 +9063,8 @@ TEST_CASE("editor: the DebugDraw wiring's three source-text invariants hold (tas
 
     SUBCASE("EXACTLY ONE flush, and it sits between render and endScene") {
         const std::size_t flushAt = soleLineContaining(code, "debugDrawer->flush(");
-        const std::size_t renderAt = soleLineContaining(code, "sceneRenderer->render(world, *sceneFrame, &cameraView)");
+        const std::size_t renderAt =
+            soleLineContaining(code, "sceneRenderer->render(world, *sceneFrame, sceneCamera ? nullptr : &cameraView)");
         const std::size_t endSceneAt = soleLineContaining(code, "post->endScene(std::move(*sceneFrame))");
         CHECK(renderAt < flushAt);    // AFTER the geometry, so the depth test has something to test
         CHECK(flushAt < endSceneAt);  // BEFORE the pass closes, so the draws land in an OPEN pass
@@ -9139,7 +9143,8 @@ TEST_CASE("editor: the DebugDraw wiring's three source-text invariants hold (tas
         // handed, with no global state and nothing registered, so it is reachable only by being
         // called. There being exactly one caller IS the claim.
         const std::size_t emitAt = soleLineContaining(code, "render::emitDebugGrid(");
-        const std::size_t renderAt = soleLineContaining(code, "sceneRenderer->render(world, *sceneFrame, &cameraView)");
+        const std::size_t renderAt =
+            soleLineContaining(code, "sceneRenderer->render(world, *sceneFrame, sceneCamera ? nullptr : &cameraView)");
         const std::size_t flushAt = soleLineContaining(code, "debugDrawer->flush(");
         CHECK(renderAt < emitAt);  // AFTER the geometry: the batch is filled once the depth is there
         CHECK(emitAt < flushAt);   // BEFORE the drain, so it is drawn THIS frame rather than next
@@ -9147,7 +9152,7 @@ TEST_CASE("editor: the DebugDraw wiring's three source-text invariants hold (tas
         // ...and it is GUARDED. A push outside the toggle would draw the grid with the box
         // unchecked, which I112's disabled arm also sees -- pinned here as well because this is the
         // subcase a reader consults when they change the guard.
-        const std::size_t guardAt = soleLineContaining(code, "if (gridEnabledValue) {");
+        const std::size_t guardAt = soleLineContaining(code, "if (gridEnabledValue && !drewInPlayValue) {");
         CHECK(guardAt < emitAt);
         CHECK(emitAt - guardAt <= 6U);  // the guard is the emit's OWN block, not a distant one
 
@@ -10751,25 +10756,26 @@ TEST_CASE("editor: what cancels a running view snap, and what does NOT (task E.1
     // pressed from here for exactly the same reason a gesture cannot be injected -- there is no
     // AddKeyEvent anywhere in the tree -- and neither focusSelection nor viewSnap.cancel() is
     // reachable: both are private, and focusSelection additionally needs the PanelContext EditorApp
-    // owns. Its mechanical cover is the `cancels[1] < focusAt` pair in the first subcase below; its
+    // owns. Its mechanical cover is the `cancels[2] < focusAt` pair in the first subcase below; its
     // behavioural cover is validation row 16, which the code-review round added because neither
     // cancel had one. The last subcase drives what the fixture genuinely CAN drive -- the panel
     // really advancing a snap -- and is named for that, not for the cancel.
     const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
     REQUIRE_FALSE(code.empty());
 
-    SUBCASE("there are EXACTLY THREE cancels, and each sits where its reason requires") {
-        // soleLineContaining is deliberately NOT used here: there are legitimately three call sites --
-        // step 8b'' (a camera gesture took over), step 8e (F is about to reframe) and, since task E.5.2,
-        // frameCreatedEntity (a create is about to reframe, F's own reason) -- and a pin that required
-        // one would be pinning the absence of the others.
+    SUBCASE("there are EXACTLY FOUR cancels, and each sits where its reason requires") {
+        // soleLineContaining is deliberately NOT used here: there are legitimately four call sites --
+        // the first play frame's reset (task 4.7.1: a snap in flight when the game starts), step 8b'' (a camera
+        // gesture took over), step 8e (F is about to reframe) and, since task E.5.2, frameCreatedEntity (a create
+        // is about to reframe, F's own reason) -- and a pin that required one would be pinning the absence of the
+        // others.
         std::vector<std::size_t> cancels;
         for (std::size_t i = 0; i < code.size(); ++i) {
             if (code[i].find("viewSnap.cancel();") != std::string::npos) {
                 cancels.push_back(i);
             }
         }
-        REQUIRE(cancels.size() == 3U);
+        REQUIRE(cancels.size() == 4U);
 
         const std::size_t nextGestureAt = soleLineContaining(code, "gesture = nextGesture(gesture, gestureInput);");
         // The CALL, not the definition -- the bare name matches both.
@@ -10779,12 +10785,16 @@ TEST_CASE("editor: what cancels a running view snap, and what does NOT (task E.1
         // THE GESTURE CANCEL, step 8b''. AFTER nextGesture, so a gesture classified THIS frame cancels
         // THIS frame's snap; BEFORE the layout/click block, so a click cannot start a snap in the same
         // frame a gesture claimed the camera.
-        CHECK(nextGestureAt < cancels[0]);
-        CHECK(cancels[0] < layoutAt);
+        // THE PLAY RESET, cancels[0] (task 4.7.1): the first statement of the block that runs on a play frame
+        // entered from an edit frame, before any gesture is classified.
+        CHECK(cancels[0] < nextGestureAt);
+        CHECK(code[cancels[0] - 1U].find("if (inPlay && !drewInPlayValue) {") != std::string::npos);
+        CHECK(nextGestureAt < cancels[1]);
+        CHECK(cancels[1] < layoutAt);
         // ...and it really is inside the gesture test rather than unconditional, which would cancel
         // every snap on its first frame and make the whole animation unreachable.
         bool guardedByGesture = false;
-        for (std::size_t i = cancels[0] > 2U ? cancels[0] - 2U : 0U; i < cancels[0]; ++i) {
+        for (std::size_t i = cancels[1] > 2U ? cancels[1] - 2U : 0U; i < cancels[1]; ++i) {
             guardedByGesture =
                 guardedByGesture || code[i].find("gesture.gesture != CameraGesture::None") != std::string::npos;
         }
@@ -10792,14 +10802,14 @@ TEST_CASE("editor: what cancels a running view snap, and what does NOT (task E.1
 
         // THE F CANCEL, step 8e: immediately BEFORE focusSelection, so the two never fight over
         // yaw/pitch -- the snap writes both every frame, focusOn writes pivot and distance.
-        CHECK(cancels[1] < focusAt);
-        CHECK(focusAt - cancels[1] <= 6U);  // the same statement group, not a distant one
+        CHECK(cancels[2] < focusAt);
+        CHECK(focusAt - cancels[2] <= 6U);  // the same statement group, not a distant one
 
         // THE CREATE CANCEL (task E.5.2): frameCreatedEntity's FIRST statement, before it reframes --
         // the F cancel's reason, from EditorApp's create drain.
         const std::size_t createAt = soleLineContaining(code, "void ViewportPanel::frameCreatedEntity(");
-        CHECK(createAt < cancels[2]);
-        CHECK(cancels[2] == createAt + 1U);
+        CHECK(createAt < cancels[3]);
+        CHECK(cancels[3] == createAt + 1U);
     }
     SUBCASE("the snap advance runs AFTER editorCamera.update, so it writes last and wins") {
         const std::size_t updateAt =
@@ -11746,7 +11756,8 @@ TEST_CASE(
     REQUIRE_FALSE(code.empty());
 
     SUBCASE("2.4.1's merge-chain edges and the one undoable write keep their counts") {
-        CHECK(countLinesContaining(code, "breakMergeChain(") == 5U);  // task E.6.2: + the Select return's (D4)
+        CHECK(countLinesContaining(code, "breakMergeChain(") ==
+              6U);  // task E.6.2: + the Select return's (D4); 4.7.1: + the play return's
         CHECK(countLinesContaining(code, "context.commands.push(") == 1U);
         CHECK(countLinesContaining(code, "gizmoWriteFromWorld(") == 1U);
         CHECK(countLinesContaining(code, "std::make_unique<TransformCommand>") == 1U);
@@ -12089,7 +12100,7 @@ TEST_CASE("editor: the gizmo emit's four source-text invariants hold (task E.2.3
     }
     SUBCASE("(c) it is GUARDED by the toggle, and by its OWN guard") {
         const std::size_t emitAt = soleLineContaining(code, "emitViewportGizmos(");
-        const std::size_t guardAt = soleLineContaining(code, "if (gizmosEnabledValue) {");
+        const std::size_t guardAt = soleLineContaining(code, "if (gizmosEnabledValue && !drewInPlayValue) {");
         CHECK(guardAt < emitAt);
         CHECK(emitAt - guardAt <= 2U);  // the emit's OWN guard, not one several statements above it
     }
@@ -23436,7 +23447,7 @@ TEST_CASE("editor: every gizmo-return break sits under its own drag's guard (tas
         }
     }
     CHECK(edges == 2U);    // the Begin and End edges, unchanged since 2.4.1
-    CHECK(guarded == 3U);  // the no-target, Select and behind-camera returns
+    CHECK(guarded == 4U);  // the no-target, Select and behind-camera returns, and task 4.7.1's play return
     CHECK(breaks == guarded + edges);
     // ...and the guard is READ before the latch is cleared: within each early return, the guarded break comes
     // first and `gizmoWasUsing = false;` after it.
@@ -23536,7 +23547,8 @@ TEST_CASE("editor: the viewport's keys, its Select return and the tool state's n
         CHECK(std::regex_search(std::string("    GizmoMode gizmoMode{};"), member));  // ANTI-VACUITY
     }
     SUBCASE("(c) the Select return disables the gizmo, after the target and before the call (seed S2)") {
-        CHECK(countLinesContaining(code, "ImGuizmo::Enable(false)") == 3U);  // no-target, Select, the release guard
+        CHECK(countLinesContaining(code, "ImGuizmo::Enable(false)") ==
+              4U);  // no-target, Select, the release guard, play
         const std::size_t operationAt = soleLineContaining(code, "gizmoOperationFor(");
         const std::size_t targetAt = soleLineContaining(code, "gizmoModelMatrix(context.world, target)");
         const std::size_t manipulateAt = soleLineContaining(code, "ImGuizmo::Manipulate(");
@@ -32075,4 +32087,226 @@ TEST_CASE("editor: the pads, the chords and the feed are wired once, as source t
     const std::size_t handlerAt = soleLineContaining(app, "void EditorApp::handleEvent(const platform::Event& ev) {");
     const std::size_t feedAt = soleLineContaining(app, "playSessionValue.feed(ev,");
     CHECK(handlerAt < feedAt);
+}
+
+// ---- task 4.7.1 (I393-I395): the Viewport in play -- the scene's camera, the editor's visuals gone ------------------
+namespace {
+
+// One tick-by-tick witness of the editor camera: five numbers, compared with ==, so "bit-identical" is a value test.
+struct PlayCameraPose {
+    engine::Vec3 position;
+    engine::Vec3 pivot;
+    float yaw = 0.0F;
+    float pitch = 0.0F;
+    float distance = 0.0F;
+};
+
+[[nodiscard]] PlayCameraPose readPlayCameraPose(const engine::editor::EditorCamera& camera) {
+    return PlayCameraPose{.position = camera.position(),
+                          .pivot = camera.pivot(),
+                          .yaw = camera.yaw(),
+                          .pitch = camera.pitch(),
+                          .distance = camera.distance()};
+}
+
+[[nodiscard]] bool samePlayCameraPose(const PlayCameraPose& a, const PlayCameraPose& b) {
+    return a.position.x == b.position.x && a.position.y == b.position.y && a.position.z == b.position.z &&
+           a.pivot.x == b.pivot.x && a.pivot.y == b.pivot.y && a.pivot.z == b.pivot.z && a.yaw == b.yaw &&
+           a.pitch == b.pitch && a.distance == b.distance;
+}
+
+}  // namespace
+
+TEST_CASE("editor: play draws through the scene's camera and leaves the editor camera alone (task 4.7.1, I393)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i393", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    using engine::editor::PlayControl;
+    using engine::editor::ViewportRenderCamera;
+    if (viewport->debugDraw() == nullptr) {
+        // shader-tools OFF: the panel is Unavailable, nothing renders, and nothing was ever recorded as scene-drawn
+        app->requestPlayControl(PlayControl::Play);
+        e62Ticks(*app, 3);
+        CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Editor));
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        return;
+    }
+
+    engine::World& world = app->world();
+    std::vector<engine::Entity> cameras;
+    world.each<engine::Camera>([&](engine::Entity e, engine::Camera&) { cameras.push_back(e); });
+    for (const engine::Entity e : cameras) {
+        REQUIRE(world.destroy(e));
+    }
+    e62Ticks(*app, 2);
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Editor));  // Edit, no scene camera
+
+    engine::Entity sceneCamera = world.create();
+    REQUIRE(world.add<engine::Transform>(sceneCamera,
+                                         engine::Transform{.position = engine::Vec3{10.0F, 4.0F, 10.0F}}) != nullptr);
+    REQUIRE(world.add<engine::Camera>(sceneCamera, engine::Camera{}) != nullptr);
+    e62Ticks(*app, 2);
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Editor));  // Edit never takes the scene's camera
+
+    const engine::editor::EditorCamera& editorCamera = *app->viewportCamera();
+    const PlayCameraPose beforePlay = readPlayCameraPose(editorCamera);
+
+    app->requestPlayControl(PlayControl::Play);
+    REQUIRE(app->tick());
+    CHECK((app->playSession().mode() == engine::editor::PlayMode::Playing));
+    // The control is applied after this tick's draw walk, so the Viewport's first play frame is the next tick's.
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Editor));
+    REQUIRE(app->tick());
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Scene));
+    e62Ticks(*app, 10);
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Scene));
+    CHECK(samePlayCameraPose(beforePlay, readPlayCameraPose(editorCamera)));
+
+    // The scene loses its Camera mid-play: the editor camera draws instead.
+    REQUIRE(world.destroy(sceneCamera));
+    e62Ticks(*app, 2);
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Editor));
+    sceneCamera = world.create();
+    REQUIRE(world.add<engine::Transform>(sceneCamera,
+                                         engine::Transform{.position = engine::Vec3{10.0F, 4.0F, 10.0F}}) != nullptr);
+    REQUIRE(world.add<engine::Camera>(sceneCamera, engine::Camera{}) != nullptr);
+    e62Ticks(*app, 2);
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Scene));
+
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 3);
+    CHECK((app->playSession().mode() == engine::editor::PlayMode::Edit));
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Editor));
+    CHECK(samePlayCameraPose(beforePlay, readPlayCameraPose(editorCamera)));
+
+    // A view snap in flight when Play is pressed is DROPPED, never paused: Stop must not resume it (D7).
+    viewport->requestViewSnap(engine::editor::ViewAxis::PosY);
+    REQUIRE(viewport->viewSnapActive());
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 2);
+    CHECK((app->playSession().mode() == engine::editor::PlayMode::Playing));
+    CHECK_FALSE(viewport->viewSnapActive());
+    const PlayCameraPose duringPlay = readPlayCameraPose(editorCamera);
+    e62Ticks(*app, 4);
+    CHECK(samePlayCameraPose(duringPlay, readPlayCameraPose(editorCamera)));
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 4);
+    CHECK(samePlayCameraPose(duringPlay, readPlayCameraPose(editorCamera)));
+    app->requestQuit();
+    CHECK(app->tick() == false);
+}
+
+TEST_CASE("editor: the editor's visuals are gone in play and back after Stop (task 4.7.1, I394)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i394", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    using engine::editor::PlayControl;
+    if (viewport->debugDraw() == nullptr || viewport->selectionOutlinePass() == nullptr) {
+        // shader-tools OFF: no pass exists to count, and the HUD still has a play-time rule to keep
+        const std::uint64_t hudBefore = viewport->hudRecord().framesRecorded;
+        app->requestPlayControl(PlayControl::Play);
+        e62Ticks(*app, 3);
+        CHECK(viewport->hudRecord().framesRecorded == hudBefore);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        return;
+    }
+
+    engine::World& world = app->world();
+    const engine::Entity light = world.create();
+    REQUIRE(world.add<engine::Transform>(light, engine::Transform{}) != nullptr);
+    REQUIRE(world.add<engine::PointLight>(light, engine::PointLight{}) != nullptr);
+    const engine::Entity cube = world.create();
+    REQUIRE(world.add<engine::Transform>(cube, engine::Transform{}) != nullptr);
+    REQUIRE(world.add<engine::MeshRenderer>(cube, engine::MeshRenderer{}) != nullptr);
+    app->selection().set(light);
+    app->selection().add(cube);
+    viewport->requestGridEnabled(true);
+    viewport->requestGizmosEnabled(true);
+    e62Ticks(*app, 2);
+
+    // Edit: the grid and the light's gizmo draw, the outline composites once per tick, the HUD records per tick.
+    const std::size_t compositeEdit = viewport->selectionOutlinePass()->compositeCount();
+    const std::uint64_t hudEdit = viewport->hudRecord().framesRecorded;
+    REQUIRE(app->tick());
+    CHECK(viewport->debugDraw()->lastFrameDrawCalls() > 0U);
+    CHECK(viewport->selectionOutlinePass()->compositeCount() > compositeEdit);
+    CHECK(viewport->hudRecord().framesRecorded > hudEdit);
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 2);
+    const std::size_t compositePlay = viewport->selectionOutlinePass()->compositeCount();
+    const std::uint64_t hudPlay = viewport->hudRecord().framesRecorded;
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CAPTURE(i);
+        CHECK(viewport->debugDraw()->lastFrameDrawCalls() == 0U);
+        CHECK(viewport->debugDraw()->lastFrameLines() == 0U);
+        CHECK(viewport->selectionOutlinePass()->compositeCount() == compositePlay);
+        CHECK(viewport->hudRecord().framesRecorded == hudPlay);
+    }
+
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 3);
+    const std::size_t compositeStopped = viewport->selectionOutlinePass()->compositeCount();
+    const std::uint64_t hudStopped = viewport->hudRecord().framesRecorded;
+    REQUIRE(app->tick());
+    CHECK(viewport->debugDraw()->lastFrameDrawCalls() > 0U);
+    CHECK(viewport->selectionOutlinePass()->compositeCount() > compositeStopped);
+    CHECK(viewport->hudRecord().framesRecorded > hudStopped);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+}
+
+TEST_CASE("editor: the Viewport's play gates are written once, as source text (task 4.7.1, I395)") {
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE(code.size() > 100U);
+    // Every hover-read key is gated by this one boolean: no tier can press a key in a playing viewport.
+    CHECK(countLinesContaining(code, "const bool hovered = !inPlay && ImGui::IsItemHovered();") == 1U);
+    CHECK(countLinesContaining(code, "ImGui::IsItemHovered()") == 1U);
+    CHECK(countLinesContaining(code, "if (dragActive && !inPlay) {") == 1U);  // nothing drops into a playing scene
+
+    const std::size_t gizmoPlayAt = soleLineContaining(code, "if (context.play.active()) {");
+    const std::size_t gizmoDefaultAt = soleLineContaining(code, "gizmoActive = false;");
+    CHECK(gizmoDefaultAt < gizmoPlayAt);
+    CHECK(gizmoPlayAt - gizmoDefaultAt <= 6U);  // directly after the pessimistic default
+    bool breaksChain = false;
+    bool clearsUsing = false;
+    bool disables = false;
+    for (std::size_t i = gizmoPlayAt; i < gizmoPlayAt + 7U && i < code.size(); ++i) {
+        breaksChain = breaksChain || code[i].find("breakMergeChain") != std::string::npos;
+        clearsUsing = clearsUsing || code[i].find("gizmoWasUsing = false") != std::string::npos;
+        disables = disables || code[i].find("ImGuizmo::Enable(false)") != std::string::npos;
+    }
+    CHECK(breaksChain);
+    CHECK(clearsUsing);
+    CHECK(disables);
+
+    CHECK(countLinesContaining(code, "sceneCamera ? nullptr : &cameraView") == 1U);
+    CHECK(countLinesContaining(code, "ImGuizmo::GetStyle()") == 2U);  // I125(e) still holds
 }

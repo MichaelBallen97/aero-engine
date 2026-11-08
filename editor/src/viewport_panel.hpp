@@ -34,6 +34,10 @@ class Device;
 
 namespace engine::editor {
 
+// task 4.7.1: which camera the LAST rendered frame drew through. Editor is every Edit frame, and a play frame whose
+// scene has no Camera; Scene is a play frame the scene's own lowest-index Camera drew.
+enum class ViewportRenderCamera : std::uint8_t { Editor = 0, Scene };
+
 class ViewportPanel final : public Panel {
 public:
     explicit ViewportPanel(rhi::Device& device) noexcept;
@@ -91,6 +95,8 @@ public:
     // task 4.7.1 (A3): the image's rect as the LAST drawn frame laid it out, in window points; `valid` is false when
     // that frame drew no image. The play session's input feed reads it one frame behind (the event loop runs first).
     [[nodiscard]] GameImageRect gameImageRect() const noexcept { return gameImageRectValue; }
+    // task 4.7.1: the camera the last renderScene() drew through (Editor until a play frame finds a scene Camera).
+    [[nodiscard]] ViewportRenderCamera lastRenderCamera() const noexcept { return lastRenderCameraValue; }
 
     // Records EXACTLY what drawViewOptions' combo and slider record: a candidate value, SANITIZED on
     // store. It exists because no tier in this tree can move an ImGui slider, so the clamp would
@@ -511,8 +517,10 @@ private:
     ViewAxisPick axisHover{};
 
     // Task 3.1.5.
-    const MeshBoundsLookup* meshBounds = nullptr;       // published by EditorApp, borrowed, never owned
-    GameImageRect gameImageRectValue{};                 // task 4.7.1: written every onDraw, right after the Image
+    const MeshBoundsLookup* meshBounds = nullptr;  // published by EditorApp, borrowed, never owned
+    GameImageRect gameImageRectValue{};            // task 4.7.1: written every onDraw, right after the Image
+    bool drewInPlayValue = false;                  // task 4.7.1: the last drawn onDraw frame was a play frame
+    ViewportRenderCamera lastRenderCameraValue = ViewportRenderCamera::Editor;  // task 4.7.1: renderScene's record
     Vec2 lastImageSizePoints{};                         // the last drawn image rect's size, POINTS -- what
                                                         // pickAt needs for the screen-space disc radius
     std::optional<ViewportAssetDrop> pendingAssetDrop;  // drained by tick(), never here
