@@ -2673,7 +2673,7 @@ TEST_CASE("inspector: the Guid row names a .ts by the project's language (task 4
 
 TEST_CASE("inspector: exactly one built-in references a Script asset, found by metadata (task 4.6.1, IR25)") {
     engine::editor::registerEditorReflection();
-    World world;
+    const World world;
     const std::size_t count = world.componentTypeCount();
     REQUIRE(count > 3);  // anti-vacuity: the built-ins are registered
 

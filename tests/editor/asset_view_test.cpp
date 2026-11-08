@@ -1883,7 +1883,7 @@ namespace {
     return {};
 }
 
-[[nodiscard]] std::string trimmed(std::string text) {
+[[nodiscard]] std::string trimmed(const std::string& text) {
     const std::size_t first = text.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) {
         return {};
