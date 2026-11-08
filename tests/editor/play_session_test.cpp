@@ -603,3 +603,126 @@ TEST_CASE("play feed: losing focus centres every stick and trigger the game hold
     session.feed(padAxisEvent(GamepadAxis::LeftX, -32768, 1), image, OS);
     CHECK(session.input().gamepadAxis(GamepadAxis::LeftX, 1) == doctest::Approx(-1.0F));
 }
+
+TEST_CASE("play feed: Stop leaves the game's input empty at once, before any next Play (task 4.7.1, GI9)") {
+    const GameImageRect image = imageRect();
+    constexpr HostOs OS = HostOs::Linux;
+    PlaySession session = focusedSession();
+    session.feed(padEvent(EventType::GamepadConnected, 2), image, OS);
+    session.feed(keyEvent(EventType::KeyDown, Key::W), image, OS);
+    session.feed(buttonEvent(EventType::MouseButtonDown, MouseButton::Left, 150.0F, 60.0F), image, OS);
+    session.feed(padButtonEvent(EventType::GamepadButtonDown, GamepadButton::East, 2), image, OS);
+    REQUIRE(session.input().keyDown(Key::W));
+    REQUIRE(session.input().mouseButtonDown(MouseButton::Left));
+    REQUIRE(session.input().gamepadButtonDown(GamepadButton::East, 2));
+
+    REQUIRE((session.apply(PlayControl::Stop) == PlayTransition::Stopped));
+    CHECK_FALSE(session.input().keyDown(Key::W));
+    CHECK_FALSE(session.input().mouseButtonDown(MouseButton::Left));
+    CHECK_FALSE(session.input().gamepadButtonDown(GamepadButton::East, 2));
+    CHECK_FALSE(session.input().gamepadConnected(2));
+    CHECK(session.input().mousePosition().x == doctest::Approx(0.0F));
+    CHECK(session.input().mousePosition().y == doctest::Approx(0.0F));
+}
+
+TEST_CASE("play feed: a new Play forgets where the last session's pointer was (task 4.7.1, GI10)") {
+    const GameImageRect image = imageRect();
+    constexpr HostOs OS = HostOs::Windows;
+    PlaySession session = focusedSession();
+    // The last session ends with the pointer over the image.
+    session.feed(moveEvent(150.0F, 60.0F, 1.0F, 1.0F), image, OS);
+    session.feed(wheelEvent(1.0F), image, OS);
+    REQUIRE(session.input().mouseWheel().y == doctest::Approx(1.0F));  // the wheel reaches the game there
+
+    session.apply(PlayControl::Stop);
+    session.apply(PlayControl::Play);
+    session.setGameFocus(true);
+    session.feed(wheelEvent(1.0F), image, OS);  // no pointer was fed in this session: it is not over the image
+    CHECK(session.input().mouseWheel().y == doctest::Approx(0.0F));
+
+    session.feed(moveEvent(150.0F, 60.0F, 1.0F, 1.0F), image, OS);
+    session.feed(wheelEvent(1.0F), image, OS);
+    CHECK(session.input().mouseWheel().y == doctest::Approx(1.0F));
+}
+
+TEST_CASE("play feed: the pointer is tracked while the game is unfocused, for the wheel on return (task 4.7.1, GI11)") {
+    const GameImageRect image = imageRect();
+    constexpr HostOs OS = HostOs::Windows;
+    const std::array<Event, 3> insideEvents{moveEvent(150.0F, 60.0F, 1.0F, 1.0F),
+                                            buttonEvent(EventType::MouseButtonDown, MouseButton::Left, 150.0F, 60.0F),
+                                            buttonEvent(EventType::MouseButtonUp, MouseButton::Left, 150.0F, 60.0F)};
+    for (const Event& inside : insideEvents) {
+        CAPTURE(static_cast<int>(inside.type));
+        PlaySession session = sessionIn(PlayMode::Playing);  // unfocused, the pointer unknown
+        session.feed(inside, image, OS);
+        CHECK_FALSE(session.input().mouseButtonDown(MouseButton::Left));  // nothing of it reached the game
+        session.setGameFocus(true);
+        session.feed(wheelEvent(1.0F), image, OS);
+        CHECK(session.input().mouseWheel().y == doctest::Approx(1.0F));  // the wheel is judged at that point
+    }
+
+    // The latest unfocused position wins: the pointer left the image before focus returned.
+    PlaySession left = sessionIn(PlayMode::Playing);
+    left.feed(moveEvent(150.0F, 60.0F, 1.0F, 1.0F), image, OS);
+    left.feed(moveEvent(600.0F, 500.0F, 1.0F, 1.0F), image, OS);
+    left.setGameFocus(true);
+    left.feed(wheelEvent(1.0F), image, OS);
+    CHECK(left.input().mouseWheel().y == doctest::Approx(0.0F));
+}
+
+TEST_CASE(
+    "play feed: the image is half-open, its top-left corner inside and its far edges outside (task 4.7.1, GI12)") {
+    const GameImageRect image = imageRect();  // min (100, 40), max (420, 280)
+    constexpr HostOs OS = HostOs::Windows;
+    struct Probe {
+        float x;
+        float y;
+        bool inside;
+    };
+    const std::array<Probe, 8> probes{Probe{100.0F, 40.0F, true},    // the corner itself
+                                      Probe{100.0F, 150.0F, true},   // on min.x
+                                      Probe{250.0F, 40.0F, true},    // on min.y
+                                      Probe{419.0F, 279.0F, true},   // the last whole point
+                                      Probe{420.0F, 150.0F, false},  // on max.x
+                                      Probe{250.0F, 280.0F, false},  // on max.y
+                                      Probe{99.0F, 150.0F, false},   // just left of min.x
+                                      Probe{250.0F, 39.0F, false}};  // just above min.y
+    for (const Probe& probe : probes) {
+        CAPTURE(probe.x);
+        CAPTURE(probe.y);
+        PlaySession session = focusedSession();
+        session.feed(buttonEvent(EventType::MouseButtonDown, MouseButton::Left, probe.x, probe.y), image, OS);
+        CHECK((session.input().mouseButtonDown(MouseButton::Left) == probe.inside));
+        if (probe.inside) {
+            CHECK(session.input().mousePosition().x == doctest::Approx(probe.x - 100.0F));
+            CHECK(session.input().mousePosition().y == doctest::Approx(probe.y - 40.0F));
+        }
+        PlaySession wheel = focusedSession();
+        wheel.feed(moveEvent(probe.x, probe.y, 0.0F, 0.0F), image, OS);
+        wheel.feed(wheelEvent(1.0F), image, OS);
+        CHECK((wheel.input().mouseWheel().y == doctest::Approx(probe.inside ? 1.0F : 0.0F)));
+    }
+}
+
+TEST_CASE("play feed: losing focus releases a pad button on the slot that held it (task 4.7.1, GI13)") {
+    const GameImageRect image = imageRect();
+    constexpr HostOs OS = HostOs::Windows;
+    PlaySession session = sessionIn(PlayMode::Playing);
+    session.feed(padEvent(EventType::GamepadConnected, 0), image, OS);
+    session.feed(padEvent(EventType::GamepadConnected, 1), image, OS);
+    session.feed(padEvent(EventType::GamepadConnected, 3), image, OS);
+    session.setGameFocus(true);
+    session.feed(padButtonEvent(EventType::GamepadButtonDown, GamepadButton::South, 1), image, OS);
+    session.feed(padButtonEvent(EventType::GamepadButtonDown, GamepadButton::East, 3), image, OS);
+    REQUIRE(session.input().gamepadButtonDown(GamepadButton::South, 1));
+    REQUIRE(session.input().gamepadButtonDown(GamepadButton::East, 3));
+    session.endGameFrame();
+
+    session.setGameFocus(false);
+    CHECK_FALSE(session.input().gamepadButtonDown(GamepadButton::South, 1));
+    CHECK_FALSE(session.input().gamepadButtonDown(GamepadButton::East, 3));
+    CHECK(session.input().gamepadButtonReleased(GamepadButton::South, 1));
+    CHECK(session.input().gamepadButtonReleased(GamepadButton::East, 3));
+    CHECK_FALSE(session.input().gamepadButtonReleased(GamepadButton::South, 0));  // slot 0 never held it
+    CHECK_FALSE(session.input().gamepadButtonReleased(GamepadButton::East, 0));
+}
