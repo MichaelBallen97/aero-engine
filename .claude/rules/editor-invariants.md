@@ -95,7 +95,8 @@ latched one frame behind by the Viewport) only while the game has focus; pads co
 does, and `adoptConnectedPads` seeds the slots the editor's own state reports at Play, because SDL announces a pad once,
 when it is added. **`WindowFocusLost` is never forwarded**: `InputState` clears held keys on it with no released edge.
 The game's release is synthesized instead -- `setGameFocus(false)` sends a KeyUp, MouseButtonUp and GamepadButtonUp per
-held item -- and a KeyUp or button-up for something the game never held is dropped. The editor's own `ctx->input()` is
+held item, and a GamepadAxisMoved of 0 per deflected axis of each connected pad (`InputState` keeps an axis across
+frames, so one never centred reads deflected while the game is deaf) -- and a KeyUp or button-up for something the game never held is dropped. The editor's own `ctx->input()` is
 never the game's. **`newFrame()` runs only after a game frame ran** (`endGameFrame`, D11): an edge made while paused
 reaches the frame that Step or resume runs, and held state is kept throughout. The editor's Context starts
 `GamepadDrivers::System` in `main.cpp` alone (R38 applies to the editor); tests keep `Off` or `VirtualOnly`.

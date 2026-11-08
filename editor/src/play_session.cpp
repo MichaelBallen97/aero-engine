@@ -183,7 +183,8 @@ void PlaySession::endGameFrame() noexcept { game.newFrame(); }
 void PlaySession::setGameFocus(bool focused) noexcept {
     const bool next = focused && modeValue != PlayMode::Edit;
     if (focusValue && !next) {
-        // A focus loss sends no release: the game gets one for everything it holds (A5), buttons only (D9).
+        // A focus loss sends no release: the game gets one for everything it holds (A5, D5): keys, mouse buttons,
+        // pad buttons, and each deflected pad axis centred.
         for (auto k = static_cast<std::size_t>(platform::Key::A); k < static_cast<std::size_t>(platform::Key::Count);
              ++k) {
             const auto code = static_cast<platform::Key>(k);
@@ -218,6 +219,18 @@ void PlaySession::setGameFocus(bool focused) noexcept {
                     ev.type = platform::EventType::GamepadButtonUp;
                     ev.gamepadButton.slot = static_cast<std::uint8_t>(slot);
                     ev.gamepadButton.button = button;
+                    game.process(ev);
+                }
+            }
+            for (auto a = static_cast<std::size_t>(platform::GamepadAxis::LeftX);
+                 a < static_cast<std::size_t>(platform::GamepadAxis::Count); ++a) {
+                const auto axis = static_cast<platform::GamepadAxis>(a);
+                if (game.gamepadAxis(axis, slot) != 0.0F) {
+                    platform::Event ev;
+                    ev.type = platform::EventType::GamepadAxisMoved;
+                    ev.gamepadAxis.slot = static_cast<std::uint8_t>(slot);
+                    ev.gamepadAxis.axis = axis;
+                    ev.gamepadAxis.value = 0;
                     game.process(ev);
                 }
             }

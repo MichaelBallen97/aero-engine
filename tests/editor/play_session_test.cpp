@@ -36,6 +36,7 @@ using engine::editor::ProjectLanguage;
 using engine::editor::sceneLocked;
 using engine::platform::Event;
 using engine::platform::EventType;
+using engine::platform::GamepadAxis;
 using engine::platform::GamepadButton;
 using engine::platform::InputState;
 using engine::platform::Key;
@@ -149,6 +150,15 @@ Event padButtonEvent(EventType type, GamepadButton button, std::uint8_t slot) {
     ev.type = type;
     ev.gamepadButton.slot = slot;
     ev.gamepadButton.button = button;
+    return ev;
+}
+
+Event padAxisEvent(GamepadAxis axis, std::int16_t value, std::uint8_t slot) {
+    Event ev;
+    ev.type = EventType::GamepadAxisMoved;
+    ev.gamepadAxis.slot = slot;
+    ev.gamepadAxis.axis = axis;
+    ev.gamepadAxis.value = value;
     return ev;
 }
 
@@ -568,4 +578,28 @@ TEST_CASE("play feed: a pad release the game never saw pressed makes no edge (ta
     CHECK(session.input().gamepadButtonPressed(GamepadButton::East, 1));
     session.feed(padButtonEvent(EventType::GamepadButtonUp, GamepadButton::East, 1), image, OS);
     CHECK(session.input().gamepadButtonReleased(GamepadButton::East, 1));
+}
+
+TEST_CASE("play feed: losing focus centres every stick and trigger the game holds (task 4.7.1, GI8)") {
+    const GameImageRect image = imageRect();
+    constexpr HostOs OS = HostOs::Windows;
+    PlaySession session = sessionIn(PlayMode::Playing);
+    session.feed(padEvent(EventType::GamepadConnected, 1), image, OS);
+    session.setGameFocus(true);
+
+    session.feed(padAxisEvent(GamepadAxis::LeftX, 32767, 1), image, OS);
+    session.feed(padAxisEvent(GamepadAxis::RightTrigger, 32767, 1), image, OS);
+    CHECK(session.input().gamepadAxis(GamepadAxis::LeftX, 1) == doctest::Approx(1.0F));
+    CHECK(session.input().gamepadAxis(GamepadAxis::RightTrigger, 1) == doctest::Approx(1.0F));
+
+    session.setGameFocus(false);
+    CHECK(session.input().gamepadAxis(GamepadAxis::LeftX, 1) == 0.0F);
+    CHECK(session.input().gamepadAxis(GamepadAxis::RightTrigger, 1) == 0.0F);
+    CHECK(session.input().gamepadConnected(1));
+
+    session.feed(padAxisEvent(GamepadAxis::LeftX, -32768, 1), image, OS);
+    CHECK(session.input().gamepadAxis(GamepadAxis::LeftX, 1) == 0.0F);  // unfocused: dropped
+    session.setGameFocus(true);
+    session.feed(padAxisEvent(GamepadAxis::LeftX, -32768, 1), image, OS);
+    CHECK(session.input().gamepadAxis(GamepadAxis::LeftX, 1) == doctest::Approx(-1.0F));
 }
