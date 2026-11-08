@@ -280,6 +280,14 @@ out-of-range index push nothing. The test seam (`requestNamedSelection`) lives e
 `EditorApp` expires it after `drawShellUi` — because a panel that did not draw would otherwise apply a
 stale request the first time it is shown.
 
+**Add Component offers a component by metadata, never by name (task 4.6.1).** `addComponentOffered(registrationName,
+language)` is the gate: every component in a TypeScript project, and in a C++ project every component except one whose
+field carries `AERO_ASSET` metadata resolving to `AssetKind::Script` (`componentReferencesScriptAsset` walks the meta
+data and resolves the token with `assetReferenceKindFromToken`). Today that is `ScriptComponent` alone, found without its name
+in the source (`I387`), so a later component with a script field is hidden with no editor change. The gate sits in the
+`##addComponent` loop after the raw-component skip and before the list is counted non-empty, so a C++ project whose
+every other component is already on the entity shows the disabled `(none)` row rather than an empty popup.
+
 **No panel writes the scene directly (true since task 2.4.2).** The only call sites of
 `entity_ops` / `component_ops` / `transform_ops` mutators under `editor/src/` are their own
 TUs and their command TUs (`entity_commands.cpp`, `component_commands.cpp`,
@@ -943,9 +951,12 @@ state.
   height it is clamped and scrolls whole (D34) -- a row added to it moves that number.
 - **A user string is never an ImGui label** in either window: a card is `InvisibleButton("##…")` with its text on the
   draw list (`I358(d)`), because a label hides everything after a `##`.
-- **The scripting-language control stays disabled until 4.6.1**: its selected card is `NEW_PROJECT_LANGUAGE`, the
-  constant `createProject` writes. Enabling it means a language parameter on `createProject` and a form field -- 4.6.1's
-  design, not a toggle of the `BeginDisabled()` pair.
+- **The scripting-language control is live (task 4.6.1)**: the selected card is `NewProjectForm::language`, written
+  only by a card's own click (`languageCardSelected` decides which card draws selected) and by the typing-equivalent
+  seam (`requestNewProjectLanguage`, applied only while the form is open). It is preselected TypeScript on every open,
+  because `form = {}` resets it; nothing remembers the last choice. The hint row is ONE row per language
+  (`newProjectLanguageHint`), so the dialog's height does not change when the card does. `createAndOpenProject` receives
+  the form's value, and nothing else decides the language of a new project.
 - **The validation line is ONE row in every state** and the dialog's height never changes after it appears; a state
   that needs a second row breaks the stillness `ImGuiCond_Always` centring relies on.
 - **A click-equivalent seam on a modal resolves INSIDE the modal's body**, by the click's own predicate, so it closes

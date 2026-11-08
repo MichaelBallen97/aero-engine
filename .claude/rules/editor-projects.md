@@ -171,6 +171,14 @@ Split out of `editor.md` so that no editor rules file is cut at the 150 000-char
   Its name stays narrower than its scope on purpose (a rename was considered and rejected both times
   because it would touch the workflow YAML, the ctest case name, `CLAUDE.md` and this file, each a
   place a rename can go half-done).
+- **A project's language is chosen once, at creation (task 4.6.1).** `createProject` takes a `ProjectLanguage` with no
+  default, so a call site states it; the retired `NEW_PROJECT_LANGUAGE` constant is gone and `P100` fails if the token
+  returns. `writeProjectText` has one caller, `createProject`, and `writeCppProject` has one, `createAndOpenProject`
+  (`P100` counts both over `editor/src/*.cpp`): a second writer of `project.json` would be a language-change path, and
+  nothing in the editor changes the language after creation. Project Settings shows it read-only. A panel asks the
+  language through `effectiveProjectLanguage(session)`, the one way, which answers Ts with no project open: with
+  nothing open there is no asset to attach and the gates hide nothing. The panel that ignores its context and asks a
+  question whose kind is never Script passes `KIND_LANGUAGE_NEUTRAL` instead (`editor-assets.md`).
 - **`std::filesystem::create_directory`/`create_directories` on an ALREADY-EXISTING directory returns
   `false` with NO `error_code` set (measured, not assumed).** Deciding a scaffold failure from the
   bool return instead of from `ec` breaks the legal "adopt an existing empty directory" path every
@@ -349,3 +357,7 @@ is refused outright.** Validate on a NON-symlinked root unless symlinks are the 
 - **`writeCppProject` writes a file only when nothing is at the path** (`entryExists`, a `symlink_status` test, so a
   directory or a symlink wearing the name counts, a dangling one included), and it is in
   `check-project-no-delete.sh`'s Check A.
+- **Its one product caller is `createAndOpenProject`, for `ProjectLanguage::Cpp`, once, at creation (task 4.6.1).** It
+  runs after `adoptProject` and never on an open: writing it again would put back a `main.cpp` the developer deleted on
+  purpose. A file it cannot write is one WARN per file (`cppTemplateWarnings`) and the project opens anyway: the manifest
+  is valid and `createProject`'s no-rollback rule (INV-P4) holds. `P100` pins the caller count.

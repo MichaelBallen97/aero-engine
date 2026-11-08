@@ -328,6 +328,17 @@ Split out of `editor.md` so that no editor rules file is cut at the 150 000-char
   not an oversight: gating the service call on visibility would make "switch to the Assets tab" a
   visible multi-tick stutter every time, trading a background cost nobody sees for a foreground one
   everybody would.
+- **`classifyAssetKind` takes the project's language (task 4.6.1).** A `.ts` that is not a `.d.ts` is a Script asset
+  only in a TypeScript project; in a C++ project it falls through to the Text table, because that project transpiles
+  nothing. The language reaches the Assets panel (latched once per draw as `languageValue`), `matchesFilter`,
+  `searchAssets`, `filterEntriesByKind`, the picker, the Inspector's reference row and EditorApp's drop handling
+  through the same parameter. **`KIND_LANGUAGE_NEUTRAL` is for a question whose kind is never Script** (is this a
+  Prefab, a Material, a Texture): `AV75` proves both languages answer those alike. It is allowed in exactly four files,
+  `asset_view.cpp`, `material_panel.cpp`, `material_session.cpp` and `thumbnail_cache.cpp`, and `AV77` pins the set: it
+  reads every call over `editor/src/*.cpp`, refuses a spelled-out `ProjectLanguage::` third argument and refuses a
+  neutral one anywhere else. `material_panel.cpp` passes the neutral value, not the project's language, because the
+  panel ignores its context and a texture slot's candidates are Textures. A new call asking a question that can be
+  Script passes the project's language.
 
 ## Hot-reload watcher (task 3.1.4)
 
