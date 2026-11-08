@@ -86,7 +86,8 @@ Playing or Paused, `keyboardFocusPanelId() == "Viewport"`, and the window has OS
 `WindowFocusLost`. **Play hands the Viewport the keyboard through `requestedPanelFocus`, consumed by the one focus slot
 -- never a new `SetWindowFocus` call** (`I159(a)` stays one file, three calls), so the keyboard is the Viewport's a tick
 or two after the one that applied Play (a case waits on `keyboardFocusPanelId()`, bounded), and game focus follows. A click on another panel takes it away; a click on the
-viewport image gives it back.
+viewport image gives it back. An OS focus loss leaves the keyboard where it was (ImGui only clears its input,
+`imgui.cpp:11257-11261`), so game focus returns with the window when the Viewport held the keyboard, with no click.
 
 **THE GAME'S INPUT IS A SEPARATE `platform::InputState` THE FEED WRITES, AND IT NEVER SEES A WINDOW EVENT (task 4.7.1,
 A5, D5, D9, D11).** `PlaySession::feed` takes the events the editor already polls, in `handleEvent`, and processes a key,

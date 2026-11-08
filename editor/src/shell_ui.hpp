@@ -116,7 +116,8 @@ struct ShellUiState {
     // it after drawShellUi.
     std::optional<PlayControl> playControlPressed;
     // OUT, one-shot: a Quit (the chord or File > Exit) pressed while a game plays. It sets no FileFlow request:
-    // EditorApp stops the game first and then raises the guarded quit, so the guard judges the edit-mode document.
+    // EditorApp raises the guarded quit after the draw walk, and the next tick stops the game before the guard runs,
+    // so the guard judges the edit-mode document.
     bool guardedQuitRequested = false;
 };
 
