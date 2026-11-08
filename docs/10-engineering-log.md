@@ -74,6 +74,8 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | 4.4.4 Prefab-lite spawn | #135 | `25f93d1` | **11 / 11**, nothing failed (the editor GUI driven on macOS: Save as Prefab on one root, a root with a child and two roots; three real drops; undo and redo through the Edit menu; a reopen; the item greyed with no project; a hundred spawns at a warm median of 0.165–0.190 ms in Release against 16.6 ms; the 61 engine cases under `leaks`, 0 leaks; no row NOT EXECUTABLE). Two code-review rounds (round 1: three should-fix, among them capture's non-finite pivot, and three minor; round 2: two minor; all closed); a 219-row sabotage matrix whose 22 holes, all predicted, closed with PW27–PW30, PR21–PR28, PE18–PE19 and I378–I383 and re-ran red, three more rows witnessed by the page; R39 (BS8's reopen races Windows' process teardown) and four unowned handoffs; CI red on attempt 1 on BS8 alone, on Windows Release, then green with no change (`42014951944`, 6 / 6), and green on `main`'s push run (`42326395560`, 6 / 6) |
 | 4.5.1 Public C++ API surface audit | #136 | `8a20539` | **8 / 8** with 4.5.2, one page for the epic, nothing failed (macOS, Release, against a prefix installed from `74e288b`: the generated project configured and built with the prefix as its only path, in an environment of `HOME`, `PATH` and `TMPDIR`; the hello-cube's title `Cube Demo ñ`, turning cube, arrow keys and Escape; the mini-game's eight movement keys, the x ≈ ±8 edge, 4.64 shots a second each visible 0.93–0.95 s, all three hits and Escape; no row NOT EXECUTABLE). Epic 4.5 ran as one branch and one PR, with `f859048` as 4.5.1's last commit. Two code-review rounds (round 1: one blocking, the Windows separators in SDK27; three should-fix, among them the Windows Debug refusal that plan section H replaced with the runtime pin; two minor; round 2: one minor; all closed). Sabotage: 59 doctest and 40 ctest rows; six holes, all predicted, five closed with RG17, RG18, PT8, CP18 and SDK30 and re-run red, and C33 a non-finding; six rows witnessed by the page. R40 and four unowned handoffs. CI: the PR's run `42383159907` was 6 / 6 green on its first attempt, with the SDK step 6 / 6 on all three lanes; `main`'s push run `42391543025` was 6 / 6 green |
 | 4.5.2 C++ project template | #136 | `8a20539` | **8 / 8**: the same page, PR and merge as 4.5.1 (rows 1–4 are this task's) |
+| 4.6.1 Language field + editor gating | #137 | `bb14048` | **7 / 7** with 4.7.1, one page for both; row 8 (a physical pad) NOT EXECUTABLE, none connected; nothing failed after the fix (macOS, Release, a signed throwaway `.app`: the first pass saw Add Component draw at full strength in play against AC-11, `d65bdfe` fixed it and rows 3 and 7 ran again at `a3bdce2`). Story 4's demo: 7 / 7 executable rows on a build of `main` (2026-11-09), two rows waiting on the TypeScript small game |
+| 4.7.1 Play/stop state machine + toolbar | #137 | `bb14048` | **7 / 7**: the same page, PR and merge as 4.6.1 (rows 1–3 are 4.6.1's, rows 4–8 this task's; row 8 NOT EXECUTABLE) |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -21962,3 +21964,235 @@ label the `sdk.*` drivers' checks; they are not doctest cases.
   shared helper, the consumer and the writer tool) and cases in `scene_serialize_test.cpp` and `platform_test.cpp`.
 - Docs: `docs/03`, `docs/04`'s "The C++ SDK", `docs/09` section 4.12, `docs/08` (R40, four unowned handoffs and the
   validation debt), the phase file, and the build-and-guards and editor-projects rule files.
+
+### 4.6.1 + 4.7.1 — Language field + editor gating and Play/stop state machine + toolbar — a project's language is chosen once and gates the editor, and the editor gains its play mode: four toolbar controls, three chords, a game clock, the game's input feed and a scene lock
+
+A project's language is chosen in New Project and never changes: a TypeScript project works as before, and a C++ project
+is created with the C++ template and gates the editor (a `.ts` is plain Text there, and Add Component offers no script
+component). The toolbar gains Play, Pause, Step and Stop, driven by `PlaySession`, a pure value that owns the mode, the
+game clock, the game's own `platform::InputState` and the lock that keeps the scene unchanged while a game plays. Play
+runs no script yet: the script calls, the snapshot and the restore hang on this spine in 4.7.2–4.7.4. The two tasks ran
+as one unit: one spec, one plan, one branch, one review loop, one sabotage matrix, one validation page and one PR.
+Merged as PR #137 (`bb14048`, a true merge commit): twenty commits on `e50a1d2`. They are 4.6.1's four steps and its
+boundary docs commit `e632690`; 4.7.1's six steps with a style commit (`e31c7a7`); round 1's fix (`774c8f6`) and its
+docs (`9c42bf6`); the two commits that closed the sabotage holes (`258729a`, `5204438`); the closing gate's clang-tidy
+fix (`07bddc6`); and three commits after the manual pass: `d65bdfe` (Add Component draws disabled in play), `ba57af5`
+(round 3's two fixes) and `a3bdce2` (round 4's case and comment). CI: run `42483361911` at `a3bdce2` was 6 / 6 green on
+its first attempt, and `main`'s push run `42490007674` on the merged head was 6 / 6 green. 4.6.1 completes Story 4's
+task list: its fourth line and the dialog half of its second. 4.7.1 gives Story 1 its fourth line and the spine of its
+third (Pause, then Step runs exactly one frame; the `onUpdate` half is 4.7.4's). Story 4's demo ran on 2026-11-09 on a
+build of `main`: 7 / 7 executable rows pass, and the two rows that need the TypeScript small game wait for it.
+
+**What shipped.**
+- **The language at creation** (`project_file.cpp`, `project.cpp`, `scene_session.cpp`, `project_ui*.cpp`; P96–P100,
+  NP14, NP15, I384, I385). `createProject` takes a `ProjectLanguage` with no default, and the retired
+  `NEW_PROJECT_LANGUAGE` constant is gone. New Project's two cards are live, TypeScript preselected on every open, and
+  the form's value is the only thing that decides a new project's language. `writeProjectText` keeps one caller, so
+  nothing writes the field after creation; Project Settings shows it read-only. `createAndOpenProject` calls
+  `writeCppProject` (4.5.2) once for a C++ project, after adopting it and never on an open; a file it cannot write is
+  one WARN and the project opens anyway.
+- **The language-aware classifier** (`asset_view.cpp` and its consumers; AV74–AV77, MP20, IR24, I386, I400, I401).
+  `classifyAssetKind` and every consumer (the browser's kind filter, the search, the picker, the Inspector's reference
+  row, the drop handling) take the language. A `.ts` is a Script asset only in a TypeScript project and Text in a C++
+  one. A question whose kind is never Script passes `KIND_LANGUAGE_NEUTRAL`, allowed in four files (AV77).
+- **Add Component by metadata** (`inspector_panel.cpp`, `addComponentOffered`; IR25, IR26, I387). In a C++ project a
+  component whose field carries `AERO_ASSET` metadata resolving to a Script asset is left out, today `ScriptComponent`
+  alone, found without its name. One already in a scene still draws and can be removed.
+- **`PlaySession`** (`play_session.{hpp,cpp}`, new, in `aero_editor_core`, no ImGui, SDL or GPU; PY1–PY10, HK6). The
+  mode (Edit, Playing, Paused) and its one writer `apply`; the control table, the enabled and active rules, the chords,
+  the tooltips (a C++ game runs as its own build; no project is open), the status text, the focus verdict and the lock
+  are pure functions of the mode. The clock yields one game frame per editor tick while playing, with
+  `FrameClock::deltaSeconds()` as dt, none while paused, and one frame of exactly 1/60 s per Step. `ChordModifiers`
+  gains `alt`.
+- **The game's input feed** (`PlaySession::feed`, `setGameFocus`, `adoptConnectedPads`; GI1–GI13). While the game has
+  focus, keys, buttons pressed inside the image, the wheel over it and the pointer (in points from the image's top-left)
+  reach the game's own `InputState`; pads connect and disconnect at any time. A focus loss synthesises a release for
+  every held key and button and centres every deflected stick and trigger. `newFrame()` runs only after a game frame
+  ran, so an edge made while paused reaches the frame Step or resume runs.
+- **The toolbar, the chords and the status bar** (`shell_chrome_ui.cpp`, `toolbar_model.*`, `shell_ui.cpp`,
+  `status_bar.*`; TB13–TB15, FT16, I389, I390, I402). Four controls in one centred group, Play and Pause drawn with the
+  accent fill while active; `ToolbarMode` keeps Full and Compact, and Minimal is retired. Cmd/Ctrl+P, +Shift+P and
+  +Alt+P record a chord that the toolbar resolves through the same enabled rule as a click. The status bar's right zone
+  opens with `Playing · frame N` or `Paused · frame N`.
+- **`EditorApp`'s wiring and the pads** (`editor_app.cpp`, `main.cpp`; I388, I391, I392, I403). `EditorApp` owns the
+  session, advances its clock once per tick, hands the Viewport the keyboard at Play through the one focus slot, and
+  feeds the game from the events it already polls. The editor's Context starts `GamepadDrivers::System`.
+- **The Viewport in play** (`viewport_panel.cpp`; I393–I395, I406). It draws through the scene's lowest-index Camera, or
+  the editor camera when there is none; the grid, light icons, gizmos, selection outline, overlay, view-axis widget and
+  HUD are not drawn; tool keys, fly keys, F, camera gestures, picking and drops are inert; Stop returns to the editor
+  camera where it was.
+- **The scene lock** (`inspector_panel.cpp`, `hierarchy_panel.cpp`, `editor_app.cpp`, `shell_ui.cpp`; I396–I399, I404,
+  I405, I407–I410). Every editing control draws disabled and every pusher returns before it pushes; a refused undo,
+  redo, create, drop or file action is dropped, never kept for after Stop. Selection, inspection, Save as Prefab, asset
+  files and materials stay live. A Quit while playing applies Stop first, so the unsaved-changes guard judges the
+  edit-mode document (I398). Add Component's outline and label are drawn inside the disabled scope through
+  `ImGui::GetColorU32`, so they dim like every other locked control (I407).
+- **Docs**: `docs/03`'s "Play-in-editor (task 4.7.1)", `docs/09` sections 4.2 and 4.12, the phase file's reading of the
+  gate's "or native C++", and the editor, editor-invariants, editor-projects, editor-assets and tests rule files.
+
+**Code-review rounds.** Five.
+- Round 1 (`e50a1d2..0470955`): 3 gaps, 0 blocking, 2 should-fix, 1 minor.
+  - A focus loss released pad buttons but left sticks and triggers deflected in `InputState` while the game was deaf.
+    D5's "losing focus releases everything the game holds" governs: `774c8f6` centres each deflected axis (GI8, seen red
+    first).
+  - Game focus came back on `WindowFocusGained` with no click, against G10's wording but by D5's three conditions. D5
+    governs: AC-10, G10 and manual row 6 gained the OS arm; no code changed.
+  - `shell_ui.hpp:119` stated the guarded quit's order backwards (`9c42bf6`).
+- Round 2 (`0470955..9c42bf6`): approved, all three closed.
+- Round 3 (`07bddc6..d65bdfe`, after the manual pass's fix): 2 gaps, 0 blocking, 1 should-fix, 1 minor.
+  - The two new colour fields of `InspectorDrawRecord` were missing from the per-frame reset, so a frame with no
+    selection kept the last frame's colours (`ba57af5`, I408, seen red first).
+  - A press held on Add Component across Play could keep the button active. Measured before any change: Play's Viewport
+    hand-off ends the press before the first locked draw, so no fill code changed and I409 pins the behaviour.
+- Round 4 (`d65bdfe..ba57af5`): 3 gaps, 0 blocking, 1 should-fix, 2 minor.
+  - No case read the fill colour's per-frame reset: the sabotage matrix's S150 HOLE (`a3bdce2`, I410).
+  - The `SDL_video.h` include's comment said the window is found by its title (`a3bdce2`).
+  - `tests.md`'s rule that nothing in `tests/` can press the mouse became false for a press (this record's docs).
+- Round 5 (`ba57af5..a3bdce2`): approved.
+
+**The sabotage matrix.** 143 rows designed at `9c42bf6`: 73 on the shell binary, 55 on the ImGui binary, 4 on the
+Inspector binary and 11 (W1–W11) that only a window, a real key or a pad shows.
+- The first run: RED 116, HOLE 16 (the 16 the design predicted), VALIDATION 11.
+- GI9–GI13 (`258729a`) closed S47, S48, S74, S75, S76 and S79, and I400–I406 (`5204438`) closed S33, S34, S40, S98,
+  S111, S114, S117 and S129; each re-run came back RED. Three read-only seams back them:
+  `EditorApp::assetBrowserKindFilteredCount`, `EditorApp::fileRequestPathPending` and
+  `ReferenceFieldRecord::valueTextWidth`.
+- S31 (Add Component listing a script component in a C++ project) is VALIDATION, witnessed by manual row 3: no automated
+  tier opens a popup.
+- S128 is accepted as unobservable in 4.7.1. Deleting `gameImageRectValue.valid = false` matters only on a frame whose
+  Viewport draws no image; hiding the panel skips `onDraw`, shrinking it trips ImGui's `DockBuilderSetNodeSize` assert,
+  and nothing reads the game's input before 4.7.4. A Viewport hidden behind another tab keeps its last valid rect, which
+  is benign: the game has no focus then. Its row is a `docs/08` handoff to 4.7.4.
+- The 24 rows whose files changed with the hole cases re-ran RED at `5204438`, and S40 and S111 again at `07bddc6`.
+- After the manual pass, eight rows covered the Add Component fix: S144 (W5's seed, now caught by I407), S145 and S146
+  (the outline's and the label's colour skipping `GetColorU32`), S147 (`EndDisabled` moved back beside the button), S148
+  and S149 (the two colour resets, I408), S150 (the fill colour's reset) and S151 (S105's removed Viewport hand-off, now
+  also caught by I409). With S30, S39 and S40, whose file changed, they ran RED 10, HOLE 1: S150, as its row predicted.
+  I410 (`a3bdce2`) closed it, RED.
+- Final, 151 rows: RED 138, VALIDATION 13 (S31, S128, W1–W11), HOLE 0.
+
+**Traps found, each measured.**
+- **A control drawn by hand inside `BeginDisabled` does not dim.** `BeginDisabled` multiplies `Style.Alpha` by
+  `DisabledAlpha` (pinned `imgui.cpp:8898-8899`), and only `GetColorU32` applies it (`:3665-3668`); a draw-list colour
+  from `roleU32` never reads it. The first manual pass saw Add Component pixel-identical to Edit in play (0 px differ)
+  while every ImGui widget dimmed. Through `GetColorU32` inside the scope its outline and label measured (41,58,69) and
+  (67,121,146) against (42,59,69) and (66,121,145) predicted at 0.60 over (25,27,32).
+- **A disabled item keeps its active id while a press is held off it.** `ItemHoverable` clears it only with the mouse
+  over the item (`imgui.cpp:5084-5087`, `:5128-5131`). What ends a press held across Play is Play itself: its Viewport
+  hand-off goes through `SetWindowFocus`, and `FocusWindow` clears an active id of another root window (`:13750-13756`).
+  Measured: the fill reads 0 on every locked draw, and the full-alpha fill comes back with the hand-off removed.
+- **Play applies after the draw walk.** The tick that applies Play still draws the Edit look; the first play frame is
+  the next tick (I388, I393). A case that counts play draws reads the outline's alpha, not the tick.
+- **A press can be synthesised; a popup still cannot be read.** The SDL3 backend's global-mouse fallback rewrites
+  `io.MousePos` only with no button down (pinned `imgui_impl_sdl3.cpp:778`), so a case that pushes the motion and the
+  button-down to the editor's window in one tick keeps its press (I409, I410). The window is found through
+  `SDL_GetWindows`: the editor renames it, so a title lookup finds nothing.
+- **A step gate that only counts a whole binary hides a red case in it.** Step 9's gate ran its own cases and only
+  counted the whole ImGui binary, so seven viewport source-text pins it turned red (I106, I110, I115, I126, I131, I291,
+  I292) went unseen until Step 10 ran the binary whole; their bodies were folded into Step 9 before any push.
+- **`doctest-totals.sh` flags a binary STALE when it was built before the commit that holds it**, which a fix built,
+  tested and then committed always is. A capped dry-run build (`-- -n`) reading "no work to do" settles it.
+  `warn-sweep.sh` touches the changed sources, so after it the other preset's tree needs a rebuild that changes nothing.
+
+**Where the implementation departed from the plan.**
+- Step 1 replaced the retired constant's unlisted readers with `ProjectLanguage::Ts` until Step 2 swapped in the form's
+  field; P100 counts the bare constant only (`NEW_PROJECT_LANGUAGE_CARDS` stays).
+- Step 2 wrote NP14, NP15, I384 and I385 after the code, and Step 8 wrote its cases after the code too; the sabotage
+  matrix stands in for their red-first runs. I384 accepts the hint's first word, because a narrow runner elides it.
+- Step 3 renamed MP20 to end at its id, reads I386 through the search path, and has `material_panel.cpp` pass
+  `KIND_LANGUAGE_NEUTRAL`. Step 5 edited `docs/09` sections 4.2 and 4.12; the plan's 4.7 is the error catalog.
+- Step 7: `play_session.cpp` branches on the host, so it joined HK5's file list, which now names six editor sources.
+- Step 8 moved two existing I307 assertions: its anti-vacuity count to at least one `SetTooltip`, and its `c.text` reads
+  from one to two, since the status bar's play segment draws with `c.text`.
+- Step 9's I393 gained a view-snap arm (the planned case stayed green with the first-frame reset deleted).
+- Step 10 moved four of its own pins, and I396's Inspector arm is a runtime branch skipped with reflect tools off.
+- Round 1's two plan causes became addendum H (R1-a, R1-b); the manual pass's finding became addendum I (F1), and rounds
+  3 and 4 added F2 and F3. F3 measured before changing anything and took its branch B. F1's claim that a disabled
+  `InvisibleButton` reports neither hovered nor active holds only with no press held, and addendum I says so.
+- I409 counts a draw as in play by the outline's alpha below 255, and reads "no popup opened" as the undo stack and the
+  entity count unchanged.
+
+**What was deliberately left out, and which task holds each.**
+- The script calls in play (`ScriptSystem::update` per game frame, `onDestroy` on Stop, `reloadScript`, binding the
+  game's `InputState` to the VM and the resolver): 4.7.4. The snapshot and the restore: 4.7.2. Autosave before play:
+  4.7.3.
+- Anything that draws the game's input: 4.7.4's validation reads it through a script, and S128's row (a hidden or
+  zero-area Viewport in play) goes with it (`docs/08`).
+- R38's DirectInput hint for the editor's Context: only if a Windows pass shows the stall.
+- A background-events hint for pads: not needed, since pads are read only while the editor window is in front (D9).
+- Cmd+Option+P with a text field active also types Option-P's character into it (G3): accepted, and not exercised.
+- The New Project info box keeps naming `project.json`, `assets/` and `scenes/` for C++ (G5): the hint row names the
+  template's files, and the box keeps its 517-point height.
+
+**The sentences that govern new work.**
+- A project's language is chosen once, at creation, and nothing writes `project.json` after it; a panel asks the
+  language through `effectiveProjectLanguage`, which answers TypeScript with no project open.
+- A question whose kind can be Script passes the project's language; `KIND_LANGUAGE_NEUTRAL` is for one that cannot, in
+  the four files AV77 names.
+- Add Component gates by metadata, never by name.
+- The mode has one writer, `PlaySession::apply`, called from `EditorApp::applyPlayControl`; a panel reads the session
+  through `PanelContext`'s `const` reference.
+- A chord records and the toolbar resolves it through the same enabled rule as a click.
+- The game's input is its own `InputState`, fed only while the game has focus; a focus loss synthesises every release
+  and never forwards `WindowFocusLost`.
+- Every pusher reads the lock, and a fifth file that pushes onto the undo stack fails I399 until it does.
+- A control drawn by hand inside a disabled scope resolves its colours through `ImGui::GetColorU32`.
+- A case presses the mouse by pushing SDL motion and button-down events to the editor's window in one tick.
+- These live in `.claude/rules/editor.md`, `editor-invariants.md`, `editor-projects.md`, `editor-assets.md` and
+  `tests.md`.
+
+**Validation and sabotage status — macOS 7 / 7 (2026-11-08), Windows and Linux unrun.** The editor was a Release build
+in a signed throwaway `.app` on the built-in 3024×1964 Retina panel. Rows 1, 2, 4, 5 and 6 ran at `07bddc6`; the first
+run of row 7 saw Add Component draw at full strength in play, and rows 3 and 7 ran again at `a3bdce2`.
+- Row 1: the C++ card's outline and dot moved to it, the hint named `CMakeLists.txt`, and the dialog stayed 517 points
+  tall. The project held `project.json` with `"cpp"` and the template's four files, and no `tsconfig.json`; reopening
+  the dialog selected TypeScript.
+- Row 2: Project Settings read `C++` with no control. A hand edit to `"ts"` changed nothing until the project was opened
+  again, which showed `TypeScript` and enabled Play.
+- Row 3: in the C++ project `player.ts` was a Text tile that a Script field refused, and Add Component on a
+  Transform-only entity listed nine components and no Script Component; in a TypeScript project the tile was a Script
+  and the list offered it.
+- Row 4: Play showed the scene camera with none of the editor's visuals, the status bar counted frames, Pause held the
+  count and Step added one; after Stop the viewport matched the capture taken before Play (0 px differ).
+- Row 5: in play Q, W, E, R, X, F, RMB + WASD and a click on the image changed nothing; from the Hierarchy the three
+  chords paused, stepped and stopped; after Stop, W selected Move.
+- Row 6: focus moved to the Hierarchy on a click and back on a click on the image, and an app switch and back kept it.
+  The game ran 1211 frames in 10.25 s in front and 203 behind another app.
+- Row 7: every locked control drew disabled or refused, and the scene was unchanged. Add Component's outline and label
+  dimmed to within 1 per channel of the predicted colour, a click opened nothing, and after Stop the Inspector matched
+  Edit. Cmd+Q while playing stopped play, then raised the unsaved-changes prompt.
+- Row 8 (a physical pad) is NOT EXECUTABLE on macOS: no pad was connected. Off macOS all eight rows are owed by hand,
+  and row 8 times R38's start-up on Windows. CI is the only witness off macOS. PR #137's run (`42483361911`) ran every
+  new case in both configurations, 228 / 228 on Windows and 233 / 233 on Linux, I409's and I410's synthesised press
+  among them (their only skip is `AERO_SKIP_OR_FAIL`, a failure under `AERO_REQUIRE_GPU=1`), and `sdk.*` 6 / 6 on each;
+  the lint job was green.
+
+**Story 4's demo — macOS 7 / 7 executable rows (2026-11-09).** It ran on the worktree's Release editor and SDK prefix at
+`a3bdce2`, whose tree (`cfce4cb`) is `bb14048`'s. The C++ mini-game built against the installed headers alone (one
+include path, the prefix; all 15 libraries from it; no third-party name in any included header's code) and played by its
+README's rules: the `--scripted` line exact, the ±8 clamp, 4.63 shots a second, three hits and Escape exiting 0. New
+Project's C++ `Cubes` wrote `"cpp"` and the template, which two reopens left byte-identical, then built from its README
+and ran. A TypeScript project transpiled `player.ts` within 3 s and offered ScriptComponent and Play, where `Cubes`
+offered neither. Rows 4 and 9 wait on the TypeScript small game. The first attempt stopped when another device took this
+Mac's input through Universal Control, and nothing was sent until it cleared.
+
+Measured at `a3bdce2` on fresh build directories:
+- `aero_editor_shell_test` **2598** (+40), `aero_editor_imgui_test` **416** (+27) and `aero_editor_inspector_test`
+  **77** (+3, cases written into it; no component). `aero_tests` **2045**, `aero_scene_serialize_test` **52** and **14 /
+  28** are unchanged.
+- reflect-tools-OFF `aero_tests` **2013**, shell **2556** and ImGui **416**; shader-tools-OFF `aero_tests` **1905**,
+  shell **2598** and ImGui **397**.
+- `ctest -N` is **233 / 220 / 107**, with `cooker.*` 81 in all three and no entry added; a `macos-sdk` tree is 233 + 6.
+- The guards read math **673**, platform **99**, rhi **200**, scene **99**, golden-rule **202**, project-no-delete **A=9
+  B=116**, audio **11-3-75**, probes **7-77** and script **182-99-20**. Math and Check B moved with the three new
+  C-family files, one of them in `editor/src`; no engine, runtime or CMake file was added.
+
+**Case ids claimed:** P96–P100 (next free: P101), NP14–NP15 (NP16), AV74–AV77 (AV78), MP20 (MP21), HK6 (HK7), TB13–TB15
+(TB16), FT16 (FT17), IR24–IR26 (IR27), I384–I410 (I411), PY1–PY10 (PY11) and GI1–GI13 (GI14).
+
+**Build & dependency impact:** no vcpkg port and no new target.
+- `aero_editor_core` gains `play_session.cpp` and its public header; `aero_editor_shell_test` gains
+  `tests/editor/play_session_test.cpp`.
+- The editor's Context starts the system gamepad drivers on every OS (R38 now reaches the editor's start-up).
+- Docs: `docs/03`, `docs/09` sections 4.2 and 4.12, `docs/08` (the handoffs and the validation debt), the phase file,
+  and the editor, editor-invariants, editor-projects, editor-assets and tests rule files.

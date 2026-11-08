@@ -9,15 +9,13 @@ Each rule here was earned by a defect, a green-and-wrong test or a measurement t
 
 ## Case ids
 
-**Next free ids, measured by a whole-`tests/` token sweep on E.6.4's tree: `I361` at the ImGui tier** (4.3.1 took
-`I361`–`I366`, so the next is **`I367`**; 4.3.1's new prefixes are `EB` (next `EB31`) and `ST` (next `ST43`)),
-`AA68`, `AD77`, `AH21`, `AM29`, `AV68`, `BD8`, `BR31`, `BV10`, `CC15`, `CD15`, `CR13`, `CS11`, `DD31`, `DG26`, `DR28`,
-`EC5`, `EK11`, `EP19`, `FT16`, `G29`, `GL8`, `GR34`, `HK6`, `HY9`, `IO24`, `IR23`, `IX19`, `MB27`, `NP14`, `P96`,
-`PC15`, `PX6`, `RF8`, `RT31`, `SQ15`, `SS64`, `TB13`, `TH19`, `TS11`, `US13`, `VM65`, `VO15`, `WL7`, `X32`, plus 4.1.2's
-`ML80` and `VN5` (4.1.1 added `VM` and 4.1.2 `ML`, `VN` and `VM61`–`VM64`, so every other id is still the E.6.4
-sweep's). The list does not name every taken prefix: `MR` (E.3.4), `PJ` (E.4.1), `CN` (E.4.2) and `MC` (mesh
-cook, which is why the card cache took `CC`) are taken too, so a NEW prefix is checked against a fresh sweep,
-never against this list. Which ids each task took is recorded in its `docs/10` entry.
+**Next free ids, measured by a whole-`tests/` token sweep at `bb14048` (after 4.6.1 + 4.7.1): `I411` at the ImGui
+tier**, `AA68`, `AD77`, `AH21`, `AM29`, `AV78`, `BD8`, `BR31`, `BV10`, `CC15`, `CD15`, `CR13`, `CS17`, `DD31`, `DG26`,
+`DR30`, `EB31`, `EC5`, `EK12`, `EP19`, `FT17`, `G29`, `GI14`, `GL8`, `GR34`, `HK7`, `HY9`, `IO24`, `IR27`, `IX19`,
+`MB27`, `ML80`, `MP21`, `NP16`, `P101`, `PC15`, `PX6`, `PY11`, `RF8`, `RT31`, `SQ15`, `SS64`, `ST45`, `TB16`, `TH20`,
+`TS11`, `US13`, `VM89`, `VN5`, `VO15`, `WL7`, `X32`. The list does not name every taken prefix: `MR` (E.3.4), `PJ`
+(E.4.1), `CN` (E.4.2) and `MC` (mesh cook, which is why the card cache took `CC`) are taken too, so a NEW prefix is
+checked against a fresh sweep, never against this list. Which ids each task took is recorded in its `docs/10` entry.
 **E.6.1 DELETED `I230`** with the ProggyClean remap table it pinned — the id is retired, never reused.
 **`I193`–`I209`, `I259`–`I269` and `I271`–`I274` are FREE and were never claimed by anything that merged** (the
 last two were reserved by the fix plans and left unused) — a
@@ -127,13 +125,18 @@ once on frame one**, which makes `panelDrawnCount(x) > before` satisfied with or
 already drawing — put the target in front with an explicit request and `REQUIRE` it is not drawing first. **A
 baseline taken before the two settle ticks reads a layout artefact.**
 
-**NOTHING IN `tests/` CAN SYNTHESISE A CLICK, PRESS A KEY, OR OPEN AN ImGui POPUP.** The backend rewrites
-`io.MousePos` every `NewFrame` and ImGuizmo exports no getter for `mbEnable`, so `I118` and `I115` are
-source-text pins that say so in their own comments. `I142` exercises `BeginPopupContextItem`'s own
-`IM_ASSERT(id != 0)` on both call sites every frame — real cover — **but the popup never OPENS**, so
-`EndPopup`, both `BeginDisabled` pairs, `MenuItem`, `Separator` and the whole of `resetField` execute nowhere
-in CI. **Every future context menu inherits this hole, and a manual validation pass is its only behavioural
-witness.**
+**NOTHING IN `tests/` CAN OPEN AN ImGui POPUP, AND A MOUSE PRESS IS SYNTHESISED ONLY BY SDL EVENTS PUSHED IN ONE TICK
+(4.7.1).** The SDL3 backend's global-mouse fallback rewrites `io.MousePos` from the real cursor on a `NewFrame` with no
+window under the mouse and no button down (pinned `imgui_impl_sdl3.cpp:778`). A case presses by pushing
+`SDL_EVENT_MOUSE_MOTION` and `SDL_EVENT_MOUSE_BUTTON_DOWN` to the editor's window in the same tick, so a button is down
+when the next `NewFrame` runs, then moves and releases with more pushed events (`I409`, `I410`). The window is found
+through `SDL_GetWindows`: the editor renames it, so a title lookup finds nothing. A real cursor moved during a local run
+mixes its own motion in. No case pushes a key this way yet, and ImGuizmo exports no getter for `mbEnable`, so `I118` and
+`I115` are source-text pins that say so in their own comments. `I142` exercises `BeginPopupContextItem`'s own
+`IM_ASSERT(id != 0)` on both call sites every frame — real cover — **but the popup never OPENS**, so `EndPopup`, both
+`BeginDisabled` pairs, `MenuItem`, `Separator` and the whole of `resetField` execute nowhere in CI, and a press where a
+popup would open is read through its effects instead (`I409`: the undo stack and the entity count unchanged). **Every
+future context menu inherits this hole, and a manual validation pass is its only behavioural witness.**
 
 **ENTT'S `each` WALKS IN REVERSE CREATION ORDER (E.2.2).** A truncation test seeding nine entities and
 expecting the first eight **by creation order** reads the wrong ones: collect the World's own walk into a

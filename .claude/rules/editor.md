@@ -796,6 +796,14 @@ state.
   after Stop. A Quit while playing is the exception: the top of `tick()` applies Stop first, so the usual unsaved-changes
   guard judges the edit-mode document. The menu bar's Quit and Exit stay on `fileEnabled` and raise
   `ShellUiState::guardedQuitRequested` when locked, which `EditorApp` turns into `requestGuardedQuit()`.
+- **A CONTROL DRAWN BY HAND INSIDE A DISABLED SCOPE RESOLVES ITS COLOURS THROUGH `ImGui::GetColorU32` (task 4.7.1,
+  AC-11).** `BeginDisabled` dims by multiplying `Style.Alpha` by `DisabledAlpha` (pinned `imgui.cpp:8898-8899`), and
+  only `GetColorU32` applies it: a draw-list colour from `roleU32` never reads `Style.Alpha`, so an `InvisibleButton`
+  dressed with `dashedRect` and `drawRoleText` refuses its click and still draws at full strength. Add Component draws
+  its fill, outline and label inside its scope, the outline and the label through `GetColorU32` (the explicit-colour
+  overloads of `dashedRect` and `drawRoleText`), and `I407` reads the colours the draw list received in Edit, Playing,
+  Paused and after Stop. Its fill keeps `roleU32`: a disabled item is never hovered, and a press held across Play,
+  the one way it stays active, ends at Play's Viewport hand-off before the first locked draw (`I409`).
 - **THE VIEWPORT IN PLAY IS THE GAME'S PICTURE (task 4.7.1, D7).** `onDraw` latches `drewInPlayValue` from
   `context.play.active()`; `renderScene` reads the latch, so the first play frame is the tick AFTER the one that
   applied Play (the tick that applied it still draws through the editor camera; `I393`). In play the render call passes

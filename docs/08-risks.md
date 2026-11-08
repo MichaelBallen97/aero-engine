@@ -45,7 +45,7 @@
 | **R35** | **A source-mapped frame can name the wrong line, because quickjs records a position only at some operations** (raised by task 4.3.4's spike, 2026-10-31) — quickjs-ng 0.15.1 records a frame's position only at `new`, a call, a binary operator, `throw`, an expression statement and a destructuring or `for-of` close, so a frame can name its function's first line or the previous loop iteration (five of the spike's measured frames did, before any map). The source map translates that position faithfully, so the `.ts` line is as wrong as the JavaScript one; the file and the function name stay right. A stack also holds at most 10 frames (the VM fixes `Error.stackTraceLimit`), so a deeper one loses its outermost frames | Med | Low | **Accepted and documented, not fixed (4.3.4).** The validation page lists both under "known and expected". A fix is a quickjs-ng patch that records more positions (R21's family), owned by no task. **A sibling, found by 4.4.1's spike (Q6):** a frame inside a throwing class-field initializer names line 0, a shape apart from the positions above; recorded, not fixed |
 | **R36** | **Nothing of a script generation is freed before its VM is torn down** (raised by task 4.3.4's plan, 2026-10-31; the module half measured by 4.3.3) — every reload keeps the old generation's module, about 4.3–4.5× its bundle plus about 3 KB of heap (4.3.3, in Release: a 64 MiB VM held 8 632, 1 532 and 165 reloads of 1, 9.4 and 93 KB bundles), and since 4.3.4 its source map, outside the heap: the map's bytes (about 2.4× the bundle) until the generation's first error, then 16–20 bytes per decoded segment. The heap limit refuses one map larger than itself, never the sum, so a long hot-reload session grows with its reload count and nothing else bounds it | Med | Low | **Accepted and documented (4.3.3, 4.3.4).** A new VM is the full reset, and `ScriptLoadResult`'s heap figures let 4.7.4 warn before a full heap. A `VmStats` figure for map bytes is 4.7.4's to ask for if its play loop shows pressure |
 | **R37** | **A script recursing past about 50 levels from a hook fails in Debug builds only** (decided by task 4.4.1, 2026-11-01) — from `onUpdate` the deepest recursion is 56 calls in Debug and 535 in Release at the 512 KiB default stack. The engine's frames below a hook cost nothing measurable, and a realistic hook chain uses 4 / 5 frames' worth. Release recursion from global code reads 536 against 4.1.1's 544; the cause was not investigated | Low | Low | **Accepted (4.4.1, D8):** no larger default stack (above 512 KiB, Windows' 1 MiB main thread needs `/STACK`), no `/STACK`, and no optimised Debug backend (it would cross MSVC's Debug and Release runtimes for one port, unmeasured). Editors and exported games run Release builds. Revisit when a real script needs deeper recursion in Debug |
-| **R38** | **Windows' DirectInput driver can stall a real-driver gamepad start-up for up to a minute** (raised by task 4.4.3's spike, 2026-11-03) — SDL's own comment (`joystick/windows/SDL_dinputjoystick.c:407-411`) warns that DirectInput's initialisation can take a minute with no controller attached. A Context with `GamepadDrivers::System` starts that driver; `VirtualOnly` sets `SDL_HINT_JOYSTICK_DIRECTINPUT` to `0` and skips it, and no CI lane runs `System` on Windows (GP22 runs it on macOS only). Not measured: no Windows host has run it | Med | Med | Time `System`'s Context construction on the Windows validation pass, with and without a pad. If it stalls, the editor (4.7.1) and the runtime (Phase 5) can turn DirectInput off through the hint, at the cost of the pads only DirectInput reads |
+| **R38** | **Windows' DirectInput driver can stall a real-driver gamepad start-up for up to a minute** (raised by task 4.4.3's spike, 2026-11-03) — SDL's own comment (`joystick/windows/SDL_dinputjoystick.c:407-411`) warns that DirectInput's initialisation can take a minute with no controller attached. A Context with `GamepadDrivers::System` starts that driver; `VirtualOnly` sets `SDL_HINT_JOYSTICK_DIRECTINPUT` to `0` and skips it, and no CI lane runs `System` on Windows (GP22 runs it on macOS only). Not measured: no Windows host has run it, and since 4.7.1 the editor's own Context starts `System` on every OS (`main.cpp`) | Med | Med | Time `System`'s Context construction on the Windows validation pass, with and without a pad. If it stalls, the editor (4.7.1) and the runtime (Phase 5) can turn DirectInput off through the hint, at the cost of the pads only DirectInput reads |
 | **R39** | **BS8 can go red on Windows on a branch that touches nothing near it** (raised by task 4.4.4's CI, 2026-11-05) — BS8 (`blender_service_test.cpp:635`) reopens a child's log for a truncating write right after `ToolProcess`'s destructor. The destructor force-kills and destroys with no wait (`tool_process.cpp:78-80`), which on Windows is `TerminateProcess` (`SDL_windowsprocess.c:561`), and the child holds the log through the handle it inherited from `SDL_IOFromFile`, opened by `CreateFileW` with share mode 0 (`SDL_iostream.c:126-128`). A reopen while that handle lives fails, and `writeBytes`'s REQUIRE reads false (`:118`). Seen once: PR #135's run `42014951944`, attempt 1, Windows Release, one case of 2540; Debug passed in the same job, attempt 2 passed with no change, and none of the six earlier failed runs checked names BS8. The cause is read from the source, not reproduced: no Windows host is at hand | Low | Low | A red on this case alone, on a first attempt, is this race: rerun the failed job once, and treat a second red as a defect. The fix is its own small change (an unowned handoff below): wait for the child after the kill in `reset`, or give BS8's reopen a bounded retry |
 | **R40** | **A game component's storage leans on two private EnTT virtuals** (raised by Epic 4.5, 2026-11-08) — `World::registerComponent<T>` gives a game's own type a `RuntimeStorage` (`world.cpp`), a storage sized at run time that overrides two of EnTT's private virtuals so it can live in the registry beside the typed pools. A version `static_assert` fences the pinned EnTT 3.16, so a bump fails to compile rather than misbehaving. A run-time pool id can also collide with a later typed pool, at about 2^-32 per pair. That is reachable only through a typed registration made after the World is built, which only tests do. MSVC and GCC first compiled and ran it on PR #136's CI, green | Low | Med | An EnTT bump re-reads the two virtuals, re-runs RG1–RG18 and re-measures the pool-id walk before the `static_assert` moves. Never widen the fence to a version range |
 
@@ -74,7 +74,7 @@ Decisions deliberately deferred until there is data or the relevant phase arrive
 Work a task found, measured or declined that no task in `docs/tasks/` owns yet. The list moved here from
 `CLAUDE.md`'s state block on 2026-10-26, where a pointer to this section remains.
 
-**NINETY-SEVEN UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**NINETY-SIX UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs in `CLAUDE.md`'s state block (fact
 4's four permitted cases, the inspector-row gap, the closed `File` section, E.1.1's fired thick-line handoff) are
@@ -272,14 +272,9 @@ not repeated here.
   hook is written with `override` (TS4117), and the template keeps `noImplicitOverride` off because it would demand
   `override` on every hook (TS4114). Nothing at run time reports a method that looks like a misspelt hook. No task owns
   it.
-- **Feeding the game's input in the editor** (4.4.3) — for 4.7.1, whose text names only the routing: feeding a game
-  `InputState` from the viewport, with points from the viewport's top-left; releasing what the game holds when the
-  viewport loses game focus; turning on the editor's gamepad switch (`ContextConfig::gamepads`, `Off` today); and the
-  background-events hint, if Play-in-editor must read pads while another window has focus. Facts it can use: ImGui's
-  SDL3 backend opens the first pad once anything starts the subsystem, with its own fixed 8000 deadzone
-  (`imgui_impl_sdl3.cpp:913`), and an unfocused window drops a pad's presses but never its releases.
-- **Binding input to the play session** (4.4.3) — for 4.7.4: `Vm::bindInput` at Play and `unbindInput` at Stop, and the
-  `newFrame()` cadence under Pause and Step; an edge made while paused is dropped by the next `newFrame()`.
+- **Binding input to the play session** (4.4.3) — for 4.7.4: `Vm::bindInput(playSession.input())` at Play and
+  `unbindInput` at Stop. The cadence is settled by 4.7.1: the game's `InputState` starts a new frame only after a game
+  frame ran, so an edge made while paused reaches the frame that Step or resume runs (GI5).
 - **The runtime's input** (4.4.3) — for Phase 5's runtime loop: bind `ctx.input()` to the game's VM and opt in to
   `GamepadDrivers::System` (R38 on Windows).
 - **Packing a prefab** (4.4.4) — for 5.1.2: a `.aeroprefab` packs as text at its `res://` path, and a referenced asset is
@@ -301,14 +296,16 @@ not repeated here.
   and 4.7.4).
 - **A published SDK archive per tag** (4.5.1) — the SDK exists only as `cmake --install` of an `<os>-sdk` preset. Nothing
   builds, names or uploads a prefix per OS on a tag. It sits beside 5.2.3's precompiled runtime, and no task owns it.
-- **New Project writing a C++ project** (4.5.2) — for 4.6.1. `writeCppProject(projectRoot, name)` (`docs/09` section
-  4.12) has no product caller. The test driver `sdk.template` and its `aero_sdk_project_writer` tool are its only callers
-  until New Project calls it for `language: "cpp"`. The folder it fills is made by the caller, and a TypeScript project
-  gets none of its files.
 - **A game in a macOS bundle** (4.5.1) — for 5.4.1. Inside a `.app`, `basePath()` is `Contents/Resources`, while
   `aero_add_game` copies `shaders/` (and a game's `assets/`, by the sample's own rule) beside the executable in
   `Contents/MacOS`. The validation pass had to copy them into `Contents/Resources` by hand to run either game as a bundle.
   An exported macOS game needs that copy.
+- **A hidden or zero-area Viewport in play** (4.7.1) — for 4.7.4's validation. The game's image rect is valid only on a
+  frame whose Viewport drew its image, and the feed reads no pointer without one; dropping the reset
+  (`gameImageRectValue.valid = false`) is unobservable until a script reads `engine.input` (the sabotage row S128). Once
+  4.7.4 binds `PlaySession::input()`, a validation row plays with the Viewport hidden behind another tab and with it
+  shrunk to nothing, and reads that the game sees no pointer. A Viewport behind another tab keeps its last valid rect,
+  which is benign: the game has no focus then.
 
 ---
 
@@ -459,6 +456,16 @@ fire rate and range, its three hits, and Escape. CI's lanes ran the SDK step for
 a Windows Debug consumer linked against the `/MD` SDK among them. Every new doctest case ran green there in both
 configurations, 228 / 228 on Windows and 233 / 233 on Linux.
 
+**4.6.1 AND 4.7.1 OWE A WINDOWS PAGE AND A LINUX PAGE, AND ROW 8 IS OWED ON EVERY PLATFORM.** No manual pass has run off
+macOS, and all eight of the page's rows are owed by hand on both: New Project's C++ card and template, Project Settings'
+read-only language and a hand edit, the `.ts` tile and Add Component in each language, Play through the scene camera
+with its frame count, Pause and Step, the viewport's inert keys and the three chords (Ctrl+Alt+P's delivery among them),
+game focus moving and returning, and the scene lock with the guarded Quit. Row 8 is owed on macOS too, since no pad was
+connected: a physical pad's buttons ignored by the editor and its sticks centred on a focus loss, and on Windows
+`System`'s start-up timed with and without a pad (R38). Story 4's demo ran on macOS only. CI's lanes ran every new case
+in both configurations on PR #137's run (`42483361911`), 228 / 228 on Windows and 233 / 233 on Linux, I409's and I410's
+synthesised mouse press among them.
+
 **METHOD TRAPS FOR DRIVING THE EDITOR, ALL MEASURED.** A pending TCC prompt stalls the editor to ~0.2% CPU
 with a window that **NEVER RENDERS** (a black capture); the prompts **CASCADE**, one per bundle identity, and
 both kinds accept a synthetic click on the affirmative button derived from the dialog's own **fresh** bounds
@@ -475,7 +482,9 @@ first `layer=0 onscreen=1` window of the PID is the SHEET**, so window-relative 
 panel in absolute coordinates. And before #118, a key sent right after a native panel closed from the keyboard was
 dropped by the editor itself, not by the input method. Note `screencapture` carries the
 display's ICC profile, and **there is no `renderFrame` Tracy zone in this tree** — the frame-level zones are
-`renderScene` and `render`.
+`renderScene` and `render`. **While another device holds this Mac's keyboard and pointer through Universal
+Control** (measured 2026-11-09), the front app reads `UniversalControl` and the cursor sits on a screen edge:
+send nothing until both clear, because synthetic input can reach the other device.
 
 ---
 

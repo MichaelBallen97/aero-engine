@@ -341,6 +341,14 @@ Subtasks:
 - Creation-dialog language choice → `project.json`
 - Feature gating by language across editor UI
 
+**Outcome:** a project's language is chosen once, in New Project, and never changes: `createProject` takes a
+`ProjectLanguage` with no default, the dialog's two cards are live with TypeScript preselected on every open, and
+nothing writes `project.json` after creation (Project Settings shows the language read-only). Creating a C++ project
+writes the C++ template (`writeCppProject`, `docs/09` section 4.12) once, at creation; a file it cannot write is one
+WARN, and the project opens anyway. In a C++ project a `.ts` is Text, never a Script asset, wherever the editor
+classifies one (the browser, its filter and search, the picker, the Inspector's reference row), and Add Component leaves
+out any component whose field names a Script asset, found by its metadata, never by its name (`docs/09` section 4.2).
+
 ---
 
 ## Epic 4.7 — Play-in-editor · editor
@@ -356,6 +364,17 @@ with the tooltip "Not implemented yet -- task 4.7.1"; this task enables them and
 Subtasks:
 - Mode state machine (edit/play/pause) + toolbar
 - Input routing per mode; viewport takes game focus in play
+
+**Outcome:** `engine::editor::PlaySession`, a pure value in `aero_editor_core`, owns the mode (Edit, Playing, Paused)
+and every rule around it, with one writer, `PlaySession::apply` (`docs/03`, "Play-in-editor"). The toolbar's Play,
+Pause, Step and Stop and the chords Cmd/Ctrl+P, +Shift+P and +Alt+P go through one enabled rule; Play needs an open
+TypeScript project, and a disabled control's tooltip names why. A game frame runs once per editor tick with
+`FrameClock::deltaSeconds()` as dt, none runs while paused, and Step runs exactly one frame of 1/60 s. While the game
+has focus (playing or paused, the Viewport holding the keyboard, the window in front), keys, buttons pressed over the
+image and the pointer feed the game's own `platform::InputState`, and a focus loss releases everything it holds; the
+editor's Context starts the system gamepad drivers. In play the Viewport draws through the scene's lowest-index Camera
+with the editor's own visuals hidden and its keys inert, every scene edit is locked, and a Quit stops play first. No
+script runs in play yet: that is 4.7.4's.
 
 ### 4.7.2 Scene snapshot & restore · P0 · L · depends: 4.7.1, 1.2.2
 **Goal:** Stop means *exactly as it was* — the feature that separates real editors from demos.
