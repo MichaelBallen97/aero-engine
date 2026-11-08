@@ -81,11 +81,13 @@ struct StatusBarText {
     std::string watch;        // watchStateText, or NO_PROJECT_STATUS_TEXT
     std::string frame;        // frameReadoutText
     std::string backend;      // backendDisplayName
+    std::string play;         // playStatusText (task 4.7.1): "" in Edit
     bool operator==(const StatusBarText&) const = default;
 };
 [[nodiscard]] StatusBarText statusBarText(bool projectOpen, std::string_view rootDisplay, std::string_view rootFull,
                                           WatchState watchState, std::size_t unreadableDirs, std::size_t assetCount,
-                                          const FrameTimeReadout& readout, std::string_view backendLabel);
+                                          const FrameTimeReadout& readout, std::string_view backendLabel,
+                                          std::string_view playSegment);
 
 // Every x is BAR-LOCAL (from the status bar window's left edge).
 struct StatusBarLayout {
@@ -99,6 +101,8 @@ struct StatusBarLayout {
     float frameX = 0.0F;
     std::string backend;
     float backendX = 0.0F;
+    std::string play;  // the play segment as drawn ("" in Edit): the right zone's FIRST item
+    float playX = 0.0F;
     float rightStart = 0.0F;
     bool operator==(const StatusBarLayout&) const = default;
 };

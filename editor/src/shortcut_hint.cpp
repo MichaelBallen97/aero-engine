@@ -20,6 +20,9 @@ std::string chordHint(HostOs os, ChordModifiers mods, std::string_view key) {
         hint += modifierName(os);
         hint += '+';
     }
+    if (mods.alt) {
+        hint += os == HostOs::MacOs ? "Option+" : "Alt+";
+    }
     if (mods.shift) {
         hint += "Shift+";
     }

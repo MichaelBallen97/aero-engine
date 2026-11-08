@@ -230,7 +230,7 @@ TEST_CASE("status bar: the readout's bytes (task E.6.2, FT10)") {
 TEST_CASE("status bar: the composed text, with and without a project (task E.6.2, FT11)") {
     const ed::FrameTimeReadout fresh;
     const ed::StatusBarText open =
-        ed::statusBarText(true, "~/dev/Game", "/Users/m/dev/Game", WatchState::Watching, 0U, 3U, fresh, "Metal");
+        ed::statusBarText(true, "~/dev/Game", "/Users/m/dev/Game", WatchState::Watching, 0U, 3U, fresh, "Metal", "");
     CHECK(open.projectOpen);
     CHECK(open.root == "~/dev/Game");
     CHECK(open.rootTooltip == "/Users/m/dev/Game");
@@ -238,7 +238,7 @@ TEST_CASE("status bar: the composed text, with and without a project (task E.6.2
     CHECK(open.frame == "-- fps \xC2\xB7 -- ms");
     CHECK(open.backend == "Metal");
     const ed::StatusBarText closed =
-        ed::statusBarText(false, "~/x", "/x", WatchState::Watching, 0U, 3U, fresh, "Metal");
+        ed::statusBarText(false, "~/x", "/x", WatchState::Watching, 0U, 3U, fresh, "Metal", "");
     CHECK(closed.root.empty());
     CHECK(closed.watch == "No project open");
     CHECK(ed::NO_PROJECT_STATUS_TEXT == "No project open");
@@ -397,4 +397,39 @@ TEST_CASE("status bar: the chrome draws the layouts' answers and elides nothing 
     CHECK(linesWith(code, "toolbarLayout(") == 1U);
     CHECK(linesWith(code, "elidePathLeft(") == 0U);  // seed S50's shape: a second elision in the draw code
     CHECK(linesWith(code, "elideCaptionRight(") == 0U);
+}
+
+TEST_CASE("status bar: the play segment is the right zone's first item and moves nothing else (task 4.7.1, FT16)") {
+    const auto measure7 = [](std::string_view t) { return 7.0F * static_cast<float>(t.size()); };
+    const std::string playing = "Playing \xC2\xB7 frame 12";  // 19 bytes, 133 wide
+    const ed::StatusBarText edit{
+        .projectOpen = false, .watch = "No project open", .frame = "60 fps", .backend = "Metal"};
+    ed::StatusBarText live = edit;
+    live.play = playing;
+    // Edit: the segment is empty and every x is where it was before the segment existed. Bar 800, pad 14, gap 20:
+    // the right zone is 42 + 20 + 35 = 97 wide, so it starts at 800 - 14 - 97.
+    const ed::StatusBarLayout before = ed::statusBarLayout(800.0F, edit, measure7, 1.0F);
+    CHECK(before.rightStart == 689.0F);
+    CHECK(before.frameX == 689.0F);
+    CHECK(before.backendX == 751.0F);  // 689 + 42 + 20
+    CHECK(before.play.empty());
+    CHECK(before.playX == 689.0F);
+    // Playing: the segment takes the first slot, one gap before the frame readout, and the right zone is wider by
+    // exactly w(play) + gap -- the frame readout and the backend stay anchored to the right edge.
+    const ed::StatusBarLayout after = ed::statusBarLayout(800.0F, live, measure7, 1.0F);
+    CHECK(after.play == playing);
+    CHECK(after.rightStart == 536.0F);  // 689 - (133 + 20)
+    CHECK(after.playX == 536.0F);
+    CHECK(after.frameX == 689.0F);  // playX + 133 + 20
+    CHECK(after.backendX == 751.0F);
+    // The left zone's budget is smaller by the same: a bar where it fits whole in Edit elides it in Playing.
+    const ed::StatusBarLayout narrowEdit = ed::statusBarLayout(400.0F, edit, measure7, 1.0F);
+    const ed::StatusBarLayout narrowLive = ed::statusBarLayout(400.0F, live, measure7, 1.0F);
+    CHECK(narrowEdit.watch == "No project open");
+    CHECK(narrowLive.watch != "No project open");
+    CHECK(narrowLive.rightStart == narrowEdit.rightStart - 153.0F);
+    CHECK(narrowLive.leftEnd + 20.0F <= narrowLive.rightStart);
+    // The composed text carries the segment.
+    const ed::FrameTimeReadout fresh;
+    CHECK(ed::statusBarText(false, "", "", WatchState::Watching, 0U, 0U, fresh, "Metal", playing).play == playing);
 }

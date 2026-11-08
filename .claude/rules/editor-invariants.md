@@ -80,6 +80,28 @@ frame, `imgui.cpp:19611-19613`) or the node has no tab bar yet; the router HOLDS
 closed popup, which ImGui hands back a frame later. `I256` is the witness, and `keyboardFocusPanelId()` is the only
 tier that tells "raised" from "took the keyboard".
 
+**THE GAME HAS FOCUS WHEN `gameHasFocus(mode, Viewport holds the keyboard, window focused)` (task 4.7.1, D5).** Mode
+Playing or Paused, `keyboardFocusPanelId() == "Viewport"`, and the window has OS focus: one pure function, decided by
+`EditorApp` at the end of each tick (from `ShellUiState::keyboardFocusWindow`) and again on every `WindowFocusGained` /
+`WindowFocusLost`. **Play hands the Viewport the keyboard through `requestedPanelFocus`, consumed by the one focus slot
+-- never a new `SetWindowFocus` call** (`I159(a)` stays one file, three calls), so the keyboard is the Viewport's a tick
+or two after the one that applied Play (a case waits on `keyboardFocusPanelId()`, bounded), and game focus follows. A click on another panel takes it away; a click on the
+viewport image gives it back. An OS focus loss leaves the keyboard where it was (ImGui only clears its input,
+`imgui.cpp:11257-11261`), so game focus returns with the window when the Viewport held the keyboard, with no click.
+
+**THE GAME'S INPUT IS A SEPARATE `platform::InputState` THE FEED WRITES, AND IT NEVER SEES A WINDOW EVENT (task 4.7.1,
+A5, D5, D9, D11).** `PlaySession::feed` takes the events the editor already polls, in `handleEvent`, and processes a key,
+a button pressed inside the image, the wheel over it and the pointer (in points from the image's top-left, the rect
+latched one frame behind by the Viewport) only while the game has focus; pads connect and disconnect whether or not it
+does, and `adoptConnectedPads` seeds the slots the editor's own state reports at Play, because SDL announces a pad once,
+when it is added. **`WindowFocusLost` is never forwarded**: `InputState` clears held keys on it with no released edge.
+The game's release is synthesized instead -- `setGameFocus(false)` sends a KeyUp, MouseButtonUp and GamepadButtonUp per
+held item, and a GamepadAxisMoved of 0 per deflected axis of each connected pad (`InputState` keeps an axis across
+frames, so one never centred reads deflected while the game is deaf) -- and a KeyUp or button-up for something the game never held is dropped. The editor's own `ctx->input()` is
+never the game's. **`newFrame()` runs only after a game frame ran** (`endGameFrame`, D11): an edge made while paused
+reaches the frame that Step or resume runs, and held state is kept throughout. The editor's Context starts
+`GamepadDrivers::System` in `main.cpp` alone (R38 applies to the editor); tests keep `Off` or `VirtualOnly`.
+
 **RE-READ AT EVERY ImGui / ImGuizmo BUMP:** E.6.1's — `imgui.cpp:1512-1590` (`ImGuiStyle`'s members; `TH5` pins
 `sizeof(ThemeMetrics) == 308`, so a new member is theme work) and `:1602-1651` (`ScaleAllSizes` truncates EVERY
 size); `imgui.h:1886` (`ImGuiCol_COUNT`, `static_assert`ed at 63); `imgui.h:529-530` (never `PushFont` a
@@ -407,7 +429,7 @@ is reachable through the UI; `IO19` and E.4.2's validation row 14 record today's
 "before", and that handoff is **still open**. **`assetReferenceFieldWidth` is ONE formula with TWO hosts**, so a
 theme or DPI change moves the Inspector's reference row and the material slot's together. The default scene is
 deliberately unchanged by every Phase E task, and its seventeen `entityCount() == 4` pins are byte-identical. The
-New Project dialog's language control ships disabled for **4.6.1**, whose deliverable says so. **8.2** inherits
+New Project dialog's language control shipped disabled and is live since **4.6.1**. **8.2** inherits
 IBL/HDRI and the after-opaque sky variant (`SB9`/`SB16` are in place to catch a wrong ordering), plus physical
 light units, IES profiles and area lights. What each Phase E task shipped, discharged and left out is in its
 `docs/10` entry; the editor rules each one added are in `.claude/rules/editor.md`.

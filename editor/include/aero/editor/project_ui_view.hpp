@@ -8,7 +8,7 @@
 #include <aero/editor/asset_view.hpp>          // TextWidth
 #include <aero/editor/editor_glyphs.hpp>       // AERO_GLYPH_MIDDLE_DOT
 #include <aero/editor/panel_chrome_model.hpp>  // ChromeRole, ItemRectRecord
-#include <aero/editor/project.hpp>             // NewProjectTargetFacts, ProjectLanguage, NEW_PROJECT_LANGUAGE
+#include <aero/editor/project.hpp>             // NewProjectTargetFacts, ProjectLanguage
 
 #include <array>
 #include <cstddef>
@@ -39,12 +39,6 @@ inline constexpr std::string_view NEW_PROJECT_NO_LOCATION_TEXT = "no folder chos
 inline constexpr std::string_view NEW_PROJECT_BROWSE_LABEL = "Browse...";
 inline constexpr std::string_view NEW_PROJECT_SETTINGS_HEADING = "SETTINGS";
 inline constexpr std::string_view NEW_PROJECT_LANGUAGE_LABEL = "Scripting language";
-// D17: what Create writes, and ADR-008's rule; the mock's "both can coexist" contradicts it and never ships.
-inline constexpr std::string_view NEW_PROJECT_LANGUAGE_HINT =
-    "New projects are created as TypeScript -- the language is fixed at creation";
-// D18: the 2.1.3 / E.6.2 convention -- a control a later task owns ships disabled with a tooltip naming it.
-// docs/tasks/phase-4.md's 4.6.1 lists the creation dialog's language choice, which is what makes it true.
-inline constexpr std::string_view LANGUAGE_CONTROL_TOOLTIP = "Not implemented yet -- task 4.6.1";
 inline constexpr std::string_view NEW_PROJECT_CANCEL_LABEL = "Cancel";
 inline constexpr std::string_view NEW_PROJECT_CREATE_LABEL = "Create project";
 
@@ -72,9 +66,12 @@ inline constexpr std::array<LanguageCard, 2> NEW_PROJECT_LANGUAGE_CARDS{{
     {ProjectLanguage::Cpp, "C++", "Native code, built for each platform."},
     {ProjectLanguage::Ts, "TypeScript", "Embedded scripts, no toolchain to export."},
 }};
-// The card drawn selected: the language Create writes (NEW_PROJECT_LANGUAGE), never a stored choice.
-[[nodiscard]] bool languageCardSelected(ProjectLanguage language) noexcept;
+// The card drawn selected: the one whose language is the form's (NewProjectForm::language).
+[[nodiscard]] bool languageCardSelected(ProjectLanguage card, ProjectLanguage chosen) noexcept;
 [[nodiscard]] std::string_view languageCardTitle(ProjectLanguage language) noexcept;
+// The one-row line under the cards (D17): what Create writes for this language, and ADR-008's rule that the language
+// is fixed at creation. 7-bit; the mock's "both can coexist" contradicts the rule and never ships.
+[[nodiscard]] std::string_view newProjectLanguageHint(ProjectLanguage language) noexcept;
 
 // ---- the info box (D16): exactly what createProject writes --------------------------------------------------------
 struct InfoSpan {
@@ -133,8 +130,8 @@ struct NewProjectLine {
 // "" when `budget` cannot hold the ellipsis itself, else the elided text, which then fits.
 [[nodiscard]] std::string fitPathLeft(std::string_view path, float budget, const TextWidth& width);
 [[nodiscard]] std::string fitTextRight(std::string_view text, float budget, const TextWidth& width);
-// The footer's summary of today's fields (D19): "TypeScript", or "<name> . TypeScript" -- the name verbatim.
-[[nodiscard]] std::string newProjectFooterSummary(std::string_view name);
+// The footer's summary of the form's fields (D19): "<language>", or "<name> . <language>" -- the name verbatim.
+[[nodiscard]] std::string newProjectFooterSummary(std::string_view name, ProjectLanguage language);
 
 // ---- the shared header strip and the mark (D5, D26) ----------------------------------------------------------------
 // The mark's four corners -- top, right, bottom, left -- a markSide square turned 45 degrees around `center`.
@@ -299,14 +296,16 @@ struct NewProjectRecord {
     DialogHeaderRecord header;                                    // title, version and the close box, as drawn
     NewProjectTargetState state = NewProjectTargetState::NoName;  // the classification the draw used
     NewProjectLine line{};                                        // as drawn: after the fit
-    std::string location;  // the Location box's text as drawn; "" when the placeholder drew
-    std::string summary;   // the footer summary as drawn
+    std::string location;      // the Location box's text as drawn; "" when the placeholder drew
+    std::string summary;       // the footer summary as drawn
+    std::string languageHint;  // the line under the cards, as drawn
     ItemRectRecord nameField{};
     ItemRectRecord locationField{};
     ItemRectRecord browse{};
     ItemRectRecord cancel{};
     ItemRectRecord create{};
-    std::array<ItemRectRecord, 2> language{};  // NEW_PROJECT_LANGUAGE_CARDS order; drawnActive = drawn selected
+    std::array<ItemRectRecord, 2>
+        language{};  // NEW_PROJECT_LANGUAGE_CARDS order; drawnActive = drawn selected (NewProjectForm::language)
 };
 struct ProjectUiRecord {
     WelcomeRecord welcome;

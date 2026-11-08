@@ -240,14 +240,18 @@ TEST_CASE("project ui: the line fits path first, then the tail, then the lead (t
     CHECK(ed::fitTextRight("abc", 3.0F, byteWidth) == "abc");  // a text that fits is returned whole
 }
 
-TEST_CASE("project ui: the footer summarises today's fields (task E.6.4, NP7)") {
-    CHECK(ed::newProjectFooterSummary("") == "TypeScript");
-    CHECK(ed::newProjectFooterSummary("Kart") == "Kart " AERO_GLYPH_MIDDLE_DOT " TypeScript");
-    CHECK(ed::newProjectFooterSummary("50%d ##x") == "50%d ##x " AERO_GLYPH_MIDDLE_DOT " TypeScript");  // verbatim
-    CHECK(ed::languageCardTitle(ed::NEW_PROJECT_LANGUAGE) == "TypeScript");
+TEST_CASE("project ui: the footer summarises the form's fields (task E.6.4, NP7)") {
+    constexpr auto TS = ed::ProjectLanguage::Ts;
+    constexpr auto CPP = ed::ProjectLanguage::Cpp;
+    CHECK(ed::newProjectFooterSummary("", TS) == "TypeScript");
+    CHECK(ed::newProjectFooterSummary("Kart", TS) == "Kart " AERO_GLYPH_MIDDLE_DOT " TypeScript");
+    CHECK(ed::newProjectFooterSummary("50%d ##x", TS) == "50%d ##x " AERO_GLYPH_MIDDLE_DOT " TypeScript");  // verbatim
+    CHECK(ed::newProjectFooterSummary("Kart", CPP) == "Kart " AERO_GLYPH_MIDDLE_DOT " C++");  // the language passed
+    CHECK(ed::languageCardTitle(TS) == "TypeScript");
+    CHECK(ed::languageCardTitle(CPP) == "C++");
 }
 
-TEST_CASE("project ui: the language control shows what Create writes, and names 4.6.1 (task E.6.4, NP8)") {
+TEST_CASE("project ui: the language control shows what Create writes (task E.6.4, NP8)") {
     REQUIRE(ed::NEW_PROJECT_LANGUAGE_CARDS.size() == 2U);
     CHECK((ed::NEW_PROJECT_LANGUAGE_CARDS[0].language == ed::ProjectLanguage::Cpp));
     CHECK(ed::NEW_PROJECT_LANGUAGE_CARDS[0].title == "C++");
@@ -255,9 +259,11 @@ TEST_CASE("project ui: the language control shows what Create writes, and names 
     CHECK((ed::NEW_PROJECT_LANGUAGE_CARDS[1].language == ed::ProjectLanguage::Ts));
     CHECK(ed::NEW_PROJECT_LANGUAGE_CARDS[1].title == "TypeScript");
     CHECK(ed::NEW_PROJECT_LANGUAGE_CARDS[1].subtitle == "Embedded scripts, no toolchain to export.");
-    CHECK_FALSE(ed::languageCardSelected(ed::ProjectLanguage::Cpp));
-    CHECK(ed::languageCardSelected(ed::ProjectLanguage::Ts));
-    CHECK(ed::LANGUAGE_CONTROL_TOOLTIP == "Not implemented yet -- task 4.6.1");
+    // The 2 x 2 identity: a card is drawn selected exactly when it is the form's language.
+    CHECK(ed::languageCardSelected(ed::ProjectLanguage::Cpp, ed::ProjectLanguage::Cpp));
+    CHECK_FALSE(ed::languageCardSelected(ed::ProjectLanguage::Cpp, ed::ProjectLanguage::Ts));
+    CHECK_FALSE(ed::languageCardSelected(ed::ProjectLanguage::Ts, ed::ProjectLanguage::Cpp));
+    CHECK(ed::languageCardSelected(ed::ProjectLanguage::Ts, ed::ProjectLanguage::Ts));
 }
 
 TEST_CASE("project ui: the dialog's copy is true for this build (task E.6.4, NP9)") {
@@ -278,10 +284,17 @@ TEST_CASE("project ui: the dialog's copy is true for this build (task E.6.4, NP9
     CHECK(code[2] == ed::ProjectManifest{}.scenesPath + "/");
     CHECK(all.find("scripts") == std::string::npos);  // mock 1e's copy: false for this build (G1)
     CHECK(all.find("scene ") == std::string::npos);
-    const std::string hint(ed::NEW_PROJECT_LANGUAGE_HINT);
-    CHECK(hint.find("fixed at creation") != std::string::npos);  // ADR-008
-    CHECK(hint.find("coexist") == std::string::npos);            // mock 1e's hint contradicts ADR-008 (G2)
-    CHECK(hint.find("later") == std::string::npos);
+    for (const ed::ProjectLanguage language : {ed::ProjectLanguage::Ts, ed::ProjectLanguage::Cpp}) {
+        const std::string hint(ed::newProjectLanguageHint(language));
+        CHECK(hint.find("fixed at creation") != std::string::npos);  // ADR-008
+        CHECK(hint.find("coexist") == std::string::npos);            // mock 1e's hint contradicts ADR-008 (G2)
+        CHECK(hint.find("later") == std::string::npos);
+    }
+    // True for this build: TypeScript names its language; C++ names exactly the two files a reader edits.
+    CHECK(std::string(ed::newProjectLanguageHint(ed::ProjectLanguage::Ts)).find("TypeScript") != std::string::npos);
+    const std::string cppHint(ed::newProjectLanguageHint(ed::ProjectLanguage::Cpp));
+    CHECK(cppHint.find("CMakeLists.txt") != std::string::npos);
+    CHECK(cppHint.find("src/main.cpp") != std::string::npos);
 }
 
 TEST_CASE("project ui: the dialog's layout is the theme's, scaled once and clamped (task E.6.4, NP10)") {
@@ -510,4 +523,29 @@ TEST_CASE("project ui: the Welcome fold counts a wrapped blurb, and the empty we
     CHECK(ed::welcomeLayout(3U, tall, broken, 1.0F).blurbHeight == 16.0F);
     CHECK(ed::welcomeLayout(3U, tall, tooShort, 1.0F).blurbHeight == 16.0F);
     CHECK(ed::welcomeLayout(3U, tall, ed::WrappedTextHeight{}, 1.0F).blurbHeight == 16.0F);  // an empty measurer
+}
+
+TEST_CASE(
+    "project ui: each language has its own one-row hint, 7-bit, ending in the fixed-at-creation clause "
+    "(task 4.6.1, NP14)") {
+    const std::string ts(ed::newProjectLanguageHint(ed::ProjectLanguage::Ts));
+    const std::string cpp(ed::newProjectLanguageHint(ed::ProjectLanguage::Cpp));
+    CHECK(ts != cpp);
+    constexpr std::string_view CLAUSE = "the language is fixed at creation";
+    for (const std::string* hint : {&ts, &cpp}) {
+        CAPTURE(*hint);
+        CHECK_FALSE(hint->empty());
+        CHECK(hint->find('\n') == std::string::npos);  // one row: the dialog's 517 dp height holds
+        CHECK(hint->size() > CLAUSE.size());
+        CHECK(hint->compare(hint->size() - CLAUSE.size(), CLAUSE.size(), CLAUSE) == 0);
+        for (const char c : *hint) {
+            CHECK((static_cast<unsigned char>(c) < 0x80U));
+        }
+    }
+}
+
+TEST_CASE("project ui: the footer summary names the language passed, through its card title (task 4.6.1, NP15)") {
+    CHECK(ed::newProjectFooterSummary("Kart", ed::ProjectLanguage::Cpp) == "Kart " AERO_GLYPH_MIDDLE_DOT " C++");
+    CHECK(ed::newProjectFooterSummary("", ed::ProjectLanguage::Cpp) == "C++");
+    CHECK(ed::newProjectFooterSummary("", ed::ProjectLanguage::Ts) == "TypeScript");
 }

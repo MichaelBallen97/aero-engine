@@ -4,6 +4,8 @@
 >
 > **Gate:** Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly
 >
+> **Reading of the gate's "or native C++":** Play runs TypeScript only (a C++ game runs as its own build, so Play draws disabled in a C++ project). The native-C++ half of the gate is the C++ mini-game built against the SDK, as in the two-language demo below (task 4.7.1).
+>
 > **Phase non-goals:** no export (Phase 5); no debugger (v1 ships source-mapped errors only — DAP debugger is v2); one language per project, never mixed (ADR-008).
 >
 > **Notes:** the TS toolchain default is **esbuild** (single Go binary, no Node runtime, invoked externally like Blender) — the esbuild-vs-swc open decision closes at 4.3.1. Play mode is in-process in v1; its crash risk is R11, mitigated at 4.7.3.

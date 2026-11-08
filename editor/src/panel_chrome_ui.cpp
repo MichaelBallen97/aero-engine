@@ -237,12 +237,15 @@ void countBadge(std::string_view text) {
     roleText(ChromeRole::TextFaint, text);
 }
 
-void drawRoleText(ImDrawList* list, PanelFace face, ImVec2 pos, ChromeRole role, std::string_view text) {
+void drawRoleText(ImDrawList* list, PanelFace face, ImVec2 pos, ImU32 color, std::string_view text) {
     if (text.empty()) {
         return;
     }
-    list->AddText(panelFaceFont(face), panelFacePoints(face), pos, roleU32(role), text.data(),
-                  text.data() + text.size());
+    list->AddText(panelFaceFont(face), panelFacePoints(face), pos, color, text.data(), text.data() + text.size());
+}
+
+void drawRoleText(ImDrawList* list, PanelFace face, ImVec2 pos, ChromeRole role, std::string_view text) {
+    drawRoleText(list, face, pos, roleU32(role), text);
 }
 
 // ---- buttons and scopes ----------------------------------------------------------------------------------------
@@ -442,8 +445,11 @@ HatchedWellDrawn hatchedWell(ImDrawList* list, ImVec2 min, ImVec2 max, float rou
 }
 
 void dashedRect(ImDrawList* list, ImVec2 min, ImVec2 max) {
+    dashedRect(list, min, max, toImU32(EDITOR_THEME.panels.addComponentDash));
+}
+
+void dashedRect(ImDrawList* list, ImVec2 min, ImVec2 max, ImU32 color) {
     const float thickness = ruleHeight();
-    const ImU32 color = toImU32(EDITOR_THEME.panels.addComponentDash);
     const float width = max.x - min.x;
     const float height = max.y - min.y;
     dashRun(list, min, width, true, thickness, color);                                 // top

@@ -400,6 +400,10 @@ bool isLegalRelativePath(std::string_view relative) noexcept {
 bool ProjectSession::isOpen() const noexcept { return !rootPath.empty(); }
 std::string_view ProjectSession::root() const noexcept { return rootPath; }
 const ProjectManifest& ProjectSession::manifest() const noexcept { return projectManifest; }
+
+ProjectLanguage effectiveProjectLanguage(const ProjectSession& session) noexcept {
+    return session.isOpen() ? session.manifest().language : ProjectLanguage::Ts;
+}
 std::string_view ProjectSession::name() const noexcept {
     return isOpen() ? std::string_view(projectManifest.name) : std::string_view{};
 }

@@ -9,6 +9,7 @@
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/editor_theme.hpp>
 #include <aero/editor/panel_chrome_model.hpp>
+#include <aero/editor/play_session.hpp>
 #include <aero/editor/project.hpp>
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/shell_chrome_record.hpp>
@@ -311,28 +312,38 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
         tools.snap = update.next;
         state.snapCommitted = toggleClicked || update.commit;
 
-        // ---- play / pause / step (D8): drawn, disabled, naming the task that owns them -----------------------
-        rec.playGroupDrawn = layout.playDrawn;
-        if (layout.playDrawn) {
-            ImGui::SetCursorScreenPos(ImVec2(pos.x + layout.playX, buttonY));
-            ImGui::BeginDisabled();  // ONE pair, whatever the mode: nothing here has an action yet
-            for (std::size_t i = 0; i < TOOLBAR_PLAY_CONTROLS.size(); ++i) {
-                const ToolbarPlayControl& control = TOOLBAR_PLAY_CONTROLS[i];
-                if (i > 0U) {
-                    ImGui::SameLine();
-                }
-                ImGui::Button(full ? control.iconLabel.data() : control.icon.data());
-                recordItem(rec.play[i], false);
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                    ImGui::SetTooltip("%s", PLAY_CONTROLS_TOOLTIP.data());
-                }
+        // ---- play / pause / step / stop (task 4.7.1, D8) -----------------------------------------------------
+        // The order is the rule: the widget is ALWAYS submitted, the predicate is a named local, a refused request is
+        // dropped, and segmentButton carries NoFocus, so a click never takes the Viewport's keyboard.
+        rec.playGroupDrawn = true;
+        ImGui::SetCursorScreenPos(ImVec2(pos.x + layout.playX, buttonY));
+        const std::optional<PlayControl> chorded =
+            state.playChord.has_value() ? playControlForChord(*state.playChord, state.playMode) : std::nullopt;
+        for (std::size_t i = 0; i < TOOLBAR_PLAY_CONTROLS.size(); ++i) {
+            const ToolbarPlayControl& row = TOOLBAR_PLAY_CONTROLS[i];
+            if (i > 0U) {
+                ImGui::SameLine();
             }
+            const bool enabled = playControlEnabled(row.control, state.playMode, state.playAvailability, fileEnabled);
+            const bool requested = state.playControlRequest == row.control || chorded == row.control;
+            ImGui::BeginDisabled(!enabled);
+            ImGui::PushID(static_cast<int>(i));
+            const bool pressed = segmentButton(full ? row.iconLabel.data() : row.icon.data(),
+                                               playControlDrawnActive(row.control, state.playMode), ChromeRole::Accent,
+                                               ChromeRole::OnAccent, ChromeRole::TextSecondary, rec.play[i]);
+            ImGui::PopID();
             ImGui::EndDisabled();
+            rec.playTooltip[i] = playControlTooltip(row.control, state.playAvailability, currentHostOs());
+            itemTooltip(rec.playTooltip[i]);
+            if (pressed || (requested && enabled && noModal)) {
+                state.playControlPressed = row.control;
+            }
         }
 
         // ---- undo (D9): the button, the chip, the current label in its fixed slot -----------------------------
         const float undoX = pos.x + layout.undoX;
-        const bool undoEnabled = fileEnabled && commands.canUndo();  // the Edit menu item's predicate, ONCE
+        // the Edit menu item's predicate, ONCE (task 4.7.1: the scene lock folded in)
+        const bool undoEnabled = fileEnabled && !sceneLocked(state.playMode) && commands.canUndo();
         ImGui::SetCursorScreenPos(ImVec2(undoX, buttonY));
         // The disabled pair OUTERMOST, so the FrameBorderSize push/pop sit four lines apart -- I307(b)'s window,
         // groupButton's shape. GetItemFlags() after EndDisabled still reads the button's flags.
@@ -437,6 +448,9 @@ void drawStatusBar(ShellUiState& state) {
             if (!layout.watch.empty()) {
                 drawText(layout.watch, layout.watchX, c.textMuted);
             }
+            if (!layout.play.empty()) {
+                drawText(layout.play, layout.playX, c.text);
+            }
             drawText(layout.frame, layout.frameX, c.textMuted);
             if (!layout.backend.empty()) {
                 drawText(layout.backend, layout.backendX, c.accent);
@@ -446,6 +460,7 @@ void drawStatusBar(ShellUiState& state) {
             rec.statusWatch = layout.watch;
             rec.statusFrame = layout.frame;
             rec.statusBackend = layout.backend;
+            rec.statusPlay = layout.play;
         }
     }
     ImGui::End();  // ALWAYS (beginBar's note)

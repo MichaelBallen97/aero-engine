@@ -4,6 +4,7 @@
 // (toolbarPaddingX 12, toolbarGroupGap 14) are restated as literals so a retune is a visible decision here.
 #include <aero/editor/editor_glyphs.hpp>
 #include <aero/editor/editor_icons.hpp>
+#include <aero/editor/play_session.hpp>
 #include <aero/editor/toolbar_model.hpp>
 
 #include <doctest/doctest.h>
@@ -28,22 +29,21 @@ using ed::TransformTool;
 constexpr float PAD = 12.0F;  // EDITOR_THEME.shell.toolbarPaddingX, restated
 constexpr float GAP = 14.0F;  // EDITOR_THEME.shell.toolbarGroupGap, restated
 // Full needs 12+200+14+100+14+120+14+150+14+250+12 = 900; Compact 12+100+14+100+14+120+14+80+14+150+12 = 630.
+// Below 630 the layout is still Compact (task 4.7.1, call 6): nothing narrower exists, the window clips the bar.
 constexpr ToolbarWidths FULL{.tools = 200.0F, .space = 100.0F, .snap = 120.0F, .play = 150.0F, .undo = 250.0F};
 constexpr ToolbarWidths COMPACT{.tools = 100.0F, .space = 100.0F, .snap = 120.0F, .play = 80.0F, .undo = 150.0F};
 
 [[nodiscard]] float bytesX10(std::string_view text) { return 10.0F * static_cast<float>(text.size()); }
 
-[[nodiscard]] int richness(ToolbarMode mode) {  // Full 2, Compact 1, Minimal 0
-    return mode == ToolbarMode::Full ? 2 : (mode == ToolbarMode::Compact ? 1 : 0);
+[[nodiscard]] int richness(ToolbarMode mode) {  // Full 1, Compact 0
+    return mode == ToolbarMode::Full ? 1 : 0;
 }
 
 // The drawn group rects, left to right, so "no two overlap" is one loop.
 [[nodiscard]] std::vector<std::array<float, 2>> groupRects(const ToolbarLayout& l, const ToolbarWidths& w) {
     std::vector<std::array<float, 2>> rects{
         {l.toolsX, l.toolsX + w.tools}, {l.spaceX, l.spaceX + w.space}, {l.snapX, l.snapX + w.snap}};
-    if (l.playDrawn) {
-        rects.push_back({l.playX, l.playX + w.play});
-    }
+    rects.push_back({l.playX, l.playX + w.play});
     rects.push_back({l.undoX, l.undoX + w.undo});
     return rects;
 }
@@ -74,13 +74,14 @@ TEST_CASE("toolbar: the tool table -- order, icons, labels, keys (task E.6.2, TB
     CHECK(ed::SCALE_IS_LOCAL_TOOLTIP == "Scale is always Local");
 }
 
-TEST_CASE("toolbar: the play table, its one tooltip, and the snap and undo words (task E.6.2, TB2)") {
-    REQUIRE(ed::TOOLBAR_PLAY_CONTROLS.size() == 3U);
+TEST_CASE("toolbar: the play table, and the snap and undo words (task E.6.2, TB2)") {
+    REQUIRE(ed::TOOLBAR_PLAY_CONTROLS.size() == 4U);
     CHECK(ed::TOOLBAR_PLAY_CONTROLS[0].iconLabel == std::string_view(AERO_ICON_PLAY " Play"));
     CHECK(ed::TOOLBAR_PLAY_CONTROLS[1].iconLabel == std::string_view(AERO_ICON_PAUSE " Pause"));
     CHECK(ed::TOOLBAR_PLAY_CONTROLS[2].iconLabel == std::string_view(AERO_ICON_STEP_FORWARD " Step"));
     CHECK(ed::TOOLBAR_PLAY_CONTROLS[2].icon == std::string_view(AERO_ICON_STEP_FORWARD));
-    CHECK(ed::PLAY_CONTROLS_TOOLTIP == "Not implemented yet -- task 4.7.1");
+    CHECK(ed::TOOLBAR_PLAY_CONTROLS[3].iconLabel == std::string_view(AERO_ICON_SQUARE " Stop"));
+    CHECK(ed::TOOLBAR_PLAY_CONTROLS[3].icon == std::string_view(AERO_ICON_SQUARE));
     CHECK(ed::SNAP_TOGGLE_LABEL == std::string_view(AERO_ICON_MAGNET " Snap"));
     CHECK(ed::SNAP_FIELD_SELECT_TOOLTIP == "Select draws no gizmo");
     CHECK(ed::UNDO_BUTTON_LABEL == std::string_view(AERO_ICON_UNDO_2 " Undo"));
@@ -123,8 +124,8 @@ TEST_CASE("toolbar: the widest mode that fits, at and around each boundary (task
     CHECK((ed::toolbarLayout(900.5F, FULL, COMPACT, 1.0F).mode == ToolbarMode::Full));
     CHECK((ed::toolbarLayout(899.5F, FULL, COMPACT, 1.0F).mode == ToolbarMode::Compact));
     CHECK((ed::toolbarLayout(630.0F, FULL, COMPACT, 1.0F).mode == ToolbarMode::Compact));
-    CHECK((ed::toolbarLayout(629.5F, FULL, COMPACT, 1.0F).mode == ToolbarMode::Minimal));
-    CHECK((ed::toolbarLayout(0.0F, FULL, COMPACT, 1.0F).mode == ToolbarMode::Minimal));
+    CHECK((ed::toolbarLayout(629.5F, FULL, COMPACT, 1.0F).mode == ToolbarMode::Compact));  // no narrower mode (call 6)
+    CHECK((ed::toolbarLayout(0.0F, FULL, COMPACT, 1.0F).mode == ToolbarMode::Compact));
     int previous = richness(ed::toolbarLayout(0.0F, FULL, COMPACT, 1.0F).mode);
     for (int width = 1; width <= 1100; ++width) {
         CAPTURE(width);
@@ -141,16 +142,20 @@ TEST_CASE("toolbar: placement -- packed left, undo right, play centred, nothing 
     CHECK(wide.snapX == 340.0F);          // 226 + 100 + 14
     CHECK(wide.leftGroupsEnd == 460.0F);  // 340 + 120
     CHECK(wide.undoX == 738.0F);          // 1000 - 12 - 250: right-aligned
-    REQUIRE(wide.playDrawn);
-    CHECK(wide.playX == 524.0F);  // centred in [474, 724]: (474 + 724) / 2 - 75
+    CHECK(wide.playX == 524.0F);          // centred in [474, 724]: (474 + 724) / 2 - 75
     // At the Full boundary the play group exactly fills its span.
     const ToolbarLayout edge = ed::toolbarLayout(900.0F, FULL, COMPACT, 1.0F);
     CHECK(edge.undoX == 638.0F);
     CHECK(edge.playX == 474.0F);
-    // Minimal at 500: the undo group is PACKED after the left groups (the right-aligned x would overlap them).
+    // Below Compact's 630 at 500: play is PACKED after the left groups and undo after play (the right-aligned x would
+    // overlap them), so the narrow arm is continuous with the fitting one.
     const ToolbarLayout narrow = ed::toolbarLayout(500.0F, FULL, COMPACT, 1.0F);
-    REQUIRE((narrow.mode == ToolbarMode::Minimal));
-    CHECK(narrow.undoX == 374.0F);  // 360 + 14, not 500 - 12 - 150 = 338
+    REQUIRE((narrow.mode == ToolbarMode::Compact));
+    CHECK(narrow.playX == 374.0F);  // 360 + 14
+    CHECK(narrow.undoX == 468.0F);  // 374 + 80 + 14, not 500 - 12 - 150 = 338
+    const ToolbarLayout atCompact = ed::toolbarLayout(630.0F, FULL, COMPACT, 1.0F);
+    CHECK(atCompact.playX == 374.0F);  // the fitting arm: the span holds play exactly
+    CHECK(atCompact.undoX == 468.0F);
     for (int width = 0; width <= 1100; ++width) {
         CAPTURE(width);
         const ToolbarLayout l = ed::toolbarLayout(static_cast<float>(width), FULL, COMPACT, 1.0F);
@@ -159,22 +164,23 @@ TEST_CASE("toolbar: placement -- packed left, undo right, play centred, nothing 
         for (std::size_t i = 1; i < rects.size(); ++i) {
             CHECK(rects[i - 1U][1] <= rects[i][0]);  // no two group rects overlap, at any width (seed S46)
         }
+        CHECK(l.playX >= l.leftGroupsEnd + GAP);
         CHECK(l.undoX >= l.leftGroupsEnd + GAP);
     }
 }
 
-TEST_CASE("toolbar: which elements each mode shows (task E.6.2, TB6)") {
+TEST_CASE("toolbar: each mode shows the play group (task E.6.2, TB6)") {
     const ToolbarLayout full = ed::toolbarLayout(1000.0F, FULL, COMPACT, 1.0F);
     const ToolbarLayout compact = ed::toolbarLayout(700.0F, FULL, COMPACT, 1.0F);
-    const ToolbarLayout minimal = ed::toolbarLayout(600.0F, FULL, COMPACT, 1.0F);
+    const ToolbarLayout narrow = ed::toolbarLayout(600.0F, FULL, COMPACT, 1.0F);
     CHECK((full.mode == ToolbarMode::Full));
-    CHECK(full.playDrawn);
+    CHECK(full.playX == 524.0F);
     CHECK((compact.mode == ToolbarMode::Compact));
-    CHECK(compact.playDrawn);
     CHECK(compact.undoX == 538.0F);  // 700 - 12 - 150: COMPACT's undo (no label slot)
     CHECK(compact.playX == 409.0F);  // centred in [374, 524]: (374 + 524) / 2 - 40
-    CHECK((minimal.mode == ToolbarMode::Minimal));
-    CHECK_FALSE(minimal.playDrawn);
+    CHECK((narrow.mode == ToolbarMode::Compact));
+    CHECK(narrow.playX == 374.0F);  // packed: the span [374, 454] is narrower than play + its gaps
+    CHECK(narrow.undoX == 468.0F);
 }
 
 TEST_CASE("toolbar: a NaN, negative or infinite width is the packed placement, all finite (task E.6.2, TB7)") {
@@ -182,12 +188,12 @@ TEST_CASE("toolbar: a NaN, negative or infinite width is the packed placement, a
                             -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()}) {
         CAPTURE(bad);
         const ToolbarLayout l = ed::toolbarLayout(bad, FULL, COMPACT, 1.0F);
-        CHECK((l.mode == ToolbarMode::Minimal));
-        CHECK_FALSE(l.playDrawn);
+        CHECK((l.mode == ToolbarMode::Compact));
         for (const float x : {l.toolsX, l.spaceX, l.snapX, l.leftGroupsEnd, l.undoX, l.playX}) {
             CHECK(std::isfinite(x));
         }
-        CHECK(l.undoX == 374.0F);  // packed after the left groups
+        CHECK(l.playX == 374.0F);  // packed after the left groups
+        CHECK(l.undoX == 468.0F);  // and undo after play
     }
 }
 
@@ -209,8 +215,8 @@ TEST_CASE("toolbar: every group's width, and the undo group's FIXED slot (task E
                                .snapToggleFull = 66.0F,
                                .snapToggleCompact = 30.0F,
                                .snapField = 64.0F,
-                               .playFull = {60.0F, 70.0F, 62.0F},
-                               .playCompact = {30.0F, 30.0F, 30.0F},
+                               .playFull = {60.0F, 70.0F, 62.0F, 58.0F},
+                               .playCompact = {30.0F, 30.0F, 30.0F, 30.0F},
                                .undoButton = 64.0F,
                                .undoChip = 44.0F,
                                .itemSpacing = 8.0F,
@@ -223,8 +229,8 @@ TEST_CASE("toolbar: every group's width, and the undo group's FIXED slot (task E
     CHECK(w.compact.space == 114.0F);
     CHECK(w.full.snap == 146.0F);     // 8 + 66 + 8 + 64
     CHECK(w.compact.snap == 110.0F);  // 8 + 30 + 8 + 64
-    CHECK(w.full.play == 208.0F);     // 60 + 70 + 62 + 2 x 8
-    CHECK(w.compact.play == 106.0F);  // 3 x 30 + 2 x 8
+    CHECK(w.full.play == 274.0F);     // 60 + 70 + 62 + 58 + 3 x 8
+    CHECK(w.compact.play == 144.0F);  // 4 x 30 + 3 x 8
     CHECK(w.full.undo == 284.0F);     // 64 + 8 + 44 + 8 + 10 x 16 -- the SLOT, whatever the label (seed S45)
     CHECK(w.compact.undo == 116.0F);  // 64 + 8 + 44: no slot
     CHECK(ed::UNDO_LABEL_SLOT_EM == 10.0F);
@@ -312,4 +318,50 @@ TEST_CASE("toolbar: no step value formats wider than the field's widest text (ta
         }
     }
     CHECK(reached == widest);  // ANTI-VACUITY: some value really formats as wide as the field's text
+}
+
+TEST_CASE("toolbar: the play table is in PlayControl order, with its icons and labels (task 4.7.1, TB13)") {
+    REQUIRE(ed::TOOLBAR_PLAY_CONTROLS.size() == ed::PLAY_CONTROL_COUNT);
+    for (std::size_t i = 0; i < ed::TOOLBAR_PLAY_CONTROLS.size(); ++i) {
+        CAPTURE(i);
+        CHECK((ed::TOOLBAR_PLAY_CONTROLS[i].control == static_cast<ed::PlayControl>(i)));
+    }
+    CHECK(ed::TOOLBAR_PLAY_CONTROLS[0].icon == std::string_view(AERO_ICON_PLAY));
+    CHECK(ed::TOOLBAR_PLAY_CONTROLS[1].icon == std::string_view(AERO_ICON_PAUSE));
+    CHECK(ed::TOOLBAR_PLAY_CONTROLS[2].icon == std::string_view(AERO_ICON_STEP_FORWARD));
+    CHECK(ed::TOOLBAR_PLAY_CONTROLS[3].icon == std::string_view(AERO_ICON_SQUARE));
+    constexpr std::array<std::string_view, 4> NAMES{"Play", "Pause", "Step", "Stop"};
+    for (std::size_t i = 0; i < NAMES.size(); ++i) {
+        CAPTURE(i);
+        const std::string expected = std::string(ed::TOOLBAR_PLAY_CONTROLS[i].icon) + " " + std::string(NAMES[i]);
+        CHECK(std::string(ed::TOOLBAR_PLAY_CONTROLS[i].iconLabel) == expected);
+    }
+}
+
+TEST_CASE("toolbar: Full when it fits, else Compact, and the play group never overlaps (task 4.7.1, TB14)") {
+    constexpr float FULL_NEEDS = 900.0F;
+    ToolbarLayout previous = ed::toolbarLayout(0.0F, FULL, COMPACT, 1.0F);
+    for (int half = 0; half <= 2 * (900 + 10); ++half) {
+        const float width = static_cast<float>(half) * 0.5F;
+        CAPTURE(width);
+        const ToolbarLayout l = ed::toolbarLayout(width, FULL, COMPACT, 1.0F);
+        const ToolbarWidths& w = l.mode == ToolbarMode::Full ? FULL : COMPACT;
+        CHECK((l.mode == (width >= FULL_NEEDS ? ToolbarMode::Full : ToolbarMode::Compact)));
+        CHECK(l.playX >= l.leftGroupsEnd + GAP);
+        CHECK(l.playX + w.play <= l.undoX - GAP);
+        // Continuous across Compact's requirement: nothing jumps over 1 point where Minimal used to begin.
+        if (previous.mode == l.mode) {
+            CHECK(std::fabs(l.playX - previous.playX) <= 1.0F);
+            CHECK(std::fabs(l.undoX - previous.undoX) <= 1.0F);
+        }
+        previous = l;
+    }
+}
+
+TEST_CASE("toolbar: the play group is four buttons three spacings apart, in both modes (task 4.7.1, TB15)") {
+    const ed::ToolbarMetrics m{
+        .playFull = {10.0F, 20.0F, 30.0F, 40.0F}, .playCompact = {5.0F, 6.0F, 7.0F, 8.0F}, .itemSpacing = 8.0F};
+    const ed::ToolbarWidthPair w = ed::toolbarWidths(m);
+    CHECK(w.full.play == 124.0F);    // 10 + 20 + 30 + 40 + 3 x 8
+    CHECK(w.compact.play == 50.0F);  // 5 + 6 + 7 + 8 + 3 x 8
 }

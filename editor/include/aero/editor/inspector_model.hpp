@@ -8,6 +8,7 @@
 #include <aero/editor/axis_palette.hpp>        // task E.3.1: the ONE spelling of the axis colours
 #include <aero/editor/component_ops.hpp>       // FieldValue, FieldKind
 #include <aero/editor/panel_chrome_model.hpp>  // task E.6.3: CardRecord, ChromeRole (InspectorDrawRecord)
+#include <aero/editor/project.hpp>             // task 4.6.1: ProjectLanguage
 #include <aero/scene/entity.hpp>
 #include <aero/scene/world.hpp>  // engine::ComponentTypeId
 
@@ -104,14 +105,15 @@ struct GuidFieldRow {
     std::string text;
     bool clearEnabled = false;  // the panel spells this BeginDisabled(!clearEnabled)
 };
-// task E.4.5: `subtitle` APPENDED AND DEFAULTED, so every existing call compiles and every existing case passes
-// UNEDITED -- the proof that this is additive, not a rewrite. It is what a material's tile SHOWS
-// (materialCardSubtitle's answer, rule 4 already applied). When non-empty, the found-record sentence is
-// composed through material_card.hpp's OWN row function, so the Inspector and the browser's list row can
+// task 4.6.1: `language` is the open project's: it names a .ts "Script" in a TypeScript project and "Text" in a C++
+// one, the same answer the Asset Browser gives. task E.4.5: `subtitle` is APPENDED AND DEFAULTED. It is what a
+// material's tile SHOWS (materialCardSubtitle's answer, rule 4 already applied). When non-empty, the found-record
+// sentence is composed through material_card.hpp's OWN row function, so the Inspector and the browser's list row can
 // never drift:   "brass.aeromat  -  Studio Brass  (Material)"
 // A nil guid and a missing record IGNORE it: a name for a reference that resolves to nothing is a name for
 // nothing.
-[[nodiscard]] GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database, std::string_view subtitle = {});
+[[nodiscard]] GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database, ProjectLanguage language,
+                                        std::string_view subtitle = {});
 
 // ---- task E.5.2: the named selector, as VALUES ----------------------------------------------------
 // The integer row's other shape: a dropdown naming each value, chosen by the field's OWN metadata and
@@ -142,6 +144,17 @@ struct NamedSelectorRow {
 // variant's first alternative, bool) otherwise, which the caller never asks for: it asked
 // namedSelectorRow first.
 [[nodiscard]] FieldValue namedSelectorValue(FieldKind kind, std::size_t index);
+
+// ---- task 4.6.1: which components Add Component offers ---------------------------------------------
+// A C++ project runs no script, so a component whose field names a Script asset has nothing to point at there.
+// The test is METADATA, never a name: some data member of the registered type carries an AERO_ASSET token that
+// assetReferenceKindFromToken resolves to AssetKind::Script. False for a name that resolves to no registered type.
+[[nodiscard]] bool componentReferencesScriptAsset(std::string_view registrationName);
+
+// Add Component lists `registrationName` iff this holds: every component in a TypeScript project, and in a C++
+// project every component that does not reference a Script asset. A component already on the entity is not
+// affected: the Inspector draws its card and its Remove either way.
+[[nodiscard]] bool addComponentOffered(std::string_view registrationName, ProjectLanguage language);
 
 // ---- task E.3.1: the axis row, as VALUES ----------------------------------------------------------
 // Everything the Vec3/Quat rows decide, computed OUTSIDE the draw walk so a tier-0 case asserts what
@@ -284,6 +297,14 @@ struct InspectorDrawRecord {
     // before the label adds any. A dash stretched over its gap keeps the count and reads a gap of 0.
     float addComponentFirstDashWidth = 0.0F;
     float addComponentFirstDashGap = 0.0F;
+    // task 4.7.1 (AC-11): the colours the list RECEIVED, as ImGui packs an ImU32 -- the `col` of the outline's first
+    // dash vertex and of the first vertex the label adds. 0 when nothing was drawn. A disabled scope shows in the
+    // alpha byte alone (GetColorU32 scales it by Style.Alpha); never a flag set beside the call.
+    std::uint32_t addComponentDashColour = 0U;
+    std::uint32_t addComponentLabelColour = 0U;
+    // The `col` of the first vertex the hover or active fill added, off the same vertex buffer; 0 when no fill drew
+    // (and on a frame that draws no button).
+    std::uint32_t addComponentFillColour = 0U;
 };
 
 }  // namespace engine::editor

@@ -13,6 +13,7 @@
 #include <aero/editor/asset_drag.hpp>
 #include <aero/editor/asset_picker_model.hpp>
 #include <aero/editor/asset_view.hpp>
+#include <aero/editor/project.hpp>  // task 4.6.1: ProjectLanguage
 #include <aero/editor/thumbnail_cache.hpp>
 
 #include <doctest/doctest.h>
@@ -55,6 +56,10 @@ using engine::editor::inspectorAssetFieldKey;
 using engine::editor::materialSlotFieldKey;
 using engine::editor::movePickerCursor;
 using engine::editor::pickerCursorGuid;
+
+namespace {
+constexpr engine::editor::ProjectLanguage TS = engine::editor::ProjectLanguage::Ts;
+}  // namespace
 
 namespace {
 
@@ -131,7 +136,7 @@ TEST_CASE("MP2: the heading is assetKindLabel VERBATIM for one kind -- SINGULAR,
 TEST_CASE("MP3: an unconstrained field offers every draggable record, in the database's own order") {
     const std::vector<AssetRecord> records = fixtureRecords();
     AssetPickerCandidates candidates;
-    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, AssetFilter{}, 100, candidates);
+    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, TS, AssetFilter{}, 100, candidates);
 
     CHECK(pathsOf(candidates, records) == std::vector<std::string>{"a/wood.png", "b/wood.ktx2", "hero.glb",
                                                                    "m/brick.aeromat", "s/tone.wav", "wood/plank.png"});
@@ -149,20 +154,20 @@ TEST_CASE("MP4: the RULES narrow the walk -- a texture slot sees textures, a mod
     const std::vector<AssetRecord> records = fixtureRecords();
     AssetPickerCandidates candidates;
 
-    buildAssetPickerCandidates(records, TEXTURE_SLOT, AssetFilter{}, 100, candidates);
+    buildAssetPickerCandidates(records, TEXTURE_SLOT, TS, AssetFilter{}, 100, candidates);
     CHECK(pathsOf(candidates, records) == std::vector<std::string>{"a/wood.png", "b/wood.ktx2", "wood/plank.png"});
     CHECK(candidates.total == 3);
 
-    buildAssetPickerCandidates(records, AssetPickerRules{DropSurface::AssetField, AssetKind::Model}, AssetFilter{}, 100,
-                               candidates);
+    buildAssetPickerCandidates(records, AssetPickerRules{DropSurface::AssetField, AssetKind::Model}, TS, AssetFilter{},
+                               100, candidates);
     CHECK(pathsOf(candidates, records) == std::vector<std::string>{"hero.glb"});
 
-    buildAssetPickerCandidates(records, AssetPickerRules{DropSurface::AssetField, AssetKind::Audio}, AssetFilter{}, 100,
-                               candidates);
+    buildAssetPickerCandidates(records, AssetPickerRules{DropSurface::AssetField, AssetKind::Audio}, TS, AssetFilter{},
+                               100, candidates);
     CHECK(pathsOf(candidates, records) == std::vector<std::string>{"s/tone.wav"});
 
-    buildAssetPickerCandidates(records, AssetPickerRules{DropSurface::AssetField, AssetKind::Material}, AssetFilter{},
-                               100, candidates);
+    buildAssetPickerCandidates(records, AssetPickerRules{DropSurface::AssetField, AssetKind::Material}, TS,
+                               AssetFilter{}, 100, candidates);
     CHECK(pathsOf(candidates, records) == std::vector<std::string>{"m/brick.aeromat"});
 }
 
@@ -171,7 +176,7 @@ TEST_CASE("MP5: the query matches the LEAF, not the path -- the folder-named-aft
     AssetFilter filter;
     filter.query = "wood";
     AssetPickerCandidates candidates;
-    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, filter, 100, candidates);
+    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, TS, filter, 100, candidates);
 
     // `wood/plank.png` lives UNDER a directory called wood and must NOT match -- 3.1.3's AV39b
     // species, and the whole reason matchesFilter is composed rather than restated here.
@@ -186,14 +191,14 @@ TEST_CASE("MP6: the combo narrows WITHIN the rules -- the rules always win") {
     AssetFilter audioOnly;
     audioOnly.anyKind = false;
     audioOnly.kind = AssetKind::Audio;
-    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, audioOnly, 100, candidates);
+    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, TS, audioOnly, 100, candidates);
     CHECK(pathsOf(candidates, records) == std::vector<std::string>{"s/tone.wav"});
 
     // A combo value the RULES refuse yields nothing at all, rather than widening them.
     AssetFilter textOnly;
     textOnly.anyKind = false;
     textOnly.kind = AssetKind::Text;
-    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, textOnly, 100, candidates);
+    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, TS, textOnly, 100, candidates);
     CHECK(candidates.items.empty());
     CHECK(candidates.total == 0);
     CHECK_FALSE(candidates.truncated);
@@ -203,13 +208,13 @@ TEST_CASE("MP7: `total` is NEVER capped, and the notice names the difference") {
     const std::vector<AssetRecord> records = fixtureRecords();
     AssetPickerCandidates candidates;
 
-    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, AssetFilter{}, 2, candidates);
+    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, TS, AssetFilter{}, 2, candidates);
     CHECK(candidates.items.size() == 2);
     CHECK(candidates.total == 6);  // the UNCAPPED match count -- the SearchResult rule
     CHECK(candidates.truncated);
     CHECK(assetPickerTruncationNotice(candidates) == "4 more not shown -- refine the search");
 
-    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, AssetFilter{}, 6, candidates);
+    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, TS, AssetFilter{}, 6, candidates);
     CHECK(candidates.items.size() == 6);
     CHECK(candidates.total == 6);
     CHECK_FALSE(candidates.truncated);
@@ -219,7 +224,7 @@ TEST_CASE("MP7: `total` is NEVER capped, and the notice names the difference") {
 TEST_CASE("MP8: the walk REUSES its scratch -- a same-shape rebuild moves no allocation") {
     const std::vector<AssetRecord> records = fixtureRecords();
     AssetPickerCandidates candidates;
-    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, AssetFilter{}, 100, candidates);
+    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, TS, AssetFilter{}, 100, candidates);
     REQUIRE(candidates.items.size() == 6);
 
     candidates.items.reserve(64);
@@ -227,7 +232,7 @@ TEST_CASE("MP8: the walk REUSES its scratch -- a same-shape rebuild moves no all
     const std::size_t capacity = candidates.items.capacity();
     REQUIRE(capacity >= 64);
 
-    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, AssetFilter{}, 100, candidates);
+    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, TS, AssetFilter{}, 100, candidates);
     CHECK(candidates.items.size() == 6);
     CHECK(candidates.items.data() == data);
     CHECK(candidates.items.capacity() == capacity);
@@ -264,7 +269,7 @@ TEST_CASE("MP9: movePickerCursor is TOTAL and CLAMPING -- it never wraps") {
 TEST_CASE("MP10: a fresh open lands on the BOUND asset -- its index PLUS ONE, because 0 is None") {
     const std::vector<AssetRecord> records = fixtureRecords();
     AssetPickerCandidates candidates;
-    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, AssetFilter{}, 100, candidates);
+    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, TS, AssetFilter{}, 100, candidates);
     REQUIRE(candidates.items.size() == 6);
 
     for (std::size_t i = 0; i < candidates.items.size(); ++i) {
@@ -280,7 +285,7 @@ TEST_CASE("MP10: a fresh open lands on the BOUND asset -- its index PLUS ONE, be
 TEST_CASE("MP11: committing the cursor means None at 0, the item at i+1, and None past the end") {
     const std::vector<AssetRecord> records = fixtureRecords();
     AssetPickerCandidates candidates;
-    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, AssetFilter{}, 100, candidates);
+    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, TS, AssetFilter{}, 100, candidates);
     REQUIRE(candidates.items.size() == 6);
 
     CHECK_FALSE(pickerCursorGuid(0, candidates).has_value());
@@ -440,7 +445,7 @@ TEST_CASE("MP15: the walk is over the SPAN it is given -- a record that appeared
     std::vector<AssetRecord> records = fixtureRecords();
     AssetPickerCandidates candidates;
     const AssetPickerRules modelField{DropSurface::AssetField, AssetKind::Model};
-    buildAssetPickerCandidates(records, modelField, AssetFilter{}, 100, candidates);
+    buildAssetPickerCandidates(records, modelField, TS, AssetFilter{}, 100, candidates);
     REQUIRE(candidates.items.size() == 1);
 
     // A rescan added a model. The walk holds no cached copy, so the SAME call with the SAME rules
@@ -453,7 +458,7 @@ TEST_CASE("MP15: the walk is over the SPAN it is given -- a record that appeared
     added.change = engine::editor::ImportChange::UpToDate;
     records.push_back(added);
 
-    buildAssetPickerCandidates(records, modelField, AssetFilter{}, 100, candidates);
+    buildAssetPickerCandidates(records, modelField, TS, AssetFilter{}, 100, candidates);
     CHECK(pathsOf(candidates, records) == std::vector<std::string>{"hero.glb", "zz/second.gltf"});
     CHECK(candidates.total == 2);
 }
@@ -461,7 +466,7 @@ TEST_CASE("MP15: the walk is over the SPAN it is given -- a record that appeared
 TEST_CASE("MP16: a candidate can be LISTED and still have no thumbnail -- the icon fallback's case") {
     const std::vector<AssetRecord> records = fixtureRecords();
     AssetPickerCandidates candidates;
-    buildAssetPickerCandidates(records, TEXTURE_SLOT, AssetFilter{}, 100, candidates);
+    buildAssetPickerCandidates(records, TEXTURE_SLOT, TS, AssetFilter{}, 100, candidates);
     REQUIRE(candidates.items.size() == 3);
 
     // b/wood.ktx2 is the second item: a Texture by KIND (so it is offered) that is NOT
@@ -569,6 +574,37 @@ TEST_CASE("MP19: a Script field offers the .ts files only, headed Script") {
         records.push_back(record);
     }
     AssetPickerCandidates candidates;
-    buildAssetPickerCandidates(records, scriptField, AssetFilter{}, 100, candidates);
+    buildAssetPickerCandidates(records, scriptField, TS, AssetFilter{}, 100, candidates);
     CHECK(pathsOf(candidates, records) == std::vector<std::string>{"mover.ts"});
+}
+
+TEST_CASE("MP20: a Script field offers a .ts in a TypeScript project and nothing in a C++ one (task 4.6.1, MP20)") {
+    const AssetPickerRules scriptField{DropSurface::AssetField, AssetKind::Script};
+    GuidGenerator generator{0x461461461461461ULL};  // fixed seed -- NO entropy source anywhere
+    std::vector<AssetRecord> records;
+    for (const char* path : {"brick.png", "player.ts"}) {
+        AssetRecord record;
+        record.relativePath = path;
+        record.state = engine::editor::AssetMetaState::Ok;
+        record.guid = generator.next();
+        record.contentHash = engine::ContentHash{.hi = 0x1122334455667788ULL, .lo = 0x99AABBCCDDEEFF00ULL};
+        record.change = engine::editor::ImportChange::UpToDate;
+        records.push_back(record);
+    }
+    AssetPickerCandidates candidates;
+    buildAssetPickerCandidates(records, scriptField, TS, AssetFilter{}, 100, candidates);
+    CHECK(pathsOf(candidates, records) == std::vector<std::string>{"player.ts"});
+    CHECK(candidates.total == 1);
+
+    buildAssetPickerCandidates(records, scriptField, engine::editor::ProjectLanguage::Cpp, AssetFilter{}, 100,
+                               candidates);
+    CHECK(candidates.items.empty());
+    CHECK(candidates.total == 0);
+
+    // The unconstrained field sees one fewer record in the C++ project: the .ts is Text there, which no drag carries.
+    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, TS, AssetFilter{}, 100, candidates);
+    CHECK(candidates.total == 2);
+    buildAssetPickerCandidates(records, UNCONSTRAINED_FIELD, engine::editor::ProjectLanguage::Cpp, AssetFilter{}, 100,
+                               candidates);
+    CHECK(pathsOf(candidates, records) == std::vector<std::string>{"brick.png"});
 }

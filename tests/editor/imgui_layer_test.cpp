@@ -42,6 +42,7 @@
 #include <aero/editor/model_import_session.hpp>  // task 3.2.1: SessionState, named directly (I52-I59)
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/picking.hpp>            // task 2.3.2
+#include <aero/editor/play_session.hpp>       // task 4.7.1 (I388-I392): PlayControl, PlayMode, the session's input
 #include <aero/editor/project.hpp>            // task 2.6.1
 #include <aero/editor/project_files.hpp>      // task E.6.3 (I326): formatFileSize, the footer's in-listing size
 #include <aero/editor/project_settings.hpp>   // task E.6.1 (I233): PROJECT_SETTINGS_PANEL_ID
@@ -59,6 +60,7 @@
 #include <aero/editor/toolbar_model.hpp>        // task E.6.2 (I306): toolbarLayout / toolbarWidths, the pure answer
 #include <aero/editor/transform_command.hpp>    // task 2.4.1
 #include <aero/editor/transform_ops.hpp>        // task 2.4.1
+#include <aero/platform/event.hpp>              // task 4.7.1 (I391): the events the game feed is handed
 #include <aero/platform/platform.hpp>
 #include <aero/reflect/material_format.hpp>  // task 3.4.2: MaterialDocument, named directly (I84)
 #include <aero/render/debug_grid.hpp>        // task E.5.2 (I254): debugGridDepthNudge
@@ -87,7 +89,11 @@
                                                 // The scene_asset_loader.hpp precedent, one file over.
 #include "rhi_test_support.hpp"
 
+#include <SDL3/SDL_events.h>      // task 4.7.1 (I409): the mouse events the ImGui backend reads
 #include <SDL3/SDL_filesystem.h>  // task 2.3.3 I5: SDL_GetBasePath(), matching imgui_layer.cpp:38
+#include <SDL3/SDL_joystick.h>    // task 4.7.1 (I403): a virtual pad the Context's own subsystem sees
+#include <SDL3/SDL_mouse.h>       // task 4.7.1 (I409): SDL_BUTTON_LEFT
+#include <SDL3/SDL_video.h>       // task 4.7.1 (I409, I410): the window's id, via SDL_GetWindows
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -110,6 +116,7 @@
 #include <optional>
 #include <ostream>  // MSVC alone needs the complete type to stringify a string_view inside a CHECK
 #include <regex>    // task E.6.1 (I286): the one style writer, as a set claim
+#include <set>      // task 4.7.1 (I399): the set of files that push a command
 #include <span>     // task 3.2.4, I78: std::as_bytes over the fingerprint's own text
 #include <sstream>
 #include <string>
@@ -121,6 +128,8 @@
 #include <vector>
 
 namespace {
+
+constexpr auto TS = engine::editor::ProjectLanguage::Ts;
 // Case C emits 12 000 records. console=false keeps them out of the suite's output; the destructor
 // restores the engine defaults. initLogging() does NOT clear the callback (log.cpp:81-88 touches only
 // the logger and the level), so this cannot detach the console panel's own sink -- which is exactly
@@ -2433,7 +2442,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     // BLOCKING-2 (code review): opening a project here (via `.projectPath`) dirties the recents list
@@ -2481,7 +2490,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     // BLOCKING-2 (code review): requestOpenProject() below dirties the recents list on the tick that
@@ -2557,7 +2566,7 @@ TEST_CASE("editor: a dirty scene guards requestOpenProject behind the modal (tas
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
@@ -2599,7 +2608,7 @@ TEST_CASE("editor: restoreLastProject opens the first recents entry at create() 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     engine::editor::RecentProjects recents;
@@ -2641,7 +2650,7 @@ TEST_CASE("editor: restoreLastProject = false never reads the recents file (task
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     engine::editor::RecentProjects recents;
@@ -2690,7 +2699,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     // ⛔ `.recentProjectsPath` is MANDATORY, not defensive: step 4 below opens a project through
@@ -2957,7 +2966,7 @@ TEST_CASE("editor: the asset scan runs on open and the key space lines up (task 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     const std::string assetsRoot = created.root + "/assets";
@@ -3015,12 +3024,14 @@ TEST_CASE("editor: the asset scan follows a runtime project swap, one tick later
     }
 
     const std::string locationA = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome createdA = engine::editor::createProject(locationA, "GameA", "0.1.0");
+    const engine::editor::ProjectCreateOutcome createdA =
+        engine::editor::createProject(locationA, "GameA", "0.1.0", TS);
     REQUIRE(createdA.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(createdA.root + "/assets/only_in_a.txt", "a").empty());
 
     const std::string locationB = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome createdB = engine::editor::createProject(locationB, "GameB", "0.1.0");
+    const engine::editor::ProjectCreateOutcome createdB =
+        engine::editor::createProject(locationB, "GameB", "0.1.0", TS);
     REQUIRE(createdB.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(createdB.root + "/assets/only_in_b.txt", "b").empty());
 
@@ -3069,7 +3080,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
 
@@ -3187,7 +3198,7 @@ TEST_CASE("editor: the import cache exists after the first scan and the second s
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     const std::string assetsRoot = created.root + "/assets";
@@ -3266,7 +3277,7 @@ TEST_CASE("editor: an edited asset is detected and the change is scoped to that 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     const std::string assetsRoot = created.root + "/assets";
@@ -3330,7 +3341,7 @@ TEST_CASE("editor: requestAssetReimport drives Reimport All without a button cli
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     const std::string assetsRoot = created.root + "/assets";
@@ -3455,7 +3466,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     const std::string assetsRoot = created.root + "/assets";
@@ -3526,7 +3537,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(writeBinaryFixture(assetsRoot + "/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -3588,7 +3599,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     // R3: chosen to fail at stbi_info_from_memory, never reaching a decode loop -- ASCII text named
@@ -3638,7 +3649,7 @@ TEST_CASE("editor: the resident thumbnail count never exceeds the cap (task 3.1.
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     // More files than the small 320x180 window can show at once -- the content itself is IDENTICAL
@@ -3690,7 +3701,7 @@ TEST_CASE("editor: every asset browser draw path stays balanced (task 3.1.3, I39
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(writeBinaryFixture(assetsRoot + "/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -3829,12 +3840,14 @@ TEST_CASE(
     }
 
     const std::string locationA = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome createdA = engine::editor::createProject(locationA, "GameA", "0.1.0");
+    const engine::editor::ProjectCreateOutcome createdA =
+        engine::editor::createProject(locationA, "GameA", "0.1.0", TS);
     REQUIRE(createdA.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(writeBinaryFixture(createdA.root + "/assets/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
 
     const std::string locationB = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome createdB = engine::editor::createProject(locationB, "GameB", "0.1.0");
+    const engine::editor::ProjectCreateOutcome createdB =
+        engine::editor::createProject(locationB, "GameB", "0.1.0", TS);
     REQUIRE(createdB.problem == engine::editor::CreateProblem::Ok);
 
     std::optional<engine::editor::EditorApp> app =
@@ -3881,7 +3894,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     const std::string orphanMetaPath = assetsRoot + "/gone.png.meta";
@@ -4009,7 +4022,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(writeBinaryFixture(assetsRoot + "/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -4135,7 +4148,7 @@ TEST_CASE("editor: a created file is reflected with no requestAssetRescan() call
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
 
@@ -4186,7 +4199,7 @@ TEST_CASE("editor: a changed file gets a new ContentHash and SourceChanged (task
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
 
@@ -4233,7 +4246,7 @@ TEST_CASE("editor: a deleted file leaves the database with no user action (task 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/second.txt", "two").empty());
@@ -4280,7 +4293,7 @@ TEST_CASE("editor: the steady state is silent -- the loop detector (task 3.1.4, 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
 
@@ -4323,7 +4336,7 @@ TEST_CASE("editor: enabled == false stops detection; re-enabling resumes it (tas
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
 
@@ -4385,7 +4398,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(writeBinaryFixture(assetsRoot + "/tex.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -4445,7 +4458,7 @@ TEST_CASE("editor: a manual rescan is not re-reported by the watcher (task 3.1.4
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
 
@@ -4558,7 +4571,7 @@ TEST_CASE("imgui_layer: a manual rescan while deferring is not re-reported (I51,
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string target = created.root + "/assets/first.txt";
     REQUIRE(engine::editor::writeTextFileAtomic(target, "one").empty());
@@ -4861,7 +4874,7 @@ TEST_CASE("editor: selecting a model imports it exactly once (task 3.2.1, I53, A
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", MINIMAL_GLTF_TEXT).empty());
 
@@ -4916,7 +4929,7 @@ TEST_CASE("editor: a rescan invalidates the cached result and re-imports exactly
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", MINIMAL_GLTF_TEXT).empty());
 
@@ -4969,7 +4982,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/notes.txt", "hello").empty());
 
@@ -5049,7 +5062,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/chain.gltf", HIERARCHY_GLTF_TEXT).empty());
 
@@ -5097,7 +5110,7 @@ TEST_CASE("editor: the Import Details panel draws its Failed state without crash
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/broken.gltf", DAMAGED_GLTF_TEXT).empty());
 
@@ -5144,7 +5157,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", MINIMAL_GLTF_TEXT).empty());
 
@@ -5255,7 +5268,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     // The ONLY issue this project has -- no orphan, no invalid .meta, no hash/write failure -- so
     // drawIssues()'s `total` is driven ENTIRELY by report.importFailureTotal here. BEFORE this fix,
@@ -5308,7 +5321,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.fbx", MINIMAL_FBX_TEXT).empty());
 
@@ -5363,7 +5376,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.fbx", MINIMAL_FBX_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/b.gltf", MINIMAL_GLTF_TEXT).empty());
@@ -5420,7 +5433,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/chain.fbx", HIERARCHY_FBX_TEXT).empty());
 
@@ -5469,7 +5482,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/deep.fbx", truncatedFbxText()).empty());
 
@@ -5525,7 +5538,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/broken.fbx", DAMAGED_FBX_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/bad-scale.fbx", MALFORMED_FBX_TEXT).empty());
@@ -5584,7 +5597,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.fbx", MINIMAL_FBX_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/b.gltf", MINIMAL_GLTF_TEXT).empty());
@@ -5641,7 +5654,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.obj", MINIMAL_OBJ_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/obj_fixture.mtl", MINIMAL_MTL_TEXT).empty());
@@ -5742,7 +5755,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/b.gltf", MINIMAL_GLTF_TEXT).empty());
@@ -5798,7 +5811,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
 
@@ -5852,7 +5865,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
     // An INVALID sidecar, which D7 forbids repairing -- so the record's GUID is permanently nil.
@@ -5909,7 +5922,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
 
@@ -6119,7 +6132,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
 
@@ -6304,7 +6317,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string blendPath = created.root + "/assets/statue.blend";
     REQUIRE(engine::editor::writeTextFileAtomic(blendPath, OPAQUE_BLEND_TEXT).empty());
@@ -6472,7 +6485,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
 
@@ -6617,7 +6630,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/rig.dae", SKINNED_DAE_TEXT).empty());
 
@@ -6670,7 +6683,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/scan.ply", TEXTURED_PLY_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/part.stl", TRIANGLE_STL_TEXT).empty());
@@ -6797,7 +6810,7 @@ TEST_CASE("editor: the material target is STICKY across selections (task 3.4.2, 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.aeromat", MINIMAL_AEROMAT_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/second.aeromat", SECOND_AEROMAT_TEXT).empty());
@@ -6881,7 +6894,7 @@ TEST_CASE("editor: a rejected .aeromat draws its error and refuses Apply (task 3
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string badPath = created.root + "/assets/bad.aeromat";
     REQUIRE(engine::editor::writeTextFileAtomic(badPath, REJECT_AEROMAT_TEXT).empty());
@@ -6976,7 +6989,7 @@ TEST_CASE("editor: the Material panel draws every state and every slot arm (task
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
@@ -7100,7 +7113,7 @@ TEST_CASE("editor: edit -> dirty -> Apply writes canonical bytes; Revert round-t
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string materialPath = created.root + "/assets/edit.aeromat";
     REQUIRE(engine::editor::writeTextFileAtomic(materialPath, MINIMAL_AEROMAT_TEXT).empty());
@@ -7196,7 +7209,7 @@ TEST_CASE("editor: the preview and the viewport both render in ONE frame (task 3
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(
         engine::editor::writeTextFileAtomic(created.root + "/assets/preview.aeromat", MINIMAL_AEROMAT_TEXT).empty());
@@ -7278,7 +7291,7 @@ TEST_CASE("editor: a blend material latches the preview renderer's opaque WARN (
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/blend.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -7364,7 +7377,7 @@ TEST_CASE("editor: a hidden Material panel renders nothing and still edits (task
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string materialPath = created.root + "/assets/hidden.aeromat";
     REQUIRE(engine::editor::writeTextFileAtomic(materialPath, MINIMAL_AEROMAT_TEXT).empty());
@@ -7467,7 +7480,7 @@ TEST_CASE("editor: a slot GUID loads through decode -> cook -> parse -> upload (
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/tex.aeromat", MINIMAL_AEROMAT_TEXT).empty());
@@ -7596,7 +7609,7 @@ TEST_CASE("editor: a broken image fails ONCE and stays failed (task 3.4.2, I92, 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/broken.aeromat", MINIMAL_AEROMAT_TEXT).empty());
@@ -7728,7 +7741,7 @@ TEST_CASE("editor: New Material creates, mints and selects, all outside the draw
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
 
@@ -7828,7 +7841,7 @@ TEST_CASE("editor: Apply echoes ONCE and the rescan behind it writes zero bytes 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     const std::string materialPath = assetsRoot + "/echo.aeromat";
@@ -8138,7 +8151,7 @@ TEST_CASE("editor: a RESIZED Material panel never binds a released preview textu
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/resize.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -8248,7 +8261,7 @@ TEST_CASE("editor: the error state shows NO picture, not the last material's (ta
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/good.aeromat", MINIMAL_AEROMAT_TEXT).empty());
@@ -8326,7 +8339,7 @@ TEST_CASE("editor: a non-zero uvSet latches ONE preview WARN (task 3.4.2, I101, 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/uv.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -8433,7 +8446,7 @@ TEST_CASE("editor: the viewport draws through an HDR pass into a depth-free outp
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -8494,7 +8507,7 @@ TEST_CASE("editor: two viewport frames at different sizes resolve without a stre
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -8544,7 +8557,7 @@ TEST_CASE("editor: the viewport's tonemap params are sanitized on write and vali
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -8640,7 +8653,10 @@ TEST_CASE("editor: the tonemap wiring's three source-text invariants hold (task 
         // behavioural witness.
         const std::size_t rowStartAt = soleLineContaining(viewportCode, "const ImVec2 rowStart");
         const std::size_t optionsCallAt = soleLineContaining(viewportCode, "drawViewOptions();");
-        CHECK(nextCodeLine(viewportCode, rowStartAt + 1U) == optionsCallAt);
+        // task 4.7.1: the call sits inside the play gate, which is the first statement after the row's start.
+        const std::size_t playGateAt = nextCodeLine(viewportCode, rowStartAt + 1U);
+        CHECK(viewportCode[playGateAt].find("if (!inPlay) {") != std::string::npos);
+        CHECK(nextCodeLine(viewportCode, playGateAt + 1U) == optionsCallAt);
         const auto namesGizmoBar = [](const std::string& l) { return l.find("drawGizmoBar") != std::string::npos; };
         std::size_t namingGizmoBar = 0;
         std::error_code walkError;
@@ -8796,7 +8812,7 @@ TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -8912,7 +8928,7 @@ TEST_CASE("editor: the viewport owns a DebugDraw, runs the slot, and it costs NO
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -8982,7 +8998,7 @@ TEST_CASE("editor: a pushed line and billboard are drawn and DRAINED by renderSc
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -9052,7 +9068,8 @@ TEST_CASE("editor: the DebugDraw wiring's three source-text invariants hold (tas
 
     SUBCASE("EXACTLY ONE flush, and it sits between render and endScene") {
         const std::size_t flushAt = soleLineContaining(code, "debugDrawer->flush(");
-        const std::size_t renderAt = soleLineContaining(code, "sceneRenderer->render(world, *sceneFrame, &cameraView)");
+        const std::size_t renderAt =
+            soleLineContaining(code, "sceneRenderer->render(world, *sceneFrame, sceneCamera ? nullptr : &cameraView)");
         const std::size_t endSceneAt = soleLineContaining(code, "post->endScene(std::move(*sceneFrame))");
         CHECK(renderAt < flushAt);    // AFTER the geometry, so the depth test has something to test
         CHECK(flushAt < endSceneAt);  // BEFORE the pass closes, so the draws land in an OPEN pass
@@ -9131,7 +9148,8 @@ TEST_CASE("editor: the DebugDraw wiring's three source-text invariants hold (tas
         // handed, with no global state and nothing registered, so it is reachable only by being
         // called. There being exactly one caller IS the claim.
         const std::size_t emitAt = soleLineContaining(code, "render::emitDebugGrid(");
-        const std::size_t renderAt = soleLineContaining(code, "sceneRenderer->render(world, *sceneFrame, &cameraView)");
+        const std::size_t renderAt =
+            soleLineContaining(code, "sceneRenderer->render(world, *sceneFrame, sceneCamera ? nullptr : &cameraView)");
         const std::size_t flushAt = soleLineContaining(code, "debugDrawer->flush(");
         CHECK(renderAt < emitAt);  // AFTER the geometry: the batch is filled once the depth is there
         CHECK(emitAt < flushAt);   // BEFORE the drain, so it is drawn THIS frame rather than next
@@ -9139,7 +9157,7 @@ TEST_CASE("editor: the DebugDraw wiring's three source-text invariants hold (tas
         // ...and it is GUARDED. A push outside the toggle would draw the grid with the box
         // unchecked, which I112's disabled arm also sees -- pinned here as well because this is the
         // subcase a reader consults when they change the guard.
-        const std::size_t guardAt = soleLineContaining(code, "if (gridEnabledValue) {");
+        const std::size_t guardAt = soleLineContaining(code, "if (gridEnabledValue && !drewInPlayValue) {");
         CHECK(guardAt < emitAt);
         CHECK(emitAt - guardAt <= 6U);  // the guard is the emit's OWN block, not a distant one
 
@@ -9190,7 +9208,7 @@ TEST_CASE("editor: overflow in the viewport drops, counts and warns EXACTLY ONCE
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -9284,7 +9302,7 @@ TEST_CASE("editor: the grid toggle really controls what the batch carries (task 
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -9367,7 +9385,7 @@ TEST_CASE("editor: the grid toggle defaults ON, round-trips, and is safe when Un
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -9480,7 +9498,7 @@ struct LoaderProject {
 [[nodiscard]] std::unique_ptr<LoaderProject> makeLoaderProject() {
     auto project = std::make_unique<LoaderProject>();
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     project->root = created.root;
     project->assetsRoot = created.root + "/assets";
@@ -9823,7 +9841,7 @@ struct DropFixture {
 
 [[nodiscard]] DropFixture makeDropProject() {
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     DropFixture fixture{.root = created.root, .assetsRoot = created.root + "/assets"};
     REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/two.gltf", SL_TWO_MESH_GLTF_TEXT).empty());
@@ -10596,7 +10614,7 @@ TEST_CASE("editor: a view snap lands on the canonical pose about an UNCHANGED pi
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -10743,25 +10761,26 @@ TEST_CASE("editor: what cancels a running view snap, and what does NOT (task E.1
     // pressed from here for exactly the same reason a gesture cannot be injected -- there is no
     // AddKeyEvent anywhere in the tree -- and neither focusSelection nor viewSnap.cancel() is
     // reachable: both are private, and focusSelection additionally needs the PanelContext EditorApp
-    // owns. Its mechanical cover is the `cancels[1] < focusAt` pair in the first subcase below; its
+    // owns. Its mechanical cover is the `cancels[2] < focusAt` pair in the first subcase below; its
     // behavioural cover is validation row 16, which the code-review round added because neither
     // cancel had one. The last subcase drives what the fixture genuinely CAN drive -- the panel
     // really advancing a snap -- and is named for that, not for the cancel.
     const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
     REQUIRE_FALSE(code.empty());
 
-    SUBCASE("there are EXACTLY THREE cancels, and each sits where its reason requires") {
-        // soleLineContaining is deliberately NOT used here: there are legitimately three call sites --
-        // step 8b'' (a camera gesture took over), step 8e (F is about to reframe) and, since task E.5.2,
-        // frameCreatedEntity (a create is about to reframe, F's own reason) -- and a pin that required
-        // one would be pinning the absence of the others.
+    SUBCASE("there are EXACTLY FOUR cancels, and each sits where its reason requires") {
+        // soleLineContaining is deliberately NOT used here: there are legitimately four call sites --
+        // the first play frame's reset (task 4.7.1: a snap in flight when the game starts), step 8b'' (a camera
+        // gesture took over), step 8e (F is about to reframe) and, since task E.5.2, frameCreatedEntity (a create
+        // is about to reframe, F's own reason) -- and a pin that required one would be pinning the absence of the
+        // others.
         std::vector<std::size_t> cancels;
         for (std::size_t i = 0; i < code.size(); ++i) {
             if (code[i].find("viewSnap.cancel();") != std::string::npos) {
                 cancels.push_back(i);
             }
         }
-        REQUIRE(cancels.size() == 3U);
+        REQUIRE(cancels.size() == 4U);
 
         const std::size_t nextGestureAt = soleLineContaining(code, "gesture = nextGesture(gesture, gestureInput);");
         // The CALL, not the definition -- the bare name matches both.
@@ -10771,12 +10790,16 @@ TEST_CASE("editor: what cancels a running view snap, and what does NOT (task E.1
         // THE GESTURE CANCEL, step 8b''. AFTER nextGesture, so a gesture classified THIS frame cancels
         // THIS frame's snap; BEFORE the layout/click block, so a click cannot start a snap in the same
         // frame a gesture claimed the camera.
-        CHECK(nextGestureAt < cancels[0]);
-        CHECK(cancels[0] < layoutAt);
+        // THE PLAY RESET, cancels[0] (task 4.7.1): the first statement of the block that runs on a play frame
+        // entered from an edit frame, before any gesture is classified.
+        CHECK(cancels[0] < nextGestureAt);
+        CHECK(code[cancels[0] - 1U].find("if (inPlay && !drewInPlayValue) {") != std::string::npos);
+        CHECK(nextGestureAt < cancels[1]);
+        CHECK(cancels[1] < layoutAt);
         // ...and it really is inside the gesture test rather than unconditional, which would cancel
         // every snap on its first frame and make the whole animation unreachable.
         bool guardedByGesture = false;
-        for (std::size_t i = cancels[0] > 2U ? cancels[0] - 2U : 0U; i < cancels[0]; ++i) {
+        for (std::size_t i = cancels[1] > 2U ? cancels[1] - 2U : 0U; i < cancels[1]; ++i) {
             guardedByGesture =
                 guardedByGesture || code[i].find("gesture.gesture != CameraGesture::None") != std::string::npos;
         }
@@ -10784,14 +10807,14 @@ TEST_CASE("editor: what cancels a running view snap, and what does NOT (task E.1
 
         // THE F CANCEL, step 8e: immediately BEFORE focusSelection, so the two never fight over
         // yaw/pitch -- the snap writes both every frame, focusOn writes pivot and distance.
-        CHECK(cancels[1] < focusAt);
-        CHECK(focusAt - cancels[1] <= 6U);  // the same statement group, not a distant one
+        CHECK(cancels[2] < focusAt);
+        CHECK(focusAt - cancels[2] <= 6U);  // the same statement group, not a distant one
 
         // THE CREATE CANCEL (task E.5.2): frameCreatedEntity's FIRST statement, before it reframes --
         // the F cancel's reason, from EditorApp's create drain.
         const std::size_t createAt = soleLineContaining(code, "void ViewportPanel::frameCreatedEntity(");
-        CHECK(createAt < cancels[2]);
-        CHECK(cancels[2] == createAt + 1U);
+        CHECK(createAt < cancels[3]);
+        CHECK(cancels[3] == createAt + 1U);
     }
     SUBCASE("the snap advance runs AFTER editorCamera.update, so it writes last and wins") {
         const std::size_t updateAt =
@@ -10821,7 +10844,8 @@ TEST_CASE("editor: what cancels a running view snap, and what does NOT (task E.1
             AERO_SKIP_OR_FAIL("no GPU device");
         }
         const std::string location = uniqueProjectLocation();
-        const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+        const engine::editor::ProjectCreateOutcome created =
+            engine::editor::createProject(location, "MyGame", "0.1.0", TS);
         REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
         std::optional<engine::editor::EditorApp> app =
             engine::editor::EditorApp::create(*device, *window, ctx,
@@ -10896,7 +10920,7 @@ TEST_CASE("editor: the widget's press claim and the SetOrthographic call site (t
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -11045,7 +11069,7 @@ TEST_CASE("editor: the projection toggle reaches the real matrix and the panel k
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -11234,7 +11258,7 @@ TEST_CASE("editor: an EMPTY selection issues no mask pass and no composite (task
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -11284,7 +11308,7 @@ TEST_CASE("editor: one selected mesh entity issues ONE mask pass and ONE composi
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -11455,7 +11479,8 @@ TEST_CASE("editor: the selection mask set is cleared on EVERY renderScene exit (
             AERO_SKIP_OR_FAIL("no GPU device");
         }
         const std::string location = uniqueProjectLocation();
-        const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+        const engine::editor::ProjectCreateOutcome created =
+            engine::editor::createProject(location, "MyGame", "0.1.0", TS);
         REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
         std::optional<engine::editor::EditorApp> app =
             engine::editor::EditorApp::create(*device, *window, ctx,
@@ -11736,7 +11761,8 @@ TEST_CASE(
     REQUIRE_FALSE(code.empty());
 
     SUBCASE("2.4.1's merge-chain edges and the one undoable write keep their counts") {
-        CHECK(countLinesContaining(code, "breakMergeChain(") == 5U);  // task E.6.2: + the Select return's (D4)
+        CHECK(countLinesContaining(code, "breakMergeChain(") ==
+              6U);  // task E.6.2: + the Select return's (D4); 4.7.1: + the play return's
         CHECK(countLinesContaining(code, "context.commands.push(") == 1U);
         CHECK(countLinesContaining(code, "gizmoWriteFromWorld(") == 1U);
         CHECK(countLinesContaining(code, "std::make_unique<TransformCommand>") == 1U);
@@ -11878,7 +11904,7 @@ TEST_CASE("editor: the Gizmos toggle really controls what the batch carries (tas
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -11947,7 +11973,7 @@ TEST_CASE("editor: the Gizmos toggle defaults ON, round-trips, and is safe when 
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -12016,7 +12042,7 @@ TEST_CASE("editor: the icon atlas really reached the GPU (task E.2.3, I130)") {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -12079,7 +12105,7 @@ TEST_CASE("editor: the gizmo emit's four source-text invariants hold (task E.2.3
     }
     SUBCASE("(c) it is GUARDED by the toggle, and by its OWN guard") {
         const std::size_t emitAt = soleLineContaining(code, "emitViewportGizmos(");
-        const std::size_t guardAt = soleLineContaining(code, "if (gizmosEnabledValue) {");
+        const std::size_t guardAt = soleLineContaining(code, "if (gizmosEnabledValue && !drewInPlayValue) {");
         CHECK(guardAt < emitAt);
         CHECK(emitAt - guardAt <= 2U);  // the emit's OWN guard, not one several statements above it
     }
@@ -12114,7 +12140,7 @@ TEST_CASE("editor: selecting a light draws its gizmo through the real panel (tas
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -12252,7 +12278,7 @@ TEST_CASE("editor: the icon atlas is released -- no leaked texture or sampler at
             CAPTURE(round);
             const std::string location = uniqueProjectLocation();
             const engine::editor::ProjectCreateOutcome created =
-                engine::editor::createProject(location, "MyGame", "0.1.0");
+                engine::editor::createProject(location, "MyGame", "0.1.0", TS);
             REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
             std::optional<engine::editor::EditorApp> app =
                 engine::editor::EditorApp::create(*device, *window, ctx,
@@ -12320,7 +12346,7 @@ TEST_CASE("editor: the preview draws the scene's sky, and only while the panel d
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(
         engine::editor::writeTextFileAtomic(created.root + "/assets/preview.aeromat", MINIMAL_AEROMAT_TEXT).empty());
@@ -12396,7 +12422,7 @@ TEST_CASE("editor: the scene's Environment reaches the material preview's PIXELS
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(
         engine::editor::writeTextFileAtomic(created.root + "/assets/preview.aeromat", MINIMAL_AEROMAT_TEXT).empty());
@@ -12572,7 +12598,7 @@ TEST_CASE("editor: the no-sun notice follows the RESOLUTION, not the intensity (
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     std::optional<engine::editor::EditorApp> app =
@@ -12768,7 +12794,7 @@ TEST_CASE("editor: the View popover opens, closes, and MOVES NO RECT (task E.2.4
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -12850,7 +12876,7 @@ TEST_CASE("editor: hiding the view-axis widget hides its PRESS CLAIM too (task E
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -12953,7 +12979,7 @@ TEST_CASE("editor: the viewport strip carries only MODE controls (task E.2.4, I1
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -13031,7 +13057,7 @@ TEST_CASE("editor: selecting a material raises the Material panel (task E.3.2, I
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -13098,7 +13124,7 @@ TEST_CASE("editor: selecting an importable model raises Import Details (task E.3
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     // The CONTENTS need not import: SessionState becomes Failed, which is settled AND claimed, and the
     // router reads the session's own classification rather than the file (D1).
@@ -13160,7 +13186,7 @@ TEST_CASE("editor: a file no importer claims routes nothing (task E.3.2, I151, A
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.png", "png?").empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", "not a gltf").empty());
@@ -13226,7 +13252,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -13297,7 +13323,7 @@ TEST_CASE("editor: with the preference off nothing latches at all (task E.3.2, I
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -13377,7 +13403,7 @@ TEST_CASE("editor: a hidden target panel DROPS the route and stays hidden (task 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -13432,7 +13458,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", "not a gltf").empty());
 
@@ -13503,7 +13529,7 @@ TEST_CASE("editor: the material session's stickiness is OBSERVED, not restated (
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.png", "png?").empty());
@@ -13558,7 +13584,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -14147,7 +14173,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/stone.aeromat", SECOND_AEROMAT_TEXT).empty());
@@ -14892,7 +14918,7 @@ struct PickerFixture {
 // .wav nor .ktx2 is thumbnail-decodable at all, so nothing any of these cases drives ever decodes them.
 [[nodiscard]] PickerFixture makePickerProject(bool withTextures) {
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     PickerFixture fixture{.root = created.root, .assetsRoot = created.root + "/assets"};
     REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/hero.obj", MINIMAL_OBJ_TEXT).empty());
@@ -15776,7 +15802,7 @@ TEST_CASE("editor: the Material preview is derived from the panel's height (task
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/height.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -15883,7 +15909,7 @@ TEST_CASE("editor: a short Material panel still edits and still previews (task E
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/short.aeromat", MINIMAL_AEROMAT_TEXT).empty());
 
@@ -16080,7 +16106,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
@@ -16423,7 +16449,7 @@ TEST_CASE(
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
@@ -16575,7 +16601,7 @@ namespace {
 // A scaffolded project in a fresh temp location. `scenes` are written verbatim under the root.
 [[nodiscard]] std::string makeStateProject(std::initializer_list<std::string_view> scenes) {
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::size_t extra = 1;
     for (const std::string_view relative : scenes) {
@@ -17077,7 +17103,7 @@ TEST_CASE("editor: a restored scene's assets resolve on the startup path (task E
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     // The model and a PINNED sidecar, so the scene below can name the GUID the scan will find: a valid
     // .meta is never rewritten (3.1.1's D6), so this GUID is the one the database serves.
@@ -17284,7 +17310,7 @@ namespace {
 // above always names its project "MyGame"; I187 asserts projectName() == "ProjB", which needs this.
 [[nodiscard]] std::string makeNamedProject(std::string_view name) {
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, name, "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, name, "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     return created.root;
 }
@@ -17896,7 +17922,7 @@ namespace {
 // here but the asset bytes.
 [[nodiscard]] std::string makeAssetOpProject() {
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::ensureDirectory(created.root + "/assets/a").empty());
     REQUIRE(engine::editor::ensureDirectory(created.root + "/assets/textures").empty());
@@ -18774,7 +18800,7 @@ TEST_CASE("editor: the Asset Browser lists no ignored name, and the scan agrees 
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsDir = created.root + "/assets/";  // createProject leaves it EMPTY
     REQUIRE(writeBinaryFixture(assetsDir + "wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -18843,7 +18869,7 @@ TEST_CASE("editor: a folder with a roster name is still listed and still scanned
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsDir = created.root + "/assets/";
     REQUIRE(writeBinaryFixture(assetsDir + "wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -18903,7 +18929,7 @@ TEST_CASE("editor: Show hidden reveals a dotfile and never an ignored name (task
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsDir = created.root + "/assets/";
     REQUIRE(writeBinaryFixture(assetsDir + "wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -19040,7 +19066,7 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     }
 
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsDir = created.root + "/assets/";
     REQUIRE(writeBinaryFixture(assetsDir + "wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
@@ -19371,7 +19397,7 @@ TEST_CASE("editor: a material thumbnail is RENDERED, never decoded, and the avai
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
                                                 materialText("Studio Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
@@ -19459,7 +19485,7 @@ TEST_CASE("editor: one walk spends two budgets, and three older materials starve
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     // THE LAYOUT SETTLES FIRST, WITH NOTHING TO DRAW. The dockspace's very first frame draws the Bottom slot at
@@ -19557,7 +19583,7 @@ TEST_CASE("editor: releaseKey releases the right store, and never a key on scree
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
                                                 materialText("Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
@@ -19644,11 +19670,11 @@ TEST_CASE("editor: every thumbnail and slot texture is released before ~Device (
         }
         const std::string locationA = uniqueProjectLocation();
         const engine::editor::ProjectCreateOutcome createdA =
-            engine::editor::createProject(locationA, "GameA", "0.1.0");
+            engine::editor::createProject(locationA, "GameA", "0.1.0", TS);
         REQUIRE(createdA.problem == engine::editor::CreateProblem::Ok);
         const std::string locationB = uniqueProjectLocation();
         const engine::editor::ProjectCreateOutcome createdB =
-            engine::editor::createProject(locationB, "GameB", "0.1.0");
+            engine::editor::createProject(locationB, "GameB", "0.1.0", TS);
         REQUIRE(createdB.problem == engine::editor::CreateProblem::Ok);
 
         engine::GuidGenerator generator{0xE45A235ULL};
@@ -19736,7 +19762,7 @@ TEST_CASE("editor: the rendered thumbnail is a lit sphere in front of the studio
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/red.aeromat",
                                                 materialText("Red", engine::Vec3{0.9F, 0.05F, 0.05F}))
@@ -19835,7 +19861,7 @@ TEST_CASE("editor: a thumbnail is a function of its key alone, whatever the scen
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/red.aeromat",
                                                 materialText("Red", engine::Vec3{0.9F, 0.05F, 0.05F}))
@@ -19926,7 +19952,7 @@ TEST_CASE("editor: a malformed .aeromat is read once and rendered once, ever (ta
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string badPath = created.root + "/assets/bad.aeromat";
     REQUIRE(engine::editor::writeTextFileAtomic(badPath, "{ this is not a material").empty());
@@ -19964,7 +19990,7 @@ TEST_CASE("editor: a rename keeps the key, and the subtitle follows the new name
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
                                                 materialText("Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
@@ -20031,7 +20057,7 @@ TEST_CASE("editor: an Apply reaches the tile through the watcher, with no manual
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
                                                 materialText("Studio Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
@@ -20090,7 +20116,7 @@ TEST_CASE("editor: the Inspector's material row asks for its own card and carrie
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
                                                 materialText("Studio Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
@@ -20485,7 +20511,7 @@ TEST_CASE("editor: a material renders only while its tile is on screen -- the vi
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     // Two FOLDERS, so the root listing shows no material tile at all: nothing is drawn, nothing renders.
@@ -21386,7 +21412,9 @@ TEST_CASE("editor: the Create glue no tier can click holds as source text (task 
                 shell[i].find("drawCreateKindItem(") != std::string::npos ||
                 shell[i].find("drawCreateMenuItems(") != std::string::npos) {
                 CAPTURE(shell[i]);
-                CHECK(shell[i].find("fileEnabled") != std::string::npos);
+                // task 4.7.1: `editEnabled` is `fileEnabled` with the scene lock folded in (I399 pins the line).
+                CHECK((shell[i].find("fileEnabled") != std::string::npos ||
+                       shell[i].find("editEnabled") != std::string::npos));
                 ++checked;
             }
         }
@@ -23426,7 +23454,7 @@ TEST_CASE("editor: every gizmo-return break sits under its own drag's guard (tas
         }
     }
     CHECK(edges == 2U);    // the Begin and End edges, unchanged since 2.4.1
-    CHECK(guarded == 3U);  // the no-target, Select and behind-camera returns
+    CHECK(guarded == 4U);  // the no-target, Select and behind-camera returns, and task 4.7.1's play return
     CHECK(breaks == guarded + edges);
     // ...and the guard is READ before the latch is cleared: within each early return, the guarded break comes
     // first and `gizmoWasUsing = false;` after it.
@@ -23526,7 +23554,8 @@ TEST_CASE("editor: the viewport's keys, its Select return and the tool state's n
         CHECK(std::regex_search(std::string("    GizmoMode gizmoMode{};"), member));  // ANTI-VACUITY
     }
     SUBCASE("(c) the Select return disables the gizmo, after the target and before the call (seed S2)") {
-        CHECK(countLinesContaining(code, "ImGuizmo::Enable(false)") == 3U);  // no-target, Select, the release guard
+        CHECK(countLinesContaining(code, "ImGuizmo::Enable(false)") ==
+              4U);  // no-target, Select, the release guard, play
         const std::size_t operationAt = soleLineContaining(code, "gizmoOperationFor(");
         const std::size_t targetAt = soleLineContaining(code, "gizmoModelMatrix(context.world, target)");
         const std::size_t manipulateAt = soleLineContaining(code, "ImGuizmo::Manipulate(");
@@ -23699,7 +23728,7 @@ struct E62Project {
 };
 [[nodiscard]] E62Project e62ProjectWithOneAsset() {
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(writeBinaryFixture(created.root + "/assets/red.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
     return E62Project{.location = location, .root = created.root};
@@ -24483,7 +24512,8 @@ TEST_CASE("editor: the status bar -- ~ root, watcher, count, readout and backend
 }
 
 TEST_CASE(
-    "editor: the toolbar's mode is the layout's answer for what it measured; play is disabled (task E.6.2, I306)") {
+    "editor: the toolbar's mode is the layout's answer for what it measured, and the play group obeys the play rules "
+    "(task E.6.2, I306)") {
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
@@ -24507,12 +24537,11 @@ TEST_CASE(
         const engine::editor::ToolbarWidthPair widths = engine::editor::toolbarWidths(r.metrics);
         CHECK((r.fullWidths == widths.full));
         CHECK((r.compactWidths == widths.compact));
-        const auto total = [](const engine::editor::ToolbarWidths& w, bool play) {
-            return w.tools + w.space + w.snap + (play ? w.play : 0.0F) + w.undo;
+        const auto total = [](const engine::editor::ToolbarWidths& w) {
+            return w.tools + w.space + w.snap + w.play + w.undo;
         };
-        CHECK(total(r.fullWidths, true) > total(r.compactWidths, true));
-        CHECK(total(r.compactWidths, true) > total(r.compactWidths, false));
-        CHECK(total(r.compactWidths, false) > 0.0F);
+        CHECK(total(r.fullWidths) > total(r.compactWidths));
+        CHECK(total(r.compactWidths) > 0.0F);
         // What ImGui DREW sits where the layout put it: each group's first item one group padding in from the
         // group's x, Undo at undoX, each button exactly its measured width. Sums on both sides, in the chrome's own
         // order, never a subtraction ((a + b) - a is not b in float).
@@ -24536,23 +24565,16 @@ TEST_CASE(
         CHECK(r.tools[3].max.x <= r.space[0].min.x);
         CHECK(r.space[1].max.x <= r.snapToggle.min.x);
         CHECK(r.snapToggle.max.x <= r.snapField.min.x);
-        if (r.playGroupDrawn) {
-            CHECK(r.play[0].min.x == barX + r.layout.playX);
-            CHECK(r.snapField.max.x <= r.play[0].min.x);
-            CHECK(r.play[2].max.x <= r.undo.min.x);
-        } else {
-            CHECK(r.snapField.max.x <= r.undo.min.x);
-        }
+        // The play group is drawn in every mode (task 4.7.1, call 6) and never overlaps its neighbours.
+        CHECK(r.playGroupDrawn);
+        CHECK(r.play[0].min.x == barX + r.layout.playX);
+        CHECK(r.snapField.max.x <= r.play[0].min.x);
+        CHECK(r.play[3].max.x <= r.undo.min.x);
         if (width == 320) {
-            CHECK((r.layout.mode == engine::editor::ToolbarMode::Minimal));  // a runner only narrows
+            CHECK((r.layout.mode == engine::editor::ToolbarMode::Compact));  // a runner only narrows
         }
-        if (r.layout.playDrawn) {
-            CHECK(r.playGroupDrawn);
-            for (const engine::editor::ToolbarButtonRecord& button : r.play) {
-                CHECK_FALSE(button.enabled);  // seed S39: ImGui's own Disabled flag on each drawn button
-            }
-        } else if (width >= 900) {
-            WARN(r.layout.playDrawn);  // a runner narrower than Compact: geometry, not a defect
+        for (const engine::editor::ToolbarButtonRecord& button : r.play) {
+            CHECK_FALSE(button.enabled);  // seed S39, kept: no project is open, so ImGui's Disabled flag is on each
         }
         if (width == 1280) {
             WARN((r.layout.mode == engine::editor::ToolbarMode::Full));
@@ -24617,9 +24639,11 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
         CHECK(countLinesContaining(code, "= shellBarHeight(statusBarHeightDp(EDITOR_THEME), s)") == 1U);
         CHECK(countLinesContaining(code, "HeightDp(EDITOR_THEME) *") == 0U);
     }
-    SUBCASE("(e) the play group: one disabled pair, AllowWhenDisabled, the one tooltip (seed S40, drift)") {
-        CHECK(countLinesContaining(code, "ImGui::BeginDisabled();") == 1U);
-        CHECK(countLinesContaining(code, "SetTooltip(\"%s\", PLAY_CONTROLS_TOOLTIP") == 1U);
+    SUBCASE("(e) the play group: one BeginDisabled(!enabled), segmentButton, the tooltip from playControlTooltip") {
+        CHECK(countLinesContaining(code, "ImGui::BeginDisabled();") == 0U);
+        CHECK(countLinesContaining(code, "ImGui::BeginDisabled(!enabled);") == 1U);
+        CHECK(countLinesContaining(code, "playControlTooltip(") == 1U);
+        CHECK(countLinesContaining(code, "PLAY_CONTROLS_TOOLTIP") == 0U);
         CHECK(countLinesContaining(code, "SetItemTooltip(") == 0U);
     }
     SUBCASE("(f) the snap commit comes from the pure rule, called once with ImGui's own edge (seed S9)") {
@@ -24669,7 +24693,7 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
                 }
             }
         }
-        CHECK(calls >= 2U);  // ANTI-VACUITY: itemTooltip's and the play group's SetTooltip
+        CHECK(calls >= 1U);  // ANTI-VACUITY: itemTooltip's SetTooltip (task 4.7.1: the play group shares it)
         CHECK(countLinesContaining(code, "TextUnformatted(") >= 6U);  // every user string goes this way
     }
     SUBCASE("(j) every request is gated on its control's predicate AND no modal (seeds S21, S22)") {
@@ -24737,19 +24761,20 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
         // task E.6.3: the segmented group's reads moved to panel_chrome_ui.cpp with segmentButton and
         // segmentGroupBackground -- raised 3 -> 2, border 2 -> 1, active 3 -> 1, accent 2 -> 1, textSecondary 3 -> 1,
         // textMuted 6 -> 5 -- and textBright and onAccent left this file (asserted 0 below).
-        constexpr std::array<RoleCount, 13> COUNTS{{{"chrome", 2U},
-                                                    {"raised", 2U},
-                                                    {"border", 1U},
-                                                    {"active", 1U},
-                                                    {"hover", 1U},
-                                                    {"accent", 1U},
-                                                    {"textSecondary", 1U},
-                                                    {"textMuted", 5U},
-                                                    {"textLabel", 1U},
-                                                    {"text", 1U},
-                                                    {"textFaint", 1U},
-                                                    {"warning", 1U},
-                                                    {"divider", 2U}}};
+        constexpr std::array<RoleCount, 13> COUNTS{
+            {{"chrome", 2U},
+             {"raised", 2U},
+             {"border", 1U},
+             {"active", 1U},
+             {"hover", 1U},
+             {"accent", 1U},
+             {"textSecondary", 1U},
+             {"textMuted", 5U},
+             {"textLabel", 1U},
+             {"text", 2U},  // the body text, and (task 4.7.1) the status bar's play segment
+             {"textFaint", 1U},
+             {"warning", 1U},
+             {"divider", 2U}}};
         for (const RoleCount& row : COUNTS) {
             CAPTURE(row.role);
             CHECK(reads(row.role) == row.count);
@@ -24892,7 +24917,7 @@ void e63Front(engine::editor::EditorApp& app, const char* panelId, const char* s
                                                                     std::initializer_list<std::string_view> files,
                                                                     float bottomDockFraction) {
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     for (const std::string_view relative : files) {
         const std::filesystem::path path = std::filesystem::path(created.root + "/assets") / std::string(relative);
@@ -25424,7 +25449,7 @@ TEST_CASE("editor: the Hierarchy's search gate and tree child as source text (ta
     // block, which closes before the tree child opens. A careless `if` (one that drops the field's term) is otherwise
     // invisible: the record would still say "gated" while the keys fire.
     const std::size_t recordAt = soleLineContaining(code, "drawRecordValue.shortcutsLive = shortcutsLive;");
-    const std::size_t ifAt = soleLineContaining(code, "if (shortcutsLive) {");
+    const std::size_t ifAt = soleLineContaining(code, "if (shortcutsLive && !lockedFrame) {");
     CHECK(nextCodeLine(code, gateAt + 1U) == recordAt);
     CHECK(nextCodeLine(code, recordAt + 1U) == ifAt);
     const std::size_t ifCloseAt = blockCloseAt(ifAt);
@@ -25507,7 +25532,8 @@ TEST_CASE("editor: every E.6.3 request is drained under its control's predicate 
         const std::size_t drainAt = soleLineContaining(code, "pendingBeginRename.has_value() &&");
         CHECK(code[drainAt].find("shortcutsLive") != std::string::npos);
         CHECK(code[drainAt].find("noModal") != std::string::npos);
-        CHECK(countLinesContaining(code, "if (shortcutsLive) {") == 1U);  // F2 reads the same verdict (I312)
+        CHECK(countLinesContaining(code, "if (shortcutsLive && !lockedFrame) {") ==
+              1U);  // F2 reads the same verdict (I312)
         resetFollowsGate(code, drainAt, "pendingBeginRename.reset();");
     }
     SUBCASE("the Inspector's component menu") {
@@ -25927,7 +25953,7 @@ TEST_CASE("editor: the reference field -- an inset frame, a swatch or a well, an
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/swatch.aeromat",
                                                 materialText("Swatch", engine::Vec3{0.8F, 0.1F, 0.1F}))
@@ -27642,7 +27668,7 @@ TEST_CASE("editor: Material cards -- eight, panel-owned bits, Apply primary, bot
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string assetsRoot = created.root + "/assets";
     REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
@@ -27828,7 +27854,7 @@ TEST_CASE("editor: a card's body is clipped to its padded width (task E.6.3, I34
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/full.aeromat", FULL_AEROMAT_TEXT).empty());
     std::optional<engine::editor::EditorApp> app =
@@ -27926,7 +27952,7 @@ TEST_CASE("editor: Import Details and Project Settings draw as cards; the row fi
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
     SUBCASE("a cached .blend: the Blender card and the six import cards") {
@@ -28784,7 +28810,7 @@ TEST_CASE("editor: a rename whose field stops drawing ends as the field would (t
         CHECK(code[elseAt].find("} else {") != std::string::npos);
         CHECK(code[nextCodeLine(code, elseAt + 1U)].find("cancelRename();") != std::string::npos);
         CHECK(countLinesContaining(code, "commitRename(context, ") == 2U);  // the arm and the check, nothing else
-        CHECK(countLinesContaining(code, "cancelRename();") == 2U);
+        CHECK(countLinesContaining(code, "cancelRename();") == 3U);         // the check, its arm, and 4.7.1's lock
         // The frame is written where the field is submitted -- the statement after its call -- and by the BeginRename
         // arm, and nowhere else: a third writer could keep a field that no longer draws looking fresh.
         CHECK(countLinesContaining(code, "renameFieldFrame = ImGui::GetFrameCount();") == 2U);
@@ -29339,7 +29365,9 @@ TEST_CASE("editor: a long recents list scrolls inside a window that stays in the
     app.reset();
 }
 
-TEST_CASE("editor: New Project opens centred, Create and the language control disabled (task E.6.4, I352)") {
+TEST_CASE(
+    "editor: New Project opens centred, Create disabled, the language cards enabled with TypeScript selected "
+    "(task E.6.4, I352)") {
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
@@ -29372,10 +29400,10 @@ TEST_CASE("editor: New Project opens centred, Create and the language control di
     CHECK_FALSE(m.create.enabled);  // ImGui's own Disabled flag on the drawn button
     CHECK(m.cancel.enabled);        // ANTI-VACUITY: the record reads an enabled button as enabled
     CHECK(m.browse.enabled);
-    CHECK_FALSE(m.language[0].enabled);  // seed S20: the one BeginDisabled() pair
-    CHECK_FALSE(m.language[1].enabled);
+    CHECK(m.language[0].enabled);  // task 4.6.1: no disabled pair, both cards are controls
+    CHECK(m.language[1].enabled);
     CHECK_FALSE(m.language[0].drawnActive);
-    CHECK(m.language[1].drawnActive);  // TypeScript: what Create writes
+    CHECK(m.language[1].drawnActive);  // TypeScript: the form's language every time the dialog opens
     CHECK(m.location.empty());         // no project open: no pre-fill (scene_session.cpp:610-612)
     CHECK(m.cancel.max.x <= m.create.min.x);
     CHECK(m.create.max.x <= m.windowPos.x + m.windowSize.x);
@@ -29433,8 +29461,8 @@ TEST_CASE("editor: the validation line follows the real probe, and Create follow
     REQUIRE_FALSE(leaf.empty());
     REQUIRE(m.location.size() >= leaf.size());
     CHECK(m.location.compare(m.location.size() - leaf.size(), leaf.size(), leaf) == 0);
-    // The footer summary of today's fields, as drawn (right-elided on a narrow runner: the name still opens it).
-    const std::string summary = engine::editor::newProjectFooterSummary("Kart");
+    // The footer summary of the form's fields, as drawn (right-elided on a narrow runner: the name still opens it).
+    const std::string summary = engine::editor::newProjectFooterSummary("Kart", TS);
     if (m.summary != summary) {
         CHECK(m.summary.rfind("Kart", 0) == 0U);
     }
@@ -29457,6 +29485,116 @@ TEST_CASE("editor: the validation line follows the real probe, and Create follow
     CHECK(m.create.enabled);
     app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
     REQUIRE(app->tick());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the language card is a choice the dialog keeps for one opening only (task 4.6.1, I384)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "new project i384", .width = E64_WINDOW_WIDTH, .height = E64_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    constexpr auto CPP = engine::editor::ProjectLanguage::Cpp;
+    std::optional<engine::editor::EditorApp> app = e64App(*device, *window, ctx, uniqueRecentsFile());
+    const engine::editor::NewProjectRecord& m = app->projectUiRecord().newProject;
+    // The seam applied to a CLOSED form is dropped with its tick: opening afterwards still reads TypeScript.
+    app->requestNewProjectLanguage(CPP);
+    REQUIRE(app->tick());
+    e64OpenNewProject(*app);
+    CHECK(m.language[0].enabled);
+    CHECK(m.language[1].enabled);
+    CHECK_FALSE(m.language[0].drawnActive);
+    CHECK(m.language[1].drawnActive);
+    const std::string tsHint(engine::editor::newProjectLanguageHint(TS));
+    const std::string cppHint(engine::editor::newProjectLanguageHint(CPP));
+    // The hint is right-elided on a narrow runner; its first word still tells the languages apart.
+    CHECK((m.languageHint == tsHint || m.languageHint.rfind("Scripts", 0) == 0U));
+
+    app->requestNewProjectLanguage(CPP);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(m.language[0].drawnActive);
+    CHECK_FALSE(m.language[1].drawnActive);
+    CHECK((m.languageHint == cppHint || m.languageHint.rfind("Adds", 0) == 0U));
+    CHECK(m.summary == engine::editor::newProjectFooterSummary("", CPP));
+
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK_FALSE(m.popupOpenAtEntry);
+    e64OpenNewProject(*app);  // the choice was not remembered (call 1)
+    CHECK_FALSE(m.language[0].drawnActive);
+    CHECK(m.language[1].drawnActive);
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
+    REQUIRE(app->tick());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Create passes the form's language to the project it makes (task 4.6.1, I385)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "new project i385", .width = E64_WINDOW_WIDTH, .height = E64_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    constexpr auto CPP = engine::editor::ProjectLanguage::Cpp;
+    const auto exists = [](std::string_view root, std::string_view file) {
+        std::error_code ec;
+        return std::filesystem::exists(std::filesystem::path(std::string(root)) / std::string(file), ec);
+    };
+    const auto manifestHas = [](std::string_view root, std::string_view needle) {
+        const engine::editor::FileReadResult read = engine::editor::readTextFile(std::string(root) + "/project.json");
+        return read.text.has_value() && read.text->find(needle) != std::string::npos;
+    };
+    std::optional<engine::editor::EditorApp> app = e64App(*device, *window, ctx, uniqueRecentsFile());
+
+    e64OpenNewProject(*app);
+    const std::string dirCpp = uniqueProjectLocation();
+    app->requestNewProjectInput("Kart", dirCpp);
+    app->requestNewProjectLanguage(CPP);
+    const engine::editor::NewProjectRecord& m = app->projectUiRecord().newProject;
+    REQUIRE(e64TickUntil(*app, 4, [&] { return m.state == engine::editor::NewProjectTargetState::CreatesFolder; }) < 4);
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Create);
+    REQUIRE(app->tick());
+    REQUIRE(app->projectIsOpen());
+    const std::string cppRoot(app->projectRoot());
+    CHECK(cppRoot == engine::editor::newProjectTargetPath(dirCpp, "Kart"));
+    CHECK(manifestHas(cppRoot, "\"cpp\""));
+    for (const std::string_view file : {"CMakeLists.txt", "src/main.cpp", "README.md", ".gitignore"}) {
+        CAPTURE(file);
+        CHECK(exists(cppRoot, file));
+    }
+    CHECK_FALSE(exists(cppRoot, "tsconfig.json"));
+    REQUIRE(app->tick());  // the popup closes in ImGui before the next request opens it again
+
+    // The language left alone: TypeScript, and not one of the C++ files.
+    e64OpenNewProject(*app);
+    const std::string dirTs = uniqueProjectLocation();
+    app->requestNewProjectInput("Gear", dirTs);
+    REQUIRE(e64TickUntil(*app, 4, [&] { return m.state == engine::editor::NewProjectTargetState::CreatesFolder; }) < 4);
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Create);
+    REQUIRE(app->tick());
+    const std::string tsRoot(app->projectRoot());
+    CHECK(tsRoot == engine::editor::newProjectTargetPath(dirTs, "Gear"));
+    CHECK(manifestHas(tsRoot, "\"ts\""));
+    CHECK(exists(tsRoot, "tsconfig.json"));
+    CHECK_FALSE(exists(tsRoot, "CMakeLists.txt"));
+    CHECK_FALSE(exists(tsRoot, "src/main.cpp"));
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
@@ -29680,11 +29818,11 @@ TEST_CASE("editor: project_ui.cpp reads no disk, binds its keys, draws every str
         CHECK(countLinesContaining(code, ENTER_BINDS) == 1U);
         CHECK(soleLineContaining(code, "if (dismiss) {") < soleLineContaining(code, "} else if (commit) {"));
     }
-    SUBCASE("(c) the language control: one disabled pair, the one tooltip, the selection Create writes (D18)") {
-        CHECK(countLinesContaining(code, "ImGui::BeginDisabled();") == 1U);  // seed S20
-        CHECK(countLinesContaining(code, "ImGui::EndDisabled();") == 1U);
-        CHECK(countLinesContaining(code, "itemTooltip(LANGUAGE_CONTROL_TOOLTIP)") == 1U);
-        CHECK(countLinesContaining(code, "languageCardSelected(") == 1U);
+    SUBCASE("(c) the language cards: no disabled pair, the selection read from the form, one writer (D18)") {
+        CHECK(countLinesContaining(code, "BeginDisabled(") == 0U);
+        CHECK(countLinesContaining(code, "EndDisabled(") == 0U);
+        CHECK(countLinesContaining(code, "languageCardSelected(card.language, chosen)") == 1U);
+        CHECK(countLinesContaining(code, "chosen = card.language;") == 1U);
         CHECK(countLinesContaining(code, "SetItemTooltip(") == 0U);
     }
     SUBCASE("(d) no user string is ever a label (D9)") {
@@ -29948,7 +30086,7 @@ constexpr std::string_view SCRIPT_ENEMY_SOURCE = "export const hp: number = 3;\n
 // independent scripts/enemy.ts. Returns the project root.
 [[nodiscard]] std::string makeScriptProject(bool withEnemy) {
     const engine::editor::ProjectCreateOutcome created =
-        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     writeScriptProjectFile(created.root, "assets/scripts/player.ts", SCRIPT_PLAYER_SOURCE);
     writeScriptProjectFile(created.root, "assets/scripts/util.ts", SCRIPT_UTIL_SOURCE);
@@ -30129,7 +30267,7 @@ TEST_CASE("editor: a C++ project's .ts files are never transpiled (task 4.3.1, I
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const engine::editor::ProjectCreateOutcome created =
-        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     engine::editor::ProjectManifest manifest = created.manifest;
     manifest.language = engine::editor::ProjectLanguage::Cpp;
@@ -30207,7 +30345,7 @@ TEST_CASE("editor: a missing esbuild is one Console error and never wedges the e
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const engine::editor::ProjectCreateOutcome created =
-        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     writeScriptProjectFile(created.root, "assets/scripts/player.ts", SCRIPT_ENEMY_SOURCE);
     const std::string missing = created.root + "/no_such_esbuild";
@@ -30357,7 +30495,7 @@ TEST_CASE(
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const engine::editor::ProjectCreateOutcome created =
-        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     writeScriptProjectFile(created.root, "assets/scripts/mover.ts",
                            "export default class Mover extends engine.Script {\n    speed = 2;\n}\n");
@@ -30437,7 +30575,7 @@ TEST_CASE("editor: the ScriptComponent picker offers no asset of another kind be
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     const engine::editor::ProjectCreateOutcome created =
-        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     writeScriptProjectFile(created.root, "assets/scripts/mover.ts",
                            "export default class Mover extends engine.Script {\n    speed = 2;\n}\n");
@@ -30485,6 +30623,110 @@ TEST_CASE("editor: the ScriptComponent picker offers no asset of another kind be
     app.reset();
 }
 
+// ---- task 4.6.1 (I386): the project's language reaches the Asset Browser's kind filter and the picker
+namespace {
+
+struct ScriptKindCounts {
+    std::size_t scriptFilter = 0;
+    std::size_t textFilter = 0;
+    std::size_t pickerCandidates = 0;
+    bool pickerOpened = false;
+};
+
+// The I369 fixture (a script and a material beside it), opened in `language`. The manifest of a C++ project is
+// rewritten after createProject, exactly as I363 does.
+[[nodiscard]] ScriptKindCounts measureScriptKinds(engine::platform::Context& ctx, engine::platform::Window& window,
+                                                  engine::rhi::Device& device,
+                                                  engine::editor::ProjectLanguage language) {
+    ScriptKindCounts counts;
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    if (language == engine::editor::ProjectLanguage::Cpp) {
+        engine::editor::ProjectManifest manifest = created.manifest;
+        manifest.language = language;
+        REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/project.json",
+                                                    engine::editor::writeProjectText(manifest))
+                    .empty());
+    }
+    writeScriptProjectFile(created.root, "assets/mover.ts",
+                           "export default class Mover extends engine.Script {\n    speed = 2;\n}\n");
+    writeScriptProjectFile(created.root, "assets/shade.aeromat", MINIMAL_AEROMAT_TEXT);
+    std::optional<engine::editor::EditorApp> app = openScriptApp(device, window, ctx, created.root, AERO_TEST_ESBUILD);
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+    }
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+
+    // The whole-project search composes the kind filter with the query, so "mover" leaves the script alone.
+    app->requestAssetBrowserSearch("mover");
+    REQUIRE(app->tick());
+    const auto visibleUnder = [&](std::string_view filterToken) {
+        app->requestAssetBrowserKindFilter(filterToken);
+        for (int i = 0; i < 4; ++i) {
+            REQUIRE(app->tick());
+        }
+        return app->assetBrowserSearchHitCount();
+    };
+    counts.scriptFilter = visibleUnder("6");  // AssetKind::Script
+    counts.textFilter = visibleUnder("4");    // AssetKind::Text
+    app->requestAssetBrowserKindFilter("all");
+    app->requestAssetBrowserSearch("");
+    REQUIRE(app->tick());
+
+    const engine::Entity cube = focusInspectorOnCube(*app);
+    const engine::ComponentTypeId scriptId = app->world().findComponentType("engine::ScriptComponent");
+    REQUIRE(scriptId.valid());
+    REQUIRE(engine::editor::addComponent(app->world(), cube, scriptId));
+    REQUIRE(app->tick());
+    REQUIRE(app->assetGuidForPath("shade.aeromat").has_value());
+    app->requestInspectorAssetPicker("engine::ScriptComponent", "script");
+    REQUIRE(app->tick());
+    if (engine::editor::componentFieldsAreReflected(app->world(), scriptId)) {
+        counts.pickerOpened = app->assetPickerOpen();
+        counts.pickerCandidates = app->assetPickerCandidateCount();
+    }
+    if (language == engine::editor::ProjectLanguage::Ts) {
+        tickUntilScriptsIdle(*app);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+    return counts;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: a C++ project's .ts is Text in the browser's filter and absent from the script picker "
+    "(task 4.6.1, I386)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "script kinds i386", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const ScriptKindCounts ts = measureScriptKinds(ctx, *window, *device, engine::editor::ProjectLanguage::Ts);
+    const ScriptKindCounts cpp = measureScriptKinds(ctx, *window, *device, engine::editor::ProjectLanguage::Cpp);
+
+    CHECK(ts.scriptFilter == 1U);
+    CHECK(ts.textFilter == 0U);
+    CHECK(cpp.scriptFilter == 0U);
+    CHECK(cpp.textFilter == 1U);
+    CHECK(ts.pickerOpened == cpp.pickerOpened);
+    if (ts.pickerOpened) {
+        CHECK(ts.pickerCandidates == 1U);
+        CHECK(cpp.pickerCandidates + 1U == ts.pickerCandidates);
+    }
+}
+
 // ---- task 4.4.4 (I370-I372): a prefab dropped into the scene is ONE undoable command
 namespace {
 
@@ -30523,7 +30765,7 @@ constexpr std::uint8_t PREFAB_KIND = static_cast<std::uint8_t>(engine::editor::A
 // block above, and a prefab drop needs no shader.
 [[nodiscard]] std::string makePrefabDropProject() {
     const engine::editor::ProjectCreateOutcome created =
-        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/crate.aeroprefab", CRATE_PREFAB_TEXT).empty());
     return created.root;
@@ -30779,7 +31021,7 @@ namespace {
 // A new project with an empty `assets/sub` folder, for the cases that navigate the browser into it.
 [[nodiscard]] std::string makeSavePrefabProject() {
     const engine::editor::ProjectCreateOutcome created =
-        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::error_code ec;
     std::filesystem::create_directories(created.root + "/assets/sub", ec);
@@ -31502,6 +31744,1585 @@ TEST_CASE("editor: a Save as Prefab the write refuses warns once and scans nothi
     REQUIRE(app->tick());
     CHECK(app->assetGuidForPath("late.aeroprefab").has_value());
 
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.6.1 (I387): the Add Component popup asks the gate before it lists an entry
+TEST_CASE("editor: the Add Component popup filters through addComponentOffered, by metadata (task 4.6.1, I387)") {
+    // SOURCE PIN: no tier in this tree can open a popup, so the loop's gate is pinned as text.
+    const std::vector<std::string> panel = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(panel.size() > 100);
+    const std::size_t popupAt = soleLineContaining(panel, "BeginPopup(\"##addComponent\")");
+    const std::size_t gateAt = soleLineContaining(panel, "addComponentOffered(");
+    const std::size_t absentAt = soleLineContaining(panel, "anyAbsent = true;");
+    CHECK(popupAt < gateAt);
+    CHECK(gateAt < absentAt);
+
+    // No component is named: the rule is a walk over reflection metadata.
+    const std::vector<std::string> model = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_model.cpp");
+    REQUIRE(model.size() > 100);
+    for (const std::vector<std::string>* const file : {&panel, &model}) {
+        for (const std::string& line : *file) {
+            CHECK(line.find("ScriptComponent") == std::string::npos);
+        }
+    }
+}
+
+// ---- task 4.7.1 (I388-I392): the toolbar's play controls, the game clock and the game's input feed -----------------
+namespace {
+
+// A project in `language` opened at create(): the tick that follows has an open project, with the watcher off.
+[[nodiscard]] std::optional<engine::editor::EditorApp> openPlayApp(engine::rhi::Device& device,
+                                                                   engine::platform::Window& window,
+                                                                   engine::platform::Context& ctx,
+                                                                   engine::editor::ProjectLanguage language) {
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", language);
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(device, window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .assetWatch = {.enabled = false}});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    return app;
+}
+
+// Ticks until the keyboard sits in `panelId`, bounded; the focus lands a tick or two after the request.
+void playWaitForKeyboard(engine::editor::EditorApp& app, std::string_view panelId) {
+    constexpr int MAX_TICKS = 8;
+    int ticks = 0;
+    while (ticks < MAX_TICKS && app.keyboardFocusPanelId() != panelId) {
+        REQUIRE(app.tick());
+        ++ticks;
+    }
+    REQUIRE(app.keyboardFocusPanelId() == panelId);  // the predicate ended the loop, never the bound
+}
+
+[[nodiscard]] engine::platform::Event playKeyEvent(engine::platform::EventType type, engine::platform::Key code) {
+    engine::platform::Event ev;
+    ev.type = type;
+    ev.key.code = code;
+    return ev;
+}
+
+[[nodiscard]] std::string playStatusPrefix(engine::editor::PlayMode mode) {
+    return std::string(mode == engine::editor::PlayMode::Playing ? "Playing" : "Paused") + " \xC2\xB7 frame ";
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: Play in a TypeScript project hands the Viewport the keyboard and runs the clock (task 4.7.1, I388)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i388", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+    CHECK((app->playSession().mode() == engine::editor::PlayMode::Edit));
+    CHECK(r.statusPlay.empty());
+    CHECK(r.play[0].enabled);  // an open TypeScript project: Play is available
+    CHECK_FALSE(r.play[1].enabled);
+    CHECK_FALSE(r.play[2].enabled);
+    CHECK_FALSE(r.play[3].enabled);
+
+    app->requestPlayControl(engine::editor::PlayControl::Play);
+    REQUIRE(app->tick());
+    CHECK((app->playSession().mode() == engine::editor::PlayMode::Playing));
+    REQUIRE(app->tick());  // the controls draw the new mode one tick after it is applied
+    CHECK(r.play[0].drawnActive);
+    CHECK_FALSE(r.play[0].enabled);
+    CHECK(r.play[1].enabled);
+    CHECK_FALSE(r.play[2].enabled);
+    CHECK(r.play[3].enabled);
+    playWaitForKeyboard(*app, "Viewport");  // the one focus slot handed it over (D5)
+
+    std::uint64_t previous = app->playSession().frame();
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        const std::uint64_t frame = app->playSession().frame();
+        CAPTURE(i);
+        CHECK(frame == previous + 1U);  // one game frame per editor tick
+        CHECK(r.statusPlay == playStatusPrefix(engine::editor::PlayMode::Playing) + std::to_string(frame));
+        previous = frame;
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Pause, Step, resume and Stop move the frame count as the plan says (task 4.7.1, I389)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i389", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+
+    app->requestPlayControl(PlayControl::Pause);
+    REQUIRE(app->tick());
+    CHECK((app->playSession().mode() == PlayMode::Paused));
+    REQUIRE(app->tick());
+    CHECK(r.play[1].drawnActive);
+    CHECK_FALSE(r.play[0].drawnActive);
+    CHECK(r.play[2].enabled);  // Step is live while paused
+    const std::uint64_t frozen = app->playSession().frame();
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->playSession().frame() == frozen);  // paused: N does not move
+    }
+    CHECK(r.statusPlay == playStatusPrefix(PlayMode::Paused) + std::to_string(frozen));
+
+    app->requestPlayControl(PlayControl::Step);
+    REQUIRE(app->tick());  // the request is applied: one step is queued
+    REQUIRE(app->tick());  // and the next tick runs it
+    CHECK(app->playSession().frame() == frozen + 1U);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->playSession().frame() == frozen + 1U);  // exactly one
+    }
+
+    app->requestPlayControl(PlayControl::Pause);  // resume
+    REQUIRE(app->tick());
+    CHECK((app->playSession().mode() == PlayMode::Playing));
+    const std::uint64_t resumed = app->playSession().frame();
+    e62Ticks(*app, 3);
+    CHECK(app->playSession().frame() == resumed + 3U);
+
+    // A Step request while Playing is refused by the control's own gate: nothing extra runs.
+    app->requestPlayControl(PlayControl::Step);
+    const std::uint64_t beforeStep = app->playSession().frame();
+    REQUIRE(app->tick());
+    CHECK(app->playSession().frame() == beforeStep + 1U);
+    REQUIRE(app->tick());
+    CHECK(app->playSession().frame() == beforeStep + 2U);
+    CHECK_FALSE(app->playSession().stepQueued());
+
+    app->requestPlayControl(PlayControl::Stop);
+    REQUIRE(app->tick());
+    CHECK((app->playSession().mode() == PlayMode::Edit));
+    REQUIRE(app->tick());
+    CHECK(r.statusPlay.empty());
+    CHECK(r.play[0].enabled);
+    CHECK_FALSE(r.play[0].drawnActive);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: no play control is reachable in a C++ project or with no project open (task 4.7.1, I390)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i390", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const auto refused = [](engine::editor::EditorApp& app, std::string_view reason) {
+        const engine::editor::ShellChromeRecord& r = app.shellChromeRecord();
+        for (std::size_t i = 0; i < r.play.size(); ++i) {
+            CAPTURE(i);
+            CHECK_FALSE(r.play[i].enabled);
+            CHECK(r.playTooltip[i] == reason);
+        }
+        app.requestPlayControl(engine::editor::PlayControl::Play);
+        e62Ticks(app, 3);
+        CHECK((app.playSession().mode() == engine::editor::PlayMode::Edit));  // the request was dropped
+        CHECK(app.shellChromeRecord().statusPlay.empty());
+    };
+    SUBCASE("a C++ project") {
+        std::optional<engine::editor::EditorApp> app =
+            openPlayApp(*device, *window, ctx, engine::editor::ProjectLanguage::Cpp);
+        REQUIRE(app.has_value());
+        refused(*app, "A C++ game runs as its own build");
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+    SUBCASE("no project") {
+        std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+        REQUIRE(app.has_value());
+        refused(*app, "No project is open");
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+}
+
+TEST_CASE("editor: the game's input follows the Viewport's focus, edges and image (task 4.7.1, I391)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i391", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    using engine::editor::PlayControl;
+    using engine::platform::EventType;
+    using engine::platform::Key;
+    const engine::editor::PlaySession& session = app->playSession();
+    app->requestPlayControl(PlayControl::Play);
+    REQUIRE(app->tick());
+    playWaitForKeyboard(*app, "Viewport");
+    // An injected focus event, so a runner whose window is not in front cannot decide the case.
+    engine::platform::Event gained;
+    gained.type = EventType::WindowFocusGained;
+    app->requestGameInputEvent(gained);
+    REQUIRE(app->tick());
+    REQUIRE(app->keyboardFocusPanelId() == "Viewport");
+    REQUIRE(session.gameFocused());
+
+    app->requestPlayControl(PlayControl::Pause);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestGameInputEvent(playKeyEvent(EventType::KeyDown, Key::Space));
+    REQUIRE(app->tick());
+    CHECK(session.input().keyDown(Key::Space));
+    CHECK(session.input().keyPressed(Key::Space));  // paused: nothing cleared the edge
+
+    app->requestPlayControl(PlayControl::Step);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());  // the frame ran
+    CHECK_FALSE(session.input().keyPressed(Key::Space));
+    CHECK(session.input().keyDown(Key::Space));
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    const engine::editor::GameImageRect rect = viewport->gameImageRect();
+    if (rect.valid) {
+        engine::platform::Event press;
+        press.type = EventType::MouseButtonDown;
+        press.mouseButton.button = engine::platform::MouseButton::Left;
+        press.mouseButton.x = rect.min.x + 10.0F;
+        press.mouseButton.y = rect.min.y + 20.0F;
+        press.mouseButton.clicks = 1;
+        app->requestGameInputEvent(press);
+        REQUIRE(app->tick());
+        CHECK(session.input().mouseButtonDown(engine::platform::MouseButton::Left));
+        CHECK(session.input().mousePosition().x == doctest::Approx(10.0F));  // image-relative
+        CHECK(session.input().mousePosition().y == doctest::Approx(20.0F));
+    } else {
+        MESSAGE("the Viewport drew no image on this runner: the pointer arm is not exercised");
+    }
+
+    // Another panel takes the keyboard: the game gets one released edge per held key, and nothing after.
+    app->requestPanelFocus("Hierarchy");
+    playWaitForKeyboard(*app, "Hierarchy");
+    CHECK_FALSE(session.gameFocused());
+    CHECK(session.input().keyReleased(Key::Space));
+    CHECK_FALSE(session.input().keyDown(Key::Space));
+    CHECK_FALSE(session.input().mouseButtonDown(engine::platform::MouseButton::Left));
+    app->requestGameInputEvent(playKeyEvent(EventType::KeyDown, Key::W));
+    REQUIRE(app->tick());
+    CHECK_FALSE(session.input().keyDown(Key::W));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the pads, the chords and the feed are wired once, as source text (task 4.7.1, I392)") {
+    const std::string needle = std::string("Gamepad") + "Drivers::System";
+    const std::vector<std::string> mainFile = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/main.cpp");
+    REQUIRE(mainFile.size() > 10U);
+    CHECK(countLinesContaining(mainFile, needle) == 1U);
+    // No test under tests/editor/ constructs a Context with the system drivers, and this case names none either.
+    const std::filesystem::path testsRoot =
+        std::filesystem::path(AERO_EDITOR_SRC_DIR).parent_path().parent_path() / "tests" / "editor";
+    std::size_t scanned = 0;
+    std::error_code ec;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(testsRoot, ec)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".cpp") {
+            continue;
+        }
+        ++scanned;
+        CAPTURE(entry.path().filename().string());
+        CHECK(countLinesContaining(editorSourceCodeLines(entry.path().string()), needle) == 0U);
+    }
+    CHECK_FALSE(ec);
+    CHECK(scanned > 20U);  // anti-vacuity: the walk really read the directory
+
+    const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+    for (const std::string_view chord : {"ImGuiMod_Ctrl | ImGuiKey_P, FILE_SHORTCUT_FLAGS",
+                                         "ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P, FILE_SHORTCUT_FLAGS",
+                                         "ImGuiMod_Ctrl | ImGuiMod_Alt | ImGuiKey_P, FILE_SHORTCUT_FLAGS"}) {
+        CAPTURE(chord);
+        CHECK(countLinesContaining(shell, chord) == 1U);
+    }
+    CHECK(countLinesContaining(shell, "state.playChord =") == 3U);  // the chords only record
+    CHECK(countLinesContaining(shell, "playControlPressed") == 0U);
+    CHECK(countLinesContaining(shell, "ImGui::SetWindowFocus(") == 3U);  // I159(a)'s count still holds
+
+    const std::vector<std::string> app = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+    CHECK(countLinesContaining(app, ".feed(") == 1U);
+    const std::size_t handlerAt = soleLineContaining(app, "void EditorApp::handleEvent(const platform::Event& ev) {");
+    const std::size_t feedAt = soleLineContaining(app, "playSessionValue.feed(ev,");
+    CHECK(handlerAt < feedAt);
+}
+
+// ---- task 4.7.1 (I393-I395): the Viewport in play -- the scene's camera, the editor's visuals gone ------------------
+namespace {
+
+// One tick-by-tick witness of the editor camera: five numbers, compared with ==, so "bit-identical" is a value test.
+struct PlayCameraPose {
+    engine::Vec3 position;
+    engine::Vec3 pivot;
+    float yaw = 0.0F;
+    float pitch = 0.0F;
+    float distance = 0.0F;
+};
+
+[[nodiscard]] PlayCameraPose readPlayCameraPose(const engine::editor::EditorCamera& camera) {
+    return PlayCameraPose{.position = camera.position(),
+                          .pivot = camera.pivot(),
+                          .yaw = camera.yaw(),
+                          .pitch = camera.pitch(),
+                          .distance = camera.distance()};
+}
+
+[[nodiscard]] bool samePlayCameraPose(const PlayCameraPose& a, const PlayCameraPose& b) {
+    return a.position.x == b.position.x && a.position.y == b.position.y && a.position.z == b.position.z &&
+           a.pivot.x == b.pivot.x && a.pivot.y == b.pivot.y && a.pivot.z == b.pivot.z && a.yaw == b.yaw &&
+           a.pitch == b.pitch && a.distance == b.distance;
+}
+
+}  // namespace
+
+TEST_CASE("editor: play draws through the scene's camera and leaves the editor camera alone (task 4.7.1, I393)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i393", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    using engine::editor::PlayControl;
+    using engine::editor::ViewportRenderCamera;
+    if (viewport->debugDraw() == nullptr) {
+        // shader-tools OFF: the panel is Unavailable, nothing renders, and nothing was ever recorded as scene-drawn
+        app->requestPlayControl(PlayControl::Play);
+        e62Ticks(*app, 3);
+        CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Editor));
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        return;
+    }
+
+    engine::World& world = app->world();
+    std::vector<engine::Entity> cameras;
+    world.each<engine::Camera>([&](engine::Entity e, engine::Camera&) { cameras.push_back(e); });
+    for (const engine::Entity e : cameras) {
+        REQUIRE(world.destroy(e));
+    }
+    e62Ticks(*app, 2);
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Editor));  // Edit, no scene camera
+
+    engine::Entity sceneCamera = world.create();
+    REQUIRE(world.add<engine::Transform>(sceneCamera,
+                                         engine::Transform{.position = engine::Vec3{10.0F, 4.0F, 10.0F}}) != nullptr);
+    REQUIRE(world.add<engine::Camera>(sceneCamera, engine::Camera{}) != nullptr);
+    e62Ticks(*app, 2);
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Editor));  // Edit never takes the scene's camera
+
+    const engine::editor::EditorCamera& editorCamera = *app->viewportCamera();
+    const PlayCameraPose beforePlay = readPlayCameraPose(editorCamera);
+
+    app->requestPlayControl(PlayControl::Play);
+    REQUIRE(app->tick());
+    CHECK((app->playSession().mode() == engine::editor::PlayMode::Playing));
+    // The control is applied after this tick's draw walk, so the Viewport's first play frame is the next tick's.
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Editor));
+    REQUIRE(app->tick());
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Scene));
+    e62Ticks(*app, 10);
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Scene));
+    CHECK(samePlayCameraPose(beforePlay, readPlayCameraPose(editorCamera)));
+
+    // The scene loses its Camera mid-play: the editor camera draws instead.
+    REQUIRE(world.destroy(sceneCamera));
+    e62Ticks(*app, 2);
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Editor));
+    sceneCamera = world.create();
+    REQUIRE(world.add<engine::Transform>(sceneCamera,
+                                         engine::Transform{.position = engine::Vec3{10.0F, 4.0F, 10.0F}}) != nullptr);
+    REQUIRE(world.add<engine::Camera>(sceneCamera, engine::Camera{}) != nullptr);
+    e62Ticks(*app, 2);
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Scene));
+
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 3);
+    CHECK((app->playSession().mode() == engine::editor::PlayMode::Edit));
+    CHECK((viewport->lastRenderCamera() == ViewportRenderCamera::Editor));
+    CHECK(samePlayCameraPose(beforePlay, readPlayCameraPose(editorCamera)));
+
+    // A view snap in flight when Play is pressed is DROPPED, never paused: Stop must not resume it (D7).
+    viewport->requestViewSnap(engine::editor::ViewAxis::PosY);
+    REQUIRE(viewport->viewSnapActive());
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 2);
+    CHECK((app->playSession().mode() == engine::editor::PlayMode::Playing));
+    CHECK_FALSE(viewport->viewSnapActive());
+    const PlayCameraPose duringPlay = readPlayCameraPose(editorCamera);
+    e62Ticks(*app, 4);
+    CHECK(samePlayCameraPose(duringPlay, readPlayCameraPose(editorCamera)));
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 4);
+    CHECK(samePlayCameraPose(duringPlay, readPlayCameraPose(editorCamera)));
+    app->requestQuit();
+    CHECK(app->tick() == false);
+}
+
+TEST_CASE("editor: the editor's visuals are gone in play and back after Stop (task 4.7.1, I394)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i394", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    using engine::editor::PlayControl;
+    if (viewport->debugDraw() == nullptr || viewport->selectionOutlinePass() == nullptr) {
+        // shader-tools OFF: no pass exists to count, and the HUD still has a play-time rule to keep
+        const std::uint64_t hudBefore = viewport->hudRecord().framesRecorded;
+        app->requestPlayControl(PlayControl::Play);
+        e62Ticks(*app, 3);
+        CHECK(viewport->hudRecord().framesRecorded == hudBefore);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        return;
+    }
+
+    engine::World& world = app->world();
+    const engine::Entity light = world.create();
+    REQUIRE(world.add<engine::Transform>(light, engine::Transform{}) != nullptr);
+    REQUIRE(world.add<engine::PointLight>(light, engine::PointLight{}) != nullptr);
+    const engine::Entity cube = world.create();
+    REQUIRE(world.add<engine::Transform>(cube, engine::Transform{}) != nullptr);
+    REQUIRE(world.add<engine::MeshRenderer>(cube, engine::MeshRenderer{}) != nullptr);
+    app->selection().set(light);
+    app->selection().add(cube);
+    viewport->requestGridEnabled(true);
+    viewport->requestGizmosEnabled(true);
+    e62Ticks(*app, 2);
+
+    // Edit: the grid and the light's gizmo draw, the outline composites once per tick, the HUD records per tick.
+    const std::size_t compositeEdit = viewport->selectionOutlinePass()->compositeCount();
+    const std::uint64_t hudEdit = viewport->hudRecord().framesRecorded;
+    REQUIRE(app->tick());
+    CHECK(viewport->debugDraw()->lastFrameDrawCalls() > 0U);
+    CHECK(viewport->selectionOutlinePass()->compositeCount() > compositeEdit);
+    CHECK(viewport->hudRecord().framesRecorded > hudEdit);
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 2);
+    const std::size_t compositePlay = viewport->selectionOutlinePass()->compositeCount();
+    const std::uint64_t hudPlay = viewport->hudRecord().framesRecorded;
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CAPTURE(i);
+        CHECK(viewport->debugDraw()->lastFrameDrawCalls() == 0U);
+        CHECK(viewport->debugDraw()->lastFrameLines() == 0U);
+        CHECK(viewport->selectionOutlinePass()->compositeCount() == compositePlay);
+        CHECK(viewport->hudRecord().framesRecorded == hudPlay);
+    }
+
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 3);
+    const std::size_t compositeStopped = viewport->selectionOutlinePass()->compositeCount();
+    const std::uint64_t hudStopped = viewport->hudRecord().framesRecorded;
+    REQUIRE(app->tick());
+    CHECK(viewport->debugDraw()->lastFrameDrawCalls() > 0U);
+    CHECK(viewport->selectionOutlinePass()->compositeCount() > compositeStopped);
+    CHECK(viewport->hudRecord().framesRecorded > hudStopped);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+}
+
+TEST_CASE("editor: the Viewport's play gates are written once, as source text (task 4.7.1, I395)") {
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE(code.size() > 100U);
+    // Every hover-read key is gated by this one boolean: no tier can press a key in a playing viewport.
+    CHECK(countLinesContaining(code, "const bool hovered = !inPlay && ImGui::IsItemHovered();") == 1U);
+    CHECK(countLinesContaining(code, "ImGui::IsItemHovered()") == 1U);
+    CHECK(countLinesContaining(code, "if (dragActive && !inPlay) {") == 1U);  // nothing drops into a playing scene
+
+    const std::size_t gizmoPlayAt = soleLineContaining(code, "if (context.play.active()) {");
+    const std::size_t gizmoDefaultAt = soleLineContaining(code, "gizmoActive = false;");
+    CHECK(gizmoDefaultAt < gizmoPlayAt);
+    CHECK(gizmoPlayAt - gizmoDefaultAt <= 6U);  // directly after the pessimistic default
+    bool breaksChain = false;
+    bool clearsUsing = false;
+    bool disables = false;
+    for (std::size_t i = gizmoPlayAt; i < gizmoPlayAt + 7U && i < code.size(); ++i) {
+        breaksChain = breaksChain || code[i].find("breakMergeChain") != std::string::npos;
+        clearsUsing = clearsUsing || code[i].find("gizmoWasUsing = false") != std::string::npos;
+        disables = disables || code[i].find("ImGuizmo::Enable(false)") != std::string::npos;
+    }
+    CHECK(breaksChain);
+    CHECK(clearsUsing);
+    CHECK(disables);
+
+    CHECK(countLinesContaining(code, "sceneCamera ? nullptr : &cameraView") == 1U);
+    CHECK(countLinesContaining(code, "ImGuizmo::GetStyle()") == 2U);  // I125(e) still holds
+}
+
+// ---- task 4.7.1 (I396-I399): the scene lock and a Quit that stops play first -------------------------------------
+TEST_CASE(
+    "editor: the scene refuses every edit while the game plays and takes them again after Stop "
+    "(task 4.7.1, I396)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play lock i396", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makePrefabDropProject();
+    std::optional<engine::editor::EditorApp> app = openPrefabDropApp(ctx, *window, *device, root);
+    REQUIRE(app.has_value());
+    const std::optional<engine::Guid> prefab = app->assetGuidForPath("crate.aeroprefab");
+    REQUIRE(prefab.has_value());
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+
+    // One applied edit before Play, so Undo has something to take and the lock is what refuses it.
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());
+    REQUIRE(app->commands().canUndo());
+    app->requestPanelFocus("Inspector");
+    REQUIRE(app->tick());
+
+    app->requestPlayControl(PlayControl::Play);
+    REQUIRE(app->tick());
+    REQUIRE((app->playSession().mode() == PlayMode::Playing));
+    REQUIRE(app->tick());
+    const std::string pathBefore(app->scenePath());
+    const std::size_t entitiesBefore = app->world().entityCount();
+    const std::size_t countBefore = app->commands().count();
+    const std::size_t appliedBefore = app->commands().appliedCount();
+    const std::size_t refusalsBefore = app->playLockRefusalCount();
+    const std::string savePath = root + "/play_lock.scene.json";
+    REQUIRE_FALSE(std::filesystem::exists(savePath));
+    const auto unchanged = [&] {
+        CHECK(app->world().entityCount() == entitiesBefore);
+        CHECK(app->commands().count() == countBefore);
+        CHECK(app->commands().appliedCount() == appliedBefore);
+        CHECK(std::string(app->scenePath()) == pathBefore);
+        CHECK_FALSE(std::filesystem::exists(savePath));
+    };
+
+    app->requestUndo();
+    REQUIRE(app->tick());
+    unchanged();
+    app->requestRedo();
+    REQUIRE(app->tick());
+    unchanged();
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());
+    unchanged();
+    app->requestHierarchyAssetDrop(*prefab, PREFAB_KIND, engine::Entity{});
+    REQUIRE(app->tick());
+    unchanged();
+    const std::uint64_t inspectorDrawn = app->panelDrawnCount("Inspector");
+    app->requestInspectorNamedSelection("engine::MeshRenderer", "primitive", 1);
+    REQUIRE(app->tick());
+    unchanged();
+    CHECK(app->panelDrawnCount("Inspector") > inspectorDrawn);  // the seam met a panel that drew, and wrote nothing
+    app->requestNewScene();
+    REQUIRE(app->tick());
+    unchanged();
+    app->requestSaveSceneAs(savePath);
+    REQUIRE(app->tick());
+    unchanged();
+    CHECK(app->playLockRefusalCount() == refusalsBefore + 6U);  // undo, redo, create, drop and the two file actions
+    CHECK_FALSE(app->unsavedChangesPromptOpen());               // an abandoned request raised no prompt either
+
+    // ANTI-VACUITY: the same requests do their work once the game has stopped.
+    app->requestPlayControl(PlayControl::Stop);
+    REQUIRE(app->tick());
+    REQUIRE((app->playSession().mode() == PlayMode::Edit));
+    REQUIRE(app->tick());
+    auto* const cube = [&]() -> const engine::MeshRenderer* {
+        const engine::Entity primary = app->selection().primary();
+        return primary.valid() ? app->world().get<engine::MeshRenderer>(primary) : nullptr;
+    }();
+    const bool reflected = app->world().findComponentType("engine::MeshRenderer") != engine::ComponentTypeId{} &&
+                           engine::editor::componentFieldsAreReflected(
+                               app->world(), app->world().findComponentType("engine::MeshRenderer"));
+    if (cube != nullptr && reflected) {
+        REQUIRE(cube->primitive == 0U);
+        const std::size_t before = app->commands().appliedCount();
+        app->requestInspectorNamedSelection("engine::MeshRenderer", "primitive", 1);
+        REQUIRE(app->tick());
+        CHECK(cube->primitive == 1U);
+        CHECK(app->commands().appliedCount() == before + 1U);
+    }
+    const std::size_t appliedStopped = app->commands().appliedCount();
+    app->requestUndo();
+    REQUIRE(app->tick());
+    CHECK(app->commands().appliedCount() + 1U == appliedStopped);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the toolbar's Undo is off while the game plays and back after Stop (task 4.7.1, I397)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play lock i397", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    using engine::editor::PlayControl;
+    const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    e62Ticks(*app, 2);
+    REQUIRE(app->commands().canUndo());
+    CHECK(r.undo.enabled);  // Edit
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+    REQUIRE(app->commands().canUndo());  // the stack still holds the entry: only the lock is in the way
+    CHECK_FALSE(r.undo.enabled);         // Playing
+
+    app->requestPlayControl(PlayControl::Pause);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == engine::editor::PlayMode::Paused));
+    CHECK_FALSE(r.undo.enabled);  // Paused
+
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == engine::editor::PlayMode::Edit));
+    CHECK(r.undo.enabled);  // after Stop
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a guarded Quit stops play first and then judges the edit-mode document (task 4.7.1, I398)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play lock i398", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    SUBCASE("(a) a clean scene: the quit goes through in the tick that stops the game") {
+        std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+        REQUIRE(app.has_value());
+        REQUIRE(app->commands().isClean());
+        app->requestPlayControl(PlayControl::Play);
+        e62Ticks(*app, 2);
+        REQUIRE((app->playSession().mode() == PlayMode::Playing));
+        app->requestGuardedQuit();
+        CHECK(app->tick() == false);
+        CHECK((app->playSession().mode() == PlayMode::Edit));
+        app.reset();
+    }
+    SUBCASE("(b) a dirty scene: the unsaved-changes prompt opens on the stopped document") {
+        std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+        REQUIRE(app.has_value());
+        app->requestCreateEntity(engine::editor::CreateKind::Cube);
+        e62Ticks(*app, 2);
+        REQUIRE_FALSE(app->commands().isClean());
+        app->requestPlayControl(PlayControl::Play);
+        e62Ticks(*app, 2);
+        REQUIRE((app->playSession().mode() == PlayMode::Playing));
+        app->requestGuardedQuit();
+        CHECK(app->tick());
+        CHECK((app->playSession().mode() == PlayMode::Edit));
+        CHECK(app->unsavedChangesPromptOpen());
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    }
+}
+
+TEST_CASE("editor: every command pusher reads the lock and the menu bar's chords read it once (task 4.7.1, I399)") {
+    const std::filesystem::path srcRoot(AERO_EDITOR_SRC_DIR);
+    std::set<std::string> pushers;
+    std::size_t scanned = 0;
+    std::error_code ec;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(srcRoot, ec)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".cpp") {
+            continue;
+        }
+        ++scanned;
+        const std::vector<std::string> code = editorSourceCodeLines(entry.path().string());
+        const bool pushes =
+            countLinesContaining(code, "commands.push(") + countLinesContaining(code, "commandStack.push(") > 0U;
+        if (!pushes) {
+            continue;
+        }
+        pushers.insert(entry.path().filename().string());
+        CAPTURE(entry.path().filename().string());
+        CHECK((countLinesContaining(code, "sceneLocked(") + countLinesContaining(code, "play.active()") +
+                   countLinesContaining(code, "playSessionValue.active()") >
+               0U));
+    }
+    CHECK_FALSE(ec);
+    CHECK(scanned > 50U);  // anti-vacuity: the walk really read the directory
+    CHECK((pushers == std::set<std::string>{"editor_app.cpp", "hierarchy_panel.cpp", "inspector_panel.cpp",
+                                            "viewport_panel.cpp"}));
+
+    const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+    for (const std::string_view chord :
+         {"ImGuiMod_Ctrl | ImGuiKey_N,", "ImGuiMod_Ctrl | ImGuiKey_O,", "ImGuiMod_Ctrl | ImGuiKey_S,",
+          "ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S,", "ImGuiMod_Ctrl | ImGuiKey_Z,",
+          "ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z,"}) {
+        CAPTURE(chord);
+        const std::size_t at = soleLineContaining(shell, chord);
+        CHECK((shell[at].find("editEnabled") != std::string::npos || shell[at].find("io &&") != std::string::npos));
+        CHECK(shell[at].find("fileEnabled") == std::string::npos);
+    }
+    const std::size_t quitAt = soleLineContaining(shell, "ImGuiMod_Ctrl | ImGuiKey_Q,");
+    CHECK(shell[quitAt].find("fileEnabled") != std::string::npos);
+    CHECK(shell[quitAt].find("editEnabled") == std::string::npos);
+    CHECK(countLinesContaining(shell, "guardedQuitRequested = true") == 2U);  // the chord and Exit
+    CHECK(countLinesContaining(shell, "const bool editEnabled = fileEnabled && !sceneLocked(state.playMode);") == 1U);
+    CHECK(countLinesContaining(shell, "const bool io = editEnabled && sceneIoAvailable();") == 1U);  // O, S, Shift+S
+}
+
+// ---- task 4.6.1 (I400): the directory list and grid classify with the project's language ----------------------------
+namespace {
+
+struct DirectoryKindCounts {
+    std::size_t gridAll = 0;
+    std::size_t gridScript = 0;
+    std::size_t gridText = 0;
+    std::size_t listAll = 0;
+    std::size_t listScript = 0;
+    std::size_t listText = 0;
+};
+
+// The I386 fixture (a script and a material), opened in `language`, then read through the entries the directory view
+// KEPT after its kind filter: no query is set, so the whole-project search is not the path measured.
+[[nodiscard]] DirectoryKindCounts measureDirectoryKinds(engine::platform::Context& ctx,
+                                                        engine::platform::Window& window, engine::rhi::Device& device,
+                                                        engine::editor::ProjectLanguage language) {
+    DirectoryKindCounts counts;
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    if (language == engine::editor::ProjectLanguage::Cpp) {
+        engine::editor::ProjectManifest manifest = created.manifest;
+        manifest.language = language;
+        REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/project.json",
+                                                    engine::editor::writeProjectText(manifest))
+                    .empty());
+    }
+    writeScriptProjectFile(created.root, "assets/mover.ts",
+                           "export default class Mover extends engine.Script {\n    speed = 2;\n}\n");
+    writeScriptProjectFile(created.root, "assets/shade.aeromat", MINIMAL_AEROMAT_TEXT);
+    std::optional<engine::editor::EditorApp> app = openScriptApp(device, window, ctx, created.root, AERO_TEST_ESBUILD);
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+    }
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    const auto kept = [&](engine::editor::AssetViewMode mode, std::string_view filterToken) {
+        // The panel keeps ONE pending action per frame, so the two requests travel on ticks of their own.
+        app->requestAssetBrowserViewMode(mode);
+        e62Ticks(*app, 2);
+        REQUIRE((app->assetBrowserListViewActive() == (mode == engine::editor::AssetViewMode::List)));
+        app->requestAssetBrowserKindFilter(filterToken);
+        e62Ticks(*app, 3);
+        return app->assetBrowserKindFilteredCount();
+    };
+    counts.gridAll = kept(engine::editor::AssetViewMode::Grid, "all");
+    counts.gridScript = kept(engine::editor::AssetViewMode::Grid, "6");  // AssetKind::Script
+    counts.gridText = kept(engine::editor::AssetViewMode::Grid, "4");    // AssetKind::Text
+    counts.listAll = kept(engine::editor::AssetViewMode::List, "all");
+    counts.listScript = kept(engine::editor::AssetViewMode::List, "6");
+    counts.listText = kept(engine::editor::AssetViewMode::List, "4");
+    if (language == engine::editor::ProjectLanguage::Ts) {
+        tickUntilScriptsIdle(*app);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+    return counts;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: a C++ project's .ts is Text in the grid's and the list's kind filter, a TypeScript project's a Script "
+    "(task 4.6.1, I400)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "directory kinds i400", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const DirectoryKindCounts ts = measureDirectoryKinds(ctx, *window, *device, engine::editor::ProjectLanguage::Ts);
+    const DirectoryKindCounts cpp = measureDirectoryKinds(ctx, *window, *device, engine::editor::ProjectLanguage::Cpp);
+
+    // ANTI-VACUITY: both views listed the script and the material before any kind was asked for.
+    CHECK(ts.gridAll == 2U);
+    CHECK(ts.listAll == 2U);
+    CHECK(cpp.gridAll == 2U);
+    CHECK(cpp.listAll == 2U);
+    // TypeScript: mover.ts is the one Script and no Text.
+    CHECK(ts.gridScript == 1U);
+    CHECK(ts.gridText == 0U);
+    CHECK(ts.listScript == 1U);
+    CHECK(ts.listText == 0U);
+    // C++: the same file is the one Text and no Script, in each view on its own.
+    CHECK(cpp.gridScript == 0U);
+    CHECK(cpp.gridText == 1U);
+    CHECK(cpp.listScript == 0U);
+    CHECK(cpp.listText == 1U);
+}
+
+// ---- task 4.6.1 (I401): the Inspector's reference row names a script file by the project's language ----------------
+namespace {
+
+// The width of the sentence the ScriptComponent's `script` row names a.ts by, in a project of `language`; -1 where
+// reflection is off and the row does not exist.
+[[nodiscard]] float scriptRowNameWidth(engine::platform::Context& ctx, engine::platform::Window& window,
+                                       engine::rhi::Device& device, engine::editor::ProjectLanguage language) {
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    if (language == engine::editor::ProjectLanguage::Cpp) {
+        engine::editor::ProjectManifest manifest = created.manifest;
+        manifest.language = language;
+        REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/project.json",
+                                                    engine::editor::writeProjectText(manifest))
+                    .empty());
+    }
+    writeScriptProjectFile(created.root, "assets/a.ts", "export default class A extends engine.Script {}\n");
+    std::optional<engine::editor::EditorApp> app = openScriptApp(device, window, ctx, created.root, AERO_TEST_ESBUILD);
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+    }
+    float width = -1.0F;
+    const engine::Entity cube = focusInspectorOnCube(*app);
+    const engine::ComponentTypeId scriptId = app->world().findComponentType("engine::ScriptComponent");
+    REQUIRE(scriptId.valid());
+    REQUIRE(engine::editor::addComponent(app->world(), cube, scriptId));
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("a.ts");
+    REQUIRE(guid.has_value());
+    auto* const script = app->world().get<engine::ScriptComponent>(cube);
+    REQUIRE(script != nullptr);
+    // Bound directly: a C++ project's picker offers no .ts, but a hand-edited scene can hold one.
+    script->script = *guid;
+    if (engine::editor::componentFieldsAreReflected(app->world(), scriptId)) {
+        auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+        REQUIRE(inspector != nullptr);
+        for (int i = 0; i < 4; ++i) {
+            REQUIRE(app->tick());
+        }
+        const std::vector<engine::editor::ReferenceFieldRecord>& fields = inspector->drawRecord().referenceFields;
+        REQUIRE_FALSE(fields.empty());
+        const engine::editor::ReferenceFieldRecord& row = fields.back();  // the ScriptComponent is the last component
+        width = row.valueTextWidth;  // the whole sentence, so the narrow field does not elide the label away
+    }
+    if (language == engine::editor::ProjectLanguage::Ts) {
+        tickUntilScriptsIdle(*app);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+    return width;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: the Inspector's reference row names a C++ project's .ts as Text and a TypeScript project's as a Script "
+    "(task 4.6.1, I401)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "script row i401", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const float ts = scriptRowNameWidth(ctx, *window, *device, engine::editor::ProjectLanguage::Ts);
+    const float cpp = scriptRowNameWidth(ctx, *window, *device, engine::editor::ProjectLanguage::Cpp);
+    if (ts < 0.0F || cpp < 0.0F) {
+        MESSAGE("I401: reflect tools OFF -- the ScriptComponent draws no field row");
+        return;
+    }
+    CAPTURE(ts);
+    CAPTURE(cpp);
+    // "a.ts  (Script)" against "a.ts  (Text)": the same file, the same Inspector, the same font; only the label
+    // differs, and "Script" is the longer word.
+    CHECK(cpp > 0.0F);
+    CHECK(cpp < ts);
+}
+
+// ---- task 4.7.1 (I402): a modal owns the toolbar's play controls ----------------------------------------------------
+TEST_CASE(
+    "editor: the play controls draw disabled behind a modal and enabled again once it closes (task 4.7.1, I402)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play modal i402", .width = E64_WINDOW_WIDTH, .height = E64_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+    REQUIRE(r.play[0].enabled);  // ANTI-VACUITY: an open TypeScript project in Edit, nothing in the way: Play is live
+
+    e64OpenNewProject(*app);  // the New Project modal is up
+    REQUIRE(app->tick());
+    for (std::size_t i = 0; i < r.play.size(); ++i) {
+        CAPTURE(i);
+        CHECK_FALSE(r.play[i].enabled);
+    }
+
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(r.play[0].enabled);  // the same control, the same project: only the modal was in the way
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.7.1 (I403): Play takes the pads already connected -------------------------------------------------------
+namespace {
+
+// Two virtual pads attached to the process's joystick subsystem; the Context started with VirtualOnly connects them.
+class TwoVirtualPads {
+public:
+    TwoVirtualPads() {
+        for (SDL_JoystickID& id : ids) {
+            SDL_VirtualJoystickDesc desc;
+            SDL_INIT_INTERFACE(&desc);
+            desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+            desc.nbuttons = 15;
+            desc.naxes = 6;
+            id = SDL_AttachVirtualJoystick(&desc);
+        }
+    }
+    TwoVirtualPads(const TwoVirtualPads&) = delete;
+    TwoVirtualPads& operator=(const TwoVirtualPads&) = delete;
+    TwoVirtualPads(TwoVirtualPads&&) = delete;
+    TwoVirtualPads& operator=(TwoVirtualPads&&) = delete;
+    ~TwoVirtualPads() {
+        for (const SDL_JoystickID id : ids) {
+            if (id != 0) {
+                SDL_DetachVirtualJoystick(id);
+            }
+        }
+    }
+
+    [[nodiscard]] bool attached() const noexcept { return ids[0] != 0 && ids[1] != 0; }
+
+private:
+    std::array<SDL_JoystickID, 2> ids{};
+};
+
+}  // namespace
+
+TEST_CASE("editor: Play hands the game the pads that were connected before it began (task 4.7.1, I403)") {
+    engine::platform::Context ctx{{.gamepads = engine::platform::GamepadDrivers::VirtualOnly}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play pads i403", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    const engine::editor::PlaySession& session = app->playSession();
+    const TwoVirtualPads pads;
+    REQUIRE(pads.attached());
+    int ticks = 0;
+    while (ticks < 8 && !(ctx.input().gamepadConnected(0) && ctx.input().gamepadConnected(1))) {
+        REQUIRE(app->tick());
+        ++ticks;
+    }
+    // The editor's own state holds both pads; the game's, in Edit, holds none: nothing is fed to it until Play.
+    REQUIRE(ctx.input().gamepadConnected(0));
+    REQUIRE(ctx.input().gamepadConnected(1));
+    CHECK_FALSE(ctx.input().gamepadConnected(2));
+    CHECK_FALSE(session.input().gamepadConnected(0));
+    CHECK_FALSE(session.input().gamepadConnected(1));
+
+    app->requestPlayControl(engine::editor::PlayControl::Play);
+    REQUIRE(app->tick());
+    REQUIRE((session.mode() == engine::editor::PlayMode::Playing));
+    CHECK(session.input().gamepadConnected(0));
+    CHECK(session.input().gamepadConnected(1));
+    CHECK_FALSE(session.input().gamepadConnected(2));  // the slots the editor holds, no more
+
+    app->requestPlayControl(engine::editor::PlayControl::Stop);
+    REQUIRE(app->tick());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.7.1 (I404, I405): what the scene lock refuses leaves nothing behind -------------------------------------
+TEST_CASE("editor: a file request the scene lock abandons takes its target path with it (task 4.7.1, I404)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play lock i404", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    REQUIRE_FALSE(app->fileRequestPathPending());
+    app->requestPlayControl(engine::editor::PlayControl::Play);
+    REQUIRE(app->tick());
+    REQUIRE((app->playSession().mode() == engine::editor::PlayMode::Playing));
+    REQUIRE(app->tick());
+
+    const std::string target = std::string(app->projectRoot()) + "/never_written.scene.json";
+    const auto abandoned = [&](std::string_view what, const auto& request) {
+        CAPTURE(what);
+        const std::size_t refusals = app->playLockRefusalCount();
+        request();
+        REQUIRE(app->fileRequestPathPending());  // ANTI-VACUITY: the request did carry a path in
+        REQUIRE(app->tick());
+        CHECK(app->playLockRefusalCount() == refusals + 1U);
+        CHECK_FALSE(app->fileRequestPathPending());
+    };
+    abandoned("Open Scene", [&] { app->requestOpenScene(target); });
+    abandoned("Save Scene As", [&] { app->requestSaveSceneAs(target); });
+    abandoned("Open Project", [&] { app->requestOpenProject(target); });
+    CHECK_FALSE(std::filesystem::exists(target));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a prefab dropped in the Viewport while the game plays is refused and creates nothing (task 4.7.1, I405)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play drop i405", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makePrefabDropProject();
+    std::optional<engine::editor::EditorApp> app = openPrefabDropApp(ctx, *window, *device, root);
+    REQUIRE(app.has_value());
+    const std::optional<engine::Guid> prefab = app->assetGuidForPath("crate.aeroprefab");
+    REQUIRE(prefab.has_value());
+    const engine::Vec2 ndc{0.25F, -0.4F};
+
+    app->requestPlayControl(engine::editor::PlayControl::Play);
+    REQUIRE(app->tick());
+    REQUIRE((app->playSession().mode() == engine::editor::PlayMode::Playing));
+    REQUIRE(app->tick());
+    const std::size_t entities = app->world().entityCount();
+    const std::size_t entries = app->commands().count();
+    const std::size_t refusals = app->playLockRefusalCount();
+    app->requestViewportAssetDrop(*prefab, PREFAB_KIND, ndc);
+    REQUIRE(app->tick());
+    CHECK(app->playLockRefusalCount() == refusals + 1U);
+    CHECK(app->world().entityCount() == entities);
+    CHECK(app->commands().count() == entries);
+
+    // ANTI-VACUITY: the same drop, once the game has stopped, is the I370 drop and lands (where a prefab can be read).
+    app->requestPlayControl(engine::editor::PlayControl::Stop);
+    REQUIRE(app->tick());
+    REQUIRE((app->playSession().mode() == engine::editor::PlayMode::Edit));
+    REQUIRE(app->tick());
+    const std::size_t refusalsStopped = app->playLockRefusalCount();
+    app->requestViewportAssetDrop(*prefab, PREFAB_KIND, ndc);
+    REQUIRE(app->tick());
+    CHECK(app->playLockRefusalCount() == refusalsStopped);
+    if (engine::editor::sceneIoAvailable()) {
+        CHECK(app->world().entityCount() == entities + 2U);  // Crate and Lid
+        CHECK(app->commands().count() == entries + 1U);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.7.1 (I406): the game's image rect is where ImGui laid the image out -------------------------------------
+TEST_CASE("editor: the game's image rect is the image's own screen rect, in Edit and in play (task 4.7.1, I406)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play rect i406", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    e62Ticks(*app, 2);
+    const engine::editor::GameImageRect edit = viewport->gameImageRect();
+    if (!edit.valid) {
+        MESSAGE("I406: the Viewport drew no image on this runner (shader tools off)");
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        return;
+    }
+    // The HUD record is a second, separately written copy of the same rect (the HUD is drawn in Edit): the panel's
+    // own origin is not the window's, and the image's size is its available region's.
+    const engine::editor::ViewportHudRecord& hud = viewport->hudRecord();
+    REQUIRE(hud.framesRecorded > 0U);
+    CAPTURE(edit.min.x);
+    CAPTURE(edit.min.y);
+    CHECK(edit.min.x > 0.0F);  // docked right of the Hierarchy ...
+    CHECK(edit.min.y > 0.0F);  // ... and below the menu bar and toolbar
+    CHECK(edit.min.x == hud.imageMin.x);
+    CHECK(edit.min.y == hud.imageMin.y);
+    CHECK(edit.max.x == hud.imageMax.x);
+    CHECK(edit.max.y == hud.imageMax.y);
+    CHECK(edit.max.x - edit.min.x == doctest::Approx(hud.imageAvail.x));
+    CHECK(edit.max.y - edit.min.y == doctest::Approx(hud.imageAvail.y));
+
+    // In play the HUD is gone; the rect stays where it was laid out.
+    app->requestPlayControl(engine::editor::PlayControl::Play);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == engine::editor::PlayMode::Playing));
+    const engine::editor::GameImageRect playing = viewport->gameImageRect();
+    CHECK(playing.valid);
+    CHECK(playing.min.x == edit.min.x);
+    CHECK(playing.min.y == edit.min.y);
+    CHECK(playing.max.x == edit.max.x);
+    CHECK(playing.max.y == edit.max.y);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.7.1 (I407): Add Component draws disabled while the scene is locked (AC-11)
+// ---------------------------------
+TEST_CASE("editor: Add Component draws disabled while the game plays and as before after Stop (task 4.7.1, I407)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play add component i407", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());
+    const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    app->requestPanelFocus("Inspector");
+    // The Inspector drew `frames` fresh frames: the record is rewritten per draw, so a stale one never passes.
+    const auto drawFrames = [&](int frames) {
+        const std::uint64_t before = inspector->drawRecord().framesRecorded;
+        e62Ticks(*app, frames);
+        REQUIRE(inspector->drawRecord().framesRecorded > before);
+    };
+    drawFrames(3);
+
+    // The colours the list received, packed as ImGui packs an ImU32 (IM_COL32), at the opaque alpha Edit draws.
+    const engine::editor::ThemePanels& panels = engine::editor::EDITOR_THEME.panels;
+    const std::uint32_t editDash = engine::editor::toImU32(panels.addComponentDash);
+    const std::uint32_t editLabel =
+        engine::editor::toImU32(engine::editor::chromeRoleColor(engine::editor::ChromeRole::Accent));
+    constexpr std::uint32_t ALPHA_SHIFT = 24U;  // IM_COL32_A_SHIFT, in both of ImGui's packings
+    constexpr std::uint32_t ALPHA_MASK = 0xFFU << ALPHA_SHIFT;
+    REQUIRE((editDash >> ALPHA_SHIFT) == 255U);
+    REQUIRE((editLabel >> ALPHA_SHIFT) == 255U);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    CHECK(r.addComponentDashColour == editDash);
+    CHECK(r.addComponentLabelColour == editLabel);
+
+    // GetColorU32(col, 1) scales the alpha byte by Style.Alpha, which BeginDisabled(true) multiplies by
+    // DisabledAlpha (imgui.cpp:8898-8899), and truncates: (ImU32)(255 * DisabledAlpha) for an opaque colour.
+    float disabledAlpha = 0.0F;
+    const engine::editor::EditorStyleSnapshot liveStyle = engine::editor::snapshotLiveStyle();
+    for (const engine::editor::StyleMemberValue& member : liveStyle.members) {
+        if (member.name == "DisabledAlpha") {
+            disabledAlpha = member.x;
+        }
+    }
+    REQUIRE(disabledAlpha > 0.0F);
+    REQUIRE(disabledAlpha < 1.0F);  // ANTI-VACUITY: a dim that changes the alpha byte
+    const auto dimmed = static_cast<std::uint32_t>(255.0F * disabledAlpha);
+    REQUIRE(dimmed < 255U);
+    const auto withDimmedAlpha = [dimmed](std::uint32_t colour) {
+        return (colour & ~ALPHA_MASK) | (dimmed << ALPHA_SHIFT);
+    };
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 1);
+    REQUIRE((app->playSession().mode() == PlayMode::Playing));
+    drawFrames(2);
+    CAPTURE(r.addComponentDashColour);
+    CAPTURE(r.addComponentLabelColour);
+    CHECK(r.addComponentDashVertices > 0);
+    CHECK(r.addComponentDashColour == withDimmedAlpha(editDash));
+    CHECK(r.addComponentLabelColour == withDimmedAlpha(editLabel));
+
+    app->requestPlayControl(PlayControl::Pause);
+    e62Ticks(*app, 1);
+    REQUIRE((app->playSession().mode() == PlayMode::Paused));
+    drawFrames(2);
+    CHECK(r.addComponentDashVertices > 0);
+    CHECK(r.addComponentDashColour == withDimmedAlpha(editDash));
+    CHECK(r.addComponentLabelColour == withDimmedAlpha(editLabel));
+
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 1);
+    REQUIRE((app->playSession().mode() == PlayMode::Edit));
+    drawFrames(2);
+    CHECK(r.addComponentDashColour == editDash);
+    CHECK(r.addComponentLabelColour == editLabel);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.7.1 (I408): a frame that draws no Add Component records no colour ---------------------------------------
+TEST_CASE("editor: Add Component's recorded colours read 0 on a frame that draws no button (task 4.7.1, I408)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window = ctx.createWindow(
+        {.title = "add component colours i408", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());
+    const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    app->requestPanelFocus("Inspector");
+    // One recorded draw: the Inspector drew exactly one fresh frame, so no earlier frame's record can pass.
+    const auto drawOnce = [&] {
+        const std::uint64_t before = inspector->drawRecord().framesRecorded;
+        REQUIRE(app->tick());
+        REQUIRE(inspector->drawRecord().framesRecorded == before + 1U);
+    };
+    e62Ticks(*app, 3);
+    drawOnce();
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    CHECK(r.addComponentDashVertices > 0);
+    CHECK(r.addComponentDashColour != 0U);
+    CHECK(r.addComponentLabelColour != 0U);
+
+    app->selection().clear();
+    drawOnce();
+    CHECK(r.addComponentDashVertices == 0);
+    CHECK(r.addComponentDashColour == 0U);
+    CHECK(r.addComponentLabelColour == 0U);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.7.1 (I409): a press held across Play
+// ---------------------------------------------------------------------
+TEST_CASE("editor: a press held across Play never leaves Add Component an undimmed fill (task 4.7.1, I409)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "held press i409", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+
+    // The ImGui backend reads the SDL events the Context polls and ignores any other window's: this case owns the
+    // only window (the editor renames it, so a title would not find it).
+    int windowCount = 0;
+    SDL_Window** const windows = SDL_GetWindows(&windowCount);
+    REQUIRE(windows != nullptr);
+    CAPTURE(windowCount);
+    const SDL_WindowID windowId = windowCount == 1 ? SDL_GetWindowID(windows[0]) : 0U;
+    SDL_free(std::bit_cast<void*>(windows));  // SDL owns the list; the bit_cast spells the pointer-to-pointer step
+    REQUIRE(windowId != 0U);
+    const auto moveTo = [windowId](float x, float y) {
+        SDL_Event e{};
+        e.type = SDL_EVENT_MOUSE_MOTION;
+        e.motion.windowID = windowId;
+        e.motion.which = 1;
+        e.motion.x = x;
+        e.motion.y = y;
+        REQUIRE(SDL_PushEvent(&e));
+    };
+    const auto button = [windowId](bool down, float x, float y) {
+        SDL_Event e{};
+        e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        e.button.windowID = windowId;
+        e.button.which = 1;
+        e.button.button = SDL_BUTTON_LEFT;
+        e.button.down = down;
+        e.button.clicks = 1;
+        e.button.x = x;
+        e.button.y = y;
+        REQUIRE(SDL_PushEvent(&e));
+    };
+
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());
+    const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    app->requestPanelFocus("Inspector");
+    e62Ticks(*app, 3);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.addComponentDashVertices > 0);
+    const float centreX = (r.addComponentMin.x + r.addComponentMax.x) * 0.5F;
+    const float centreY = (r.addComponentMin.y + r.addComponentMax.y) * 0.5F;
+    const float height = r.addComponentMax.y - r.addComponentMin.y;
+    const std::uint32_t activeEdit =
+        engine::editor::toImU32(engine::editor::chromeRoleColor(engine::editor::ChromeRole::Active));
+    const std::size_t entries = app->commands().count();
+    const std::size_t entities = app->world().entityCount();
+
+    // In Edit the press makes the button active, and it stays active with the pointer off it: the Active fill draws.
+    moveTo(centreX, centreY);
+    button(true, centreX, centreY);
+    REQUIRE(app->tick());
+    CHECK(r.addComponentFillColour == activeEdit);
+    const float offY = r.addComponentMin.y - height;  // above the button, still inside the Inspector
+    moveTo(centreX, offY);
+    REQUIRE(app->tick());
+    CHECK(r.addComponentFillColour == activeEdit);
+
+    // Play with the press held. A draw is "in play" when its outline carries the disabled alpha (read off the draw
+    // list): the tick that starts Play draws its Inspector frame first, in Edit. Measured at d65bdfe plus the record
+    // fields: Play's focus hand-off ends the press before the first locked draw, so no fill draws in play (branch B).
+    constexpr std::uint32_t ALPHA_SHIFT = 24U;
+    app->requestPlayControl(PlayControl::Play);
+    int playDraws = 0;
+    for (int tick = 0; tick < 8 && playDraws < 2; ++tick) {
+        const std::uint64_t before = inspector->drawRecord().framesRecorded;
+        REQUIRE(app->tick());
+        REQUIRE(inspector->drawRecord().framesRecorded == before + 1U);
+        const bool dimmed = (r.addComponentDashColour >> ALPHA_SHIFT) < 255U;
+        if (dimmed) {
+            ++playDraws;
+            CAPTURE(tick);
+            CHECK(r.addComponentFillColour == 0U);
+        }
+    }
+    REQUIRE((app->playSession().mode() == PlayMode::Playing));
+    REQUIRE(playDraws == 2);  // ANTI-VACUITY: two locked frames were drawn and read
+
+    // Released: no fill, no popup's choice made, nothing recorded on the undo stack.
+    button(false, centreX, offY);
+    REQUIRE(app->tick());
+    CHECK(r.addComponentFillColour == 0U);
+    CHECK(app->commands().count() == entries);
+    CHECK(app->world().entityCount() == entities);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.7.1 (I410): the fill colour reads 0 on a frame that draws no button ------------------------------------
+TEST_CASE("editor: Add Component's recorded fill reads 0 on a frame that draws no button (task 4.7.1, I410)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "add component fill i410", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+
+    // The only window this case owns is the editor's; the backend ignores any other window's events.
+    int windowCount = 0;
+    SDL_Window** const windows = SDL_GetWindows(&windowCount);
+    REQUIRE(windows != nullptr);
+    CAPTURE(windowCount);
+    const SDL_WindowID windowId = windowCount == 1 ? SDL_GetWindowID(windows[0]) : 0U;
+    SDL_free(std::bit_cast<void*>(windows));
+    REQUIRE(windowId != 0U);
+    const auto moveTo = [windowId](float x, float y) {
+        SDL_Event e{};
+        e.type = SDL_EVENT_MOUSE_MOTION;
+        e.motion.windowID = windowId;
+        e.motion.which = 1;
+        e.motion.x = x;
+        e.motion.y = y;
+        REQUIRE(SDL_PushEvent(&e));
+    };
+    const auto button = [windowId](bool down, float x, float y) {
+        SDL_Event e{};
+        e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        e.button.windowID = windowId;
+        e.button.which = 1;
+        e.button.button = SDL_BUTTON_LEFT;
+        e.button.down = down;
+        e.button.clicks = 1;
+        e.button.x = x;
+        e.button.y = y;
+        REQUIRE(SDL_PushEvent(&e));
+    };
+
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());
+    const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    app->requestPanelFocus("Inspector");
+    e62Ticks(*app, 3);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.addComponentDashVertices > 0);
+    const float centreX = (r.addComponentMin.x + r.addComponentMax.x) * 0.5F;
+    const float centreY = (r.addComponentMin.y + r.addComponentMax.y) * 0.5F;
+
+    // A press over the button draws a fill: ANTI-VACUITY, the colour the next frame must not keep.
+    moveTo(centreX, centreY);
+    button(true, centreX, centreY);
+    REQUIRE(app->tick());
+    REQUIRE(r.addComponentFillColour != 0U);
+
+    // Nothing selected: the Inspector draws one fresh frame with no button, and the record must read 0.
+    app->selection().clear();
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    REQUIRE(app->tick());
+    REQUIRE(inspector->drawRecord().framesRecorded == before + 1U);
+    CHECK(r.addComponentDashVertices == 0);
+    CHECK(r.addComponentFillColour == 0U);
+
+    button(false, centreX, centreY);
+    REQUIRE(app->tick());
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();

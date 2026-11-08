@@ -67,3 +67,18 @@ TEST_CASE("shortcut hint: 7-bit, a fixed order, and no modifier passes the key t
     CHECK(chordHint(HostOs::MacOs, ChordModifiers{}, "F2") == "F2");
     CHECK(chordHint(HostOs::Windows, ChordModifiers{.shift = true}, "Z") == "Shift+Z");
 }
+
+TEST_CASE("shortcut hint: Alt sits between the command modifier and Shift (task 4.7.1, HK6)") {
+    constexpr ChordModifiers CTRL_ALT{.ctrl = true, .alt = true};
+    constexpr ChordModifiers CTRL_SHIFT_ALT{.ctrl = true, .shift = true, .alt = true};
+    constexpr ChordModifiers ALT{.alt = true};
+    CHECK(chordHint(HostOs::MacOs, CTRL_ALT, "P") == "Cmd+Option+P");
+    CHECK(chordHint(HostOs::MacOs, CTRL_SHIFT_ALT, "P") == "Cmd+Option+Shift+P");
+    CHECK(chordHint(HostOs::MacOs, ALT, "P") == "Option+P");
+    for (const HostOs os : {HostOs::Windows, HostOs::Linux}) {
+        CAPTURE(static_cast<int>(os));
+        CHECK(chordHint(os, CTRL_ALT, "P") == "Ctrl+Alt+P");
+        CHECK(chordHint(os, CTRL_SHIFT_ALT, "P") == "Ctrl+Alt+Shift+P");
+        CHECK(chordHint(os, ALT, "P") == "Alt+P");
+    }
+}

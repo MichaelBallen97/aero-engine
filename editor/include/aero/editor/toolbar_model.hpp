@@ -7,6 +7,7 @@
 #include <aero/editor/editor_glyphs.hpp>  // AERO_GLYPH_DEGREE
 #include <aero/editor/editor_icons.hpp>   // the Tools group of the roster
 #include <aero/editor/gizmo.hpp>          // TransformTool, GizmoOperation, SnapSettings
+#include <aero/editor/play_session.hpp>   // PlayControl, PLAY_CONTROL_COUNT (task 4.7.1)
 #include <aero/editor/shortcut_hint.hpp>  // HostOs, for the snap tooltip's modifier
 
 #include <array>
@@ -40,17 +41,17 @@ inline constexpr std::string_view SNAP_TOGGLE_LABEL = AERO_ICON_MAGNET " Snap";
 inline constexpr std::string_view SNAP_FIELD_SELECT_TOOLTIP = "Select draws no gizmo";
 
 struct ToolbarPlayControl {
+    PlayControl control;
     std::string_view icon;
     std::string_view iconLabel;
 };
-inline constexpr std::array<ToolbarPlayControl, 3> TOOLBAR_PLAY_CONTROLS{{
-    {AERO_ICON_PLAY, AERO_ICON_PLAY " Play"},
-    {AERO_ICON_PAUSE, AERO_ICON_PAUSE " Pause"},
-    {AERO_ICON_STEP_FORWARD, AERO_ICON_STEP_FORWARD " Step"},
+// In PlayControl order (TB13); the tooltips are playControlTooltip's, which know the reason a control is off.
+inline constexpr std::array<ToolbarPlayControl, PLAY_CONTROL_COUNT> TOOLBAR_PLAY_CONTROLS{{
+    {PlayControl::Play, AERO_ICON_PLAY, AERO_ICON_PLAY " Play"},
+    {PlayControl::Pause, AERO_ICON_PAUSE, AERO_ICON_PAUSE " Pause"},
+    {PlayControl::Step, AERO_ICON_STEP_FORWARD, AERO_ICON_STEP_FORWARD " Step"},
+    {PlayControl::Stop, AERO_ICON_SQUARE, AERO_ICON_SQUARE " Stop"},
 }};
-// D8: the convention's first live use since 2.5.1 deleted the last stub -- 2970d9a's wording, its em dash
-// spelled " -- ". docs/tasks/phase-4.md's 4.7.1 lists Play, Pause and Step, which is what makes it true.
-inline constexpr std::string_view PLAY_CONTROLS_TOOLTIP = "Not implemented yet -- task 4.7.1";
 
 inline constexpr std::string_view UNDO_BUTTON_LABEL = AERO_ICON_UNDO_2 " Undo";
 inline constexpr std::string_view NOTHING_TO_UNDO_TOOLTIP = "Nothing to undo";
@@ -102,8 +103,8 @@ struct ToolbarMetrics {
     float snapToggleFull = 0.0F;
     float snapToggleCompact = 0.0F;
     float snapField = 0.0F;
-    std::array<float, 3> playFull{};
-    std::array<float, 3> playCompact{};
+    std::array<float, PLAY_CONTROL_COUNT> playFull{};
+    std::array<float, PLAY_CONTROL_COUNT> playCompact{};
     float undoButton = 0.0F;
     float undoChip = 0.0F;
     float itemSpacing = 0.0F;   // style.ItemSpacing.x
@@ -126,25 +127,26 @@ struct ToolbarWidthPair {
     ToolbarWidths compact;
 };
 // The groups' widths: a group of abutting buttons is 2 x groupPadding + its buttons; the snap group is that
-// around the toggle, + itemSpacing + the field; the play controls are three buttons itemSpacing apart; the undo
+// around the toggle, + itemSpacing + the field; the play controls are four buttons itemSpacing apart; the undo
 // group is button + itemSpacing + chip, + itemSpacing + UNDO_LABEL_SLOT_EM x fontSize in Full only.
 [[nodiscard]] ToolbarWidthPair toolbarWidths(const ToolbarMetrics& metrics) noexcept;
 
-// Full: icons + labels, the undo slot. Compact: icons only, no undo slot, the chip kept. Minimal: Compact without
-// the play group (it is disabled and carries no action). The WIDEST that fits; at the exact boundary both fit.
-enum class ToolbarMode : std::uint8_t { Full = 0, Compact, Minimal };
+// Full: icons + labels, the undo slot. Compact: icons only, no undo slot, the chip kept. The WIDEST that fits, else
+// Compact: nothing narrower exists, and below Compact's width the window clips the bar (task 4.7.1, call 6). At the
+// exact boundary both fit.
+enum class ToolbarMode : std::uint8_t { Full = 0, Compact };
 
 // Every x is BAR-LOCAL (from the toolbar window's left edge). The left groups pack from toolbarPaddingX; the undo
-// group sits at max(availableRight - undo, leftGroupsEnd + gap) -- right-aligned while it clears the left groups,
-// packed after them (and clipped by the window) otherwise; the play group, when drawn, is CENTRED in the free span
-// [leftGroupsEnd + gap, undoX - gap] (the mock's placement).
+// group sits at max(availableRight - undo, playX + play + gap) -- right-aligned while it clears the left groups and
+// the play group, packed after them (and clipped by the window) otherwise; the play group is CENTRED in the free span
+// [leftGroupsEnd + gap, undoX - gap] (the mock's placement), packed after the left groups once the span is narrower
+// than the group. It is drawn in every mode.
 struct ToolbarLayout {
-    ToolbarMode mode = ToolbarMode::Minimal;
+    ToolbarMode mode = ToolbarMode::Compact;
     float toolsX = 0.0F;
     float spaceX = 0.0F;
     float snapX = 0.0F;
     float leftGroupsEnd = 0.0F;
-    bool playDrawn = false;
     float playX = 0.0F;
     float undoX = 0.0F;
     bool operator==(const ToolbarLayout&) const noexcept = default;

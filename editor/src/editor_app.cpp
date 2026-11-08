@@ -98,6 +98,10 @@ namespace {
 // used by the id lookup and by the command's own label, so the two can never disagree.
 constexpr std::string_view MESH_RENDERER_TYPE_NAME = "engine::MeshRenderer";
 
+// ViewportPanel::id()'s frozen value (D16): the comparison that decides game focus and the request that hands the
+// Viewport the keyboard at Play both read THIS, never a second literal.
+constexpr std::string_view VIEWPORT_ID = "Viewport";
+
 // task 3.1.5: the leaf name with its LAST extension removed -- what the instantiation plan names the
 // synthetic root. A leaf with no dot, or a leading-dot name, keeps its whole leaf: a hidden file's
 // name is not an extension.
@@ -605,6 +609,58 @@ void EditorApp::persistProjectState() {
     projectStateScene = scene;
 }
 
+void EditorApp::applyPlayControl(PlayControl control) {
+    const PlayTransition transition = playSessionValue.apply(control);
+    switch (transition) {  // NO default:
+        case PlayTransition::Started:
+            // Handoffs: 4.7.3 saves and 4.7.2 snapshots the scene BEFORE apply on Edit -> Playing; 4.7.4 runs onInit
+            // after it. The one focus slot hands the Viewport the keyboard on the next tick (D5).
+            requestedPanelFocus = VIEWPORT_ID;
+            if (ctx != nullptr) {
+                playSessionValue.adoptConnectedPads(ctx->input());  // A6: a pad plugged in before Play
+            }
+            break;
+        case PlayTransition::Stopped:  // handoffs: 4.7.4's onDestroy runs here, and then 4.7.2's restore
+        case PlayTransition::None:
+        case PlayTransition::Paused:
+        case PlayTransition::Resumed:
+        case PlayTransition::StepQueued:
+            break;
+    }
+}
+
+void EditorApp::handleEvent(const platform::Event& ev) {
+    switch (ev.type) {
+        case platform::EventType::Quit:
+        case platform::EventType::WindowClose:
+            requestGuardedQuit();  // task 2.5.1, D1: route the OS quit / window [X] through the
+                                   // guard instead of quitting immediately. Observable consequence:
+                                   // closing a CLEAN editor now draws one more frame before exiting
+                                   // -- deliberate (AC-28), not a regression.
+            break;
+        case platform::EventType::WindowFocusGained:
+            windowFocused = true;
+            // task 3.1.4 (D6/AC-25): the alt-tab-back path, and the whole of it. Sweeps continue
+            // (slower) while unfocused, so a change made in another application is usually
+            // already SETTLED by the time focus returns and the first post-focus sweep fires it.
+            assetWatcher.requestImmediateSweep();
+            break;
+        case platform::EventType::WindowFocusLost:
+            windowFocused = false;
+            break;
+        default:
+            break;  // resize is the swapchain's business
+    }
+    // task 4.7.1 (D5): the last statement. A focus change re-decides game focus first (a loss releases what the game
+    // holds), then the event reaches the game's state iff the game has focus.
+    if (ev.type == platform::EventType::WindowFocusGained || ev.type == platform::EventType::WindowFocusLost) {
+        playSessionValue.setGameFocus(
+            gameHasFocus(playSessionValue.mode(), keyboardFocusPanel == VIEWPORT_ID, windowFocused));
+    }
+    playSessionValue.feed(ev, viewportPanel != nullptr ? viewportPanel->gameImageRect() : GameImageRect{},
+                          currentHostOs());
+}
+
 bool EditorApp::tick() {
     if (!running) {
         presented = false;  // nothing reached the screen this tick — keep presentedLastFrame() honest
@@ -615,27 +671,14 @@ bool EditorApp::tick() {
     ctx->newFrame();
     platform::Event ev;
     while (ctx->pollEvent(ev)) {  // ImGui sees every raw event via the D5 sink
-        switch (ev.type) {
-            case platform::EventType::Quit:
-            case platform::EventType::WindowClose:
-                requestGuardedQuit();  // task 2.5.1, D1: route the OS quit / window [X] through the
-                                       // guard instead of quitting immediately. Observable consequence:
-                                       // closing a CLEAN editor now draws one more frame before exiting
-                                       // -- deliberate (AC-28), not a regression.
-                break;
-            case platform::EventType::WindowFocusGained:
-                windowFocused = true;
-                // task 3.1.4 (D6/AC-25): the alt-tab-back path, and the whole of it. Sweeps continue
-                // (slower) while unfocused, so a change made in another application is usually
-                // already SETTLED by the time focus returns and the first post-focus sweep fires it.
-                assetWatcher.requestImmediateSweep();
-                break;
-            case platform::EventType::WindowFocusLost:
-                windowFocused = false;
-                break;
-            default:
-                break;  // resize is the swapchain's business
-        }
+        handleEvent(ev);
+    }
+    // task 4.7.1: the GPU tier's injected events, after the polled ones and through the same handler. A copy, so a
+    // handler that queues another cannot invalidate the walk.
+    const std::vector<platform::Event> injected = std::move(pendingGameEvents);
+    pendingGameEvents.clear();
+    for (const platform::Event& queued : injected) {
+        handleEvent(queued);
     }
     if (!running) {
         // Reachable only through a DIRECT requestQuit() call (D14) -- the window [X] / OS Quit path
@@ -645,10 +688,31 @@ bool EditorApp::tick() {
         presented = false;
         return false;
     }
+    // task 4.7.1 (D4, G12): the scene lock on the file flow, applied where a request first lands -- after every event
+    // and before any draw. A Quit stops the game here, so THIS tick's applyFileRequests judges the edit-mode document
+    // (a game that wrote nothing to it leaves it clean, and a dirty one raises the prompt on what Stop restored). Any
+    // other request is ABANDONED, never kept for after Stop (F10): its path goes with it, so a later action cannot
+    // pick up a stale one.
+    if (playSessionValue.active()) {
+        if (fileFlow.requested == FileAction::Quit) {
+            applyPlayControl(PlayControl::Stop);
+        } else if (fileFlow.requested != FileAction::None) {
+            fileFlow.requested = FileAction::None;
+            fileFlow.requestedPath.clear();
+            projectFlow.requestedPath.clear();
+            ++playLockRefusals;
+        }
+    }
     frameClock.tick();
     // task E.6.2 (D14): the RAW delta -- a stall shown honestly, not the 0.25-s clamp -- on the statement after the
     // clock's own tick (I308 pins the adjacency).
     frameReadout.add(frameClock.rawDeltaSeconds());
+    // task 4.7.1 (D6): the game's clock, one frame per editor tick while Playing, one per Step while Paused. 4.7.4 runs
+    // ScriptSystem::update(sceneWorld, frame.deltaSeconds) HERE, before the edges clear; until then the frame is
+    // counted and its edges consumed, so an edge made while paused reaches the next frame that runs (D11).
+    if (const GameFrame frame = playSessionValue.advance(frameClock.deltaSeconds()); frame.runs) {
+        playSessionValue.endGameFrame();
+    }
 
     // Task 2.2.5 (D14): drain the sink EVERY frame, visible or not -- shell_ui.cpp:74-79 never calls
     // onDraw for a hidden or tabbed-away panel, and Console shares its dock node with Assets. Not an
@@ -1253,7 +1317,16 @@ bool EditorApp::tick() {
     const WatchState watchState = classifyWatchState(project.isOpen(), assetWatcher.status());
     const StatusBarText statusText =
         statusBarText(project.isOpen(), abbreviateHome(projectRoot, homeDirectory), projectRoot, watchState,
-                      assetWatcher.status().unreadableDirs, assetCount(), frameReadout, backendLabel);
+                      assetWatcher.status().unreadableDirs, assetCount(), frameReadout, backendLabel,
+                      playStatusText(playSessionValue.mode(), playSessionValue.frame()));
+    // task 4.7.1 (D4): a history request that reaches a locked scene is dropped here and counted, the same way the
+    // file flow's are at the top of the tick -- the chords and the Edit menu are already off, so only the seams get
+    // this far.
+    if (playSessionValue.active()) {
+        playLockRefusals += (undoRequested ? 1U : 0U) + (redoRequested ? 1U : 0U);
+        undoRequested = false;
+        redoRequested = false;
+    }
     layer.beginFrame();
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout,
                     .placeUnplacedPanels = placeUnplacedPanels,
@@ -1274,7 +1347,11 @@ bool EditorApp::tick() {
                     .toolbarUndoRequest = pendingToolbarUndo,
                     .tools = &transformTools,
                     .statusText = &statusText,
-                    .chromeRecord = &chromeRecord};
+                    .chromeRecord = &chromeRecord,
+                    // task 4.7.1: the mode, the project's availability and a COPY of the pending control.
+                    .playMode = playSessionValue.mode(),
+                    .playAvailability = playAvailability(project.isOpen(), project.manifest().language),
+                    .playControlRequest = pendingPlayControl};
     // Consumed: a request never survives the tick that carried it. Unlike applyDefaultLayout below,
     // these are NOT read back out of `ui` -- drawShellUi clears them as it applies them, and reading
     // them back would re-arm the request every frame (task 2.4.1).
@@ -1288,11 +1365,13 @@ bool EditorApp::tick() {
     pendingToolbarSnapToggle = false;
     pendingToolbarSnapStep.reset();
     pendingToolbarUndo = false;
+    pendingPlayControl.reset();
     // rebuilt per frame (D7); deltaSeconds is this frame's SPIKE-CLAMPED delta (task 2.3.1);
     // commandStack is the editor's ONE undo history (task 2.4.1 D7); rootOrder is the editor's ONE
     // display order among root entities (task 2.4.2 D10); project is the open project (task 2.6.2
     // D1), CONST so no panel can swap it
-    PanelContext panelContext{sceneWorld, sceneSelection, commandStack, rootOrder, project, frameClock.deltaSeconds()};
+    PanelContext panelContext{sceneWorld,       sceneSelection,           commandStack, rootOrder, project,
+                              playSessionValue, frameClock.deltaSeconds()};
     // task 2.5.1 (plan A14): everything the File menu needs that PanelContext deliberately does not
     // carry (D17), built fresh each frame exactly like panelContext above.
     // task 2.6.1: the SAME named-local requirement as the drain above -- FileDialogHost::projectRoot
@@ -1308,6 +1387,12 @@ bool EditorApp::tick() {
         newProjectInputApplied = true;
     }
     pendingNewProjectInput.reset();  // a moved-from optional is still ENGAGED (E.4.3's one-shot rule)
+    // task 4.6.1: the language card's click-equivalent, the same one-shot: written only while the form is open, then
+    // dropped either way. It sets no form one-shot and closes nothing -- the typing-equivalent shape, not an answer.
+    if (pendingNewProjectLanguage.has_value() && projectFlow.form.open) {
+        projectFlow.form.language = *pendingNewProjectLanguage;
+    }
+    pendingNewProjectLanguage.reset();
     const std::string scenesRootForMenu = project.scenesRoot();
     FileMenuContext fileMenu{session,
                              fileFlow,
@@ -1319,9 +1404,14 @@ bool EditorApp::tick() {
                              newProjectInputApplied};
     pendingNewProjectAnswer = NewProjectAnswer::None;  // task E.6.4 (D27): a request dies with the tick that carried it
     drawShellUi(registry, panelContext, ui, fileMenu);  // menu bar -> dockspace -> panels
-    applyDefaultLayout = ui.applyDefaultLayout;         // drawShellUi clears it once consumed, and re-sets
-                                                        // it for View > Reset Layout
-    placeUnplacedPanels = ui.placeUnplacedPanels;       // cleared once consumed; nothing ever re-arms it
+    // task 4.7.1 (D4): a Quit pressed while a game plays. The request is raised now and the NEXT tick's top stops the
+    // game before applyFileRequests sees it.
+    if (ui.guardedQuitRequested) {
+        requestGuardedQuit();
+    }
+    applyDefaultLayout = ui.applyDefaultLayout;    // drawShellUi clears it once consumed, and re-sets
+                                                   // it for View > Reset Layout
+    placeUnplacedPanels = ui.placeUnplacedPanels;  // cleared once consumed; nothing ever re-arms it
     // task E.6.2 (D7): a committed snap toggle or step is written by the NEXT tick's flush (above), once.
     if (ui.snapCommitted) {
         editorPrefsDirty = true;
@@ -1390,6 +1480,13 @@ bool EditorApp::tick() {
     // task E.3.2's keyboard fix: which window holds the keyboard after this tick's draw walk. A plain
     // string copied out of the shell state, so this file still names no ImGui symbol (I159(c)).
     keyboardFocusPanel = std::move(ui.keyboardFocusWindow);
+    // task 4.7.1: the control the toolbar accepted (a click, a request or a chord), applied once; then game focus is
+    // decided from the keyboard's new holder (the Viewport two ticks after Play, D5).
+    if (ui.playControlPressed.has_value()) {
+        applyPlayControl(*ui.playControlPressed);
+    }
+    playSessionValue.setGameFocus(
+        gameHasFocus(playSessionValue.mode(), keyboardFocusPanel == VIEWPORT_ID, windowFocused));
     // D3: the offscreen scene pass runs AFTER the draw walk (only it knows this frame's panel size,
     // which is what removes the one-frame resize lag) and BEFORE endFrame (ImGui's command buffer is
     // acquired and submitted there; ours must be submitted first -- F8's ordering guarantee, and F7
@@ -1618,6 +1715,9 @@ std::size_t EditorApp::assetBrowserVisibleEntryCount() const noexcept {
 }
 bool EditorApp::assetBrowserListingContains(std::string_view leafName) const noexcept {
     return assetBrowserPanel != nullptr && assetBrowserPanel->cachedListingContains(leafName);
+}
+std::size_t EditorApp::assetBrowserKindFilteredCount() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->kindFilteredEntriesDrawn() : std::size_t{0};
 }
 
 // task E.3.3: re-pointed at the SHARED service. A moved-from app holds a null pointer, exactly as it
@@ -1908,6 +2008,7 @@ std::uint64_t EditorApp::panelDrawnCount(const char* id) const noexcept { return
 std::size_t EditorApp::projectStateWriteCount() const noexcept { return projectStateWrites; }
 
 // ---- task E.4.2: the containment offer's three black-box accessors -------------------------------
+bool EditorApp::unsavedChangesPromptOpen() const noexcept { return fileFlow.confirmOpen; }
 bool EditorApp::sceneContainmentOfferOpen() const noexcept { return fileFlow.containmentOffer.open; }
 std::string_view EditorApp::sceneContainmentOfferProject() const noexcept {
     return fileFlow.containmentOffer.projectRoot;
@@ -1964,6 +2065,10 @@ std::uint32_t EditorApp::viewportUnresolvedMaterials() const noexcept {
 
 // ---- task E.5.2: the create pipeline --------------------------------------------------------------
 void EditorApp::applyCreate(CreateKind kind) {
+    if (playSessionValue.active()) {  // task 4.7.1 (D4): the scene belongs to the game while it plays
+        ++playLockRefusals;
+        return;
+    }
     if (static_cast<std::size_t>(kind) >= CREATE_KIND_COUNT) {
         return;  // defensive: no host can produce one
     }
@@ -1996,12 +2101,17 @@ void EditorApp::applyCreate(CreateKind kind) {
 // from the live World. The payload's `kind` byte was a peek hint and is never authoritative: a record
 // can vanish, or gain a MeshRenderer, between the accept and this drain.
 void EditorApp::applyHierarchyDrop(const HierarchyAssetDrop& drop) {
+    if (playSessionValue.active()) {  // task 4.7.1 (D4): a drop that landed in play is refused, whatever it carries
+        ++playLockRefusals;
+        return;
+    }
     const AssetRecord* const record = assetDatabase.findByGuid(drop.payload.guid);
     if (record == nullptr) {
         AERO_LOG_WARN("assets: the dropped asset is no longer in this project");
         return;
     }
-    const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
+    const AssetKind kind =
+        classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false, effectiveProjectLanguage(project));
     const bool hasMesh = drop.targetRow.valid() && sceneWorld.has<MeshRenderer>(drop.targetRow);
     const DropSurface surface = drop.targetRow.valid() ? DropSurface::HierarchyRow : DropSurface::HierarchyVoid;
     switch (classifyAssetDrop(kind, surface, hasMesh, /*fieldKind=*/std::nullopt)) {
@@ -2026,6 +2136,10 @@ void EditorApp::applyHierarchyDrop(const HierarchyAssetDrop& drop) {
 }
 
 void EditorApp::applyViewportDrop(const ViewportAssetDrop& drop) {
+    if (playSessionValue.active()) {  // task 4.7.1 (D4): as the Hierarchy's drop above
+        ++playLockRefusals;
+        return;
+    }
     const AssetRecord* const record = assetDatabase.findByGuid(drop.payload.guid);
     if (record == nullptr) {
         AERO_LOG_WARN("assets: the dropped asset is no longer in this project");
@@ -2034,7 +2148,8 @@ void EditorApp::applyViewportDrop(const ViewportAssetDrop& drop) {
     if (viewportPanel == nullptr) {
         return;  // no viewport, no camera, no placement -- and no way this drop was ever offered
     }
-    const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
+    const AssetKind kind =
+        classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false, effectiveProjectLanguage(project));
     const Entity target = viewportPanel->pickAt(sceneWorld, drop.ndc);
     const bool hasMesh = target.valid() && sceneWorld.has<MeshRenderer>(target);
     switch (classifyAssetDrop(kind, DropSurface::Viewport, hasMesh, /*fieldKind=*/std::nullopt)) {
@@ -2472,6 +2587,9 @@ void EditorApp::requestClearRecentProjects() noexcept { projectFlow.clearRecents
 void EditorApp::requestNewProjectInput(std::string name, std::string location) {
     pendingNewProjectInput = NewProjectInput{std::move(name), std::move(location)};
 }
+
+// task 4.6.1: the same next-tick shape; tick() applies it before the draw, only while the form is open.
+void EditorApp::requestNewProjectLanguage(ProjectLanguage language) noexcept { pendingNewProjectLanguage = language; }
 
 // task E.4.2: the requestUndo()/requestLayoutReset()/requestAssetBrowserViewMode shape -- each records
 // EXACTLY what the modal's own button records, and is applied on the NEXT tick's step-0 drain. Never

@@ -354,10 +354,12 @@ separate sweeps. Stripped on the next canonical save, exactly like §2.1's envel
 ### 4.2 Language
 
 `ProjectLanguage` is `"ts"` (TypeScript) or `"cpp"` (C++), fixed at creation and never mixed
-(ADR-008). New Project always writes `"ts"` in this build; `"cpp"` is accepted on read so a
-hand-edited or future-tool-authored file opens correctly, and enforcing the C++ project workflow
-itself is a later task's job — purely additive over a field that already round-trips. Any other value
-is a hard reject, never a silent fallback.
+(ADR-008). New Project writes the language its dialog chose, `"ts"` preselected on every open (the choice is not
+remembered), and the editor never writes the field again: `writeProjectText` has one caller, `createProject`, so a
+language cannot change after creation. The field is read on every open; a hand edit takes effect on the next open. A
+C++ project gates the editor (task 4.6.1): a `.ts` file is Text there rather than a Script asset, and Add Component
+offers no component whose field names a Script asset. With no project open the editor behaves as TypeScript, and
+nothing is hidden. Any other value is a hard reject, never a silent fallback.
 
 ### 4.3 Project name validation
 
@@ -670,8 +672,10 @@ cannot join it, and every byte in the file stays 7-bit, so a compiler's code pag
 each template once from the start and appends: replaced text is never rescanned, so a project named `@AERO_PROJECT_ID@`
 keeps that text literally. The title reaches the window as data and never as a format string.
 
-The New Project call that writes these files is 4.6.1's. Until then the writer has no product caller, and the test that
-builds and runs a generated project (`sdk.template`) is the one caller.
+The writer's one product caller is New Project, for `"cpp"` (task 4.6.1): it runs once, when the project is created, and
+never on a later open, so a `main.cpp` the developer deleted on purpose is not put back. A file it cannot write costs
+one WARN, and the project opens anyway: the manifest is valid and nothing is rolled back. The test that builds and runs
+a generated project (`sdk.template`) is the other caller.
 
 ## 5. Asset meta format v1
 

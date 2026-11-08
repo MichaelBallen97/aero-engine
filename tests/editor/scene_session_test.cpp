@@ -41,6 +41,8 @@ using engine::editor::Selection;
 
 namespace {
 
+constexpr auto TS = engine::editor::ProjectLanguage::Ts;
+
 // Count by LEVEL, never records.size() (the command_stack_test.cpp precedent, plan A31):
 // AERO_LOG_DEBUG is compiled out under NDEBUG, so counting by level makes an assertion identical on
 // both presets.
@@ -1290,7 +1292,7 @@ TEST_CASE("scene_session: a refused OPEN fills the offer and names the owning pr
     const std::string rootA = tmp.join("ProjA");
     // A REAL sibling project on disk, built with createProject so the name comes from the same writer
     // loadProjectFrom reads -- never a hand-written manifest that could drift from the real one.
-    const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0");
+    const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0", TS);
     REQUIRE(b.problem == CreateProblem::Ok);
     const std::string foreign = b.root + "/scenes/x.scene.json";
     REQUIRE(engine::editor::writeTextFileAtomic(foreign, "{}").empty());
@@ -1339,7 +1341,7 @@ TEST_CASE("scene_session: a refused SAVE fills the offer but offers NO project (
     // THE SAME sibling project exists and is perfectly findable. A save refusal must still offer
     // NOTHING -- accepting one routes through adoptProject -> newScene -> World::clear(), which would
     // discard the very work the user pressed Save to preserve.
-    const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0");
+    const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0", TS);
     REQUIRE(b.problem == CreateProblem::Ok);
 
     engine::World world;
@@ -1683,7 +1685,7 @@ TEST_CASE(
     const std::string rootA = tmp.join("ProjA");
     // A REAL project on disk, so the leak's consequence is an ACTUAL adopt rather than a failed one:
     // with the defect present the second applyFileRequests below opens ProjB for real.
-    const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0");
+    const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0", TS);
     REQUIRE(b.problem == CreateProblem::Ok);
 
     FlowFixture f;
@@ -1759,8 +1761,8 @@ TEST_CASE("scene_session: a NEW refusal clears the previous offer's unanswered b
     const LogFixture fixture;
     const TempDir tmp;
     const std::string rootA = tmp.join("ProjA");
-    const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0");
-    const ProjectCreateOutcome c = createProject(tmp.utf8(), "ProjC", "0.1.0");
+    const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0", TS);
+    const ProjectCreateOutcome c = createProject(tmp.utf8(), "ProjC", "0.1.0", TS);
     REQUIRE(b.problem == CreateProblem::Ok);
     REQUIRE(c.problem == CreateProblem::Ok);
     REQUIRE(b.root != c.root);  // anti-vacuity: the two targets really are different projects
@@ -2220,7 +2222,7 @@ TEST_CASE("scene_session: a refused Save As name abandons the pending chain, bot
 
     SUBCASE("a guarded Open Project") {
         // A REAL project, so a leaked target would ADOPT rather than fail.
-        const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0");
+        const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0", TS);
         REQUIRE(b.problem == CreateProblem::Ok);
         FlowFixture f;
         SceneSession session;

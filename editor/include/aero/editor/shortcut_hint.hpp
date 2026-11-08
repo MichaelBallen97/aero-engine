@@ -16,9 +16,10 @@ namespace engine::editor {
 struct ChordModifiers {
     bool ctrl = false;
     bool shift = false;
+    bool alt = false;  // task 4.7.1: Option on macOS, Alt elsewhere; appended last so no initialiser moves
 };
 
-// `key` behind its modifiers in a fixed order -- the command modifier, then Shift -- each followed by '+';
+// `key` behind its modifiers in a fixed order -- the command modifier, then Alt, then Shift -- each followed by '+';
 // the key alone when there are none ("F2" stays "F2"). A call site passes currentHostOs(), never a literal host.
 [[nodiscard]] std::string chordHint(HostOs os, ChordModifiers mods, std::string_view key);
 

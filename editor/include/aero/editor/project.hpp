@@ -32,10 +32,6 @@ inline constexpr std::size_t MAX_PROJECT_NAME_BYTES = 64;
 enum class ProjectLanguage : std::uint8_t { Ts = 0, Cpp };
 [[nodiscard]] std::string_view languageKey(ProjectLanguage language) noexcept;  // "ts" / "cpp"
 [[nodiscard]] std::optional<ProjectLanguage> languageFromKey(std::string_view key) noexcept;
-// task E.6.4 (D13): the ONE language New Project writes. createProject's manifest and the New Project dialog's
-// selected card both read it, so the dialog cannot show a language other than the one Create writes. Task 4.6.1
-// turns it into a choice.
-inline constexpr ProjectLanguage NEW_PROJECT_LANGUAGE = ProjectLanguage::Ts;
 
 // The parsed document. VALUES only -- no path to the file, no handles, nothing live.
 struct ProjectManifest {
@@ -135,6 +131,10 @@ private:
     ProjectManifest projectManifest;
 };
 
+// task 4.6.1 (call 4): the language the open project was created in; Ts with no project open (there is nothing to
+// attach, so every language-gated surface reads its TypeScript answer). The manifest is read unguarded.
+[[nodiscard]] ProjectLanguage effectiveProjectLanguage(const ProjectSession& session) noexcept;
+
 // ---- recents, pure over a vector -------------------------------------------------------------------
 struct RecentProjects {
     std::vector<std::string> paths;  // absolute, normalized, most-recent FIRST
@@ -186,7 +186,7 @@ struct ProjectCreateOutcome {
 };
 // D6/D7/AC-9..AC-15. Creates nothing until every purely-lexical check has passed.
 [[nodiscard]] ProjectCreateOutcome createProject(std::string_view locationUtf8, std::string_view nameUtf8,
-                                                 std::string_view engineVersionUtf8);
+                                                 std::string_view engineVersionUtf8, ProjectLanguage language);
 
 [[nodiscard]] bool directoryExists(std::string_view utf8);
 [[nodiscard]] bool directoryIsEmpty(std::string_view utf8);  // false when it is not a directory

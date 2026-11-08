@@ -54,12 +54,13 @@ struct AssetPickerCandidates {
     bool truncated = false;
 };
 // A record is offered iff its guid is VALID, assetPickerAccepts(rules, its kind), AND
-// matchesFilter(leafOf(path), false, filter) -- the browser's own text-and-kind predicate, COMPOSED,
-// never restated. Both must hold: `filter` is the popup's combo, `rules` is the field's law.
-// Capped at `cap`; `total` is never capped. Scratch-reusing (the RenderViewScratch rule): `out.items`
-// is cleared, never shrunk.
+// matchesFilter(leafOf(path), false, filter, language) -- the browser's own text-and-kind predicate, COMPOSED,
+// never restated. `language` is the open project's (task 4.6.1): a C++ project's .ts is Text, never a Script. Both must
+// hold: `filter` is the popup's combo, `rules` is the field's law. Capped at `cap`; `total` is never capped.
+// Scratch-reusing (the RenderViewScratch rule): `out.items` is cleared, never shrunk.
 void buildAssetPickerCandidates(std::span<const AssetRecord> records, const AssetPickerRules& rules,
-                                const AssetFilter& filter, std::size_t cap, AssetPickerCandidates& out);
+                                ProjectLanguage language, const AssetFilter& filter, std::size_t cap,
+                                AssetPickerCandidates& out);
 
 // THE CURSOR is LINEAR over [None, items[0], items[1], ...]: index 0 is None, index i+1 is items[i].
 // Two keys are therefore enough for the whole grid, and the reducer needs no notion of columns --

@@ -12,6 +12,7 @@
 #include <aero/editor/entity_presentation.hpp>
 #include <aero/editor/material_card.hpp>
 #include <aero/editor/panel_context.hpp>
+#include <aero/editor/play_session.hpp>  // task 4.7.1: sceneLocked
 #include <aero/editor/project_files.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/editor/thumbnail_cache.hpp>
@@ -125,6 +126,9 @@ struct EditGate {
 // an arm that writes before the push.
 void pushFieldEdit(PanelContext& context, Entity entity, const ComponentEntry& entry, const FieldEntry& field,
                    FieldValue after) {
+    if (sceneLocked(context.play.mode())) {  // task 4.7.1 (D4): no field edit reaches the stack while a game plays
+        return;
+    }
     CommandContext cmd = toCommandContext(context);
     context.commands.push(cmd, std::make_unique<SetFieldCommand>(entity, entry.typeId, field.name, entry.name,
                                                                  field.value, std::move(after)));
@@ -167,6 +171,12 @@ void InspectorPanel::onDraw(PanelContext& context) {
     frameNamedSelection = std::exchange(pendingNamedSelection, std::nullopt);
     frameComponentMenu = std::exchange(pendingComponentMenu, std::nullopt);  // task E.6.3: E.5.2's one-shot shape
     frameCardOpen = std::exchange(pendingCardOpen, std::nullopt);            // task E.6.3 (fix 7): the same shape
+    // task 4.7.1 (D4): the scene is the game's while it plays. The seams that stand in for a click on an editing
+    // control are dropped with the control, as a disabled one drops a click; card disclosure stays live (inspection).
+    if (sceneLocked(context.play.mode())) {
+        frameNamedSelection.reset();
+        frameComponentMenu.reset();
+    }
     ++drawRecordValue.framesRecorded;  // task E.6.3: per-frame counts, before any early return below
     beginCardRecordFrame(drawRecordValue.cards);
     drawRecordValue.cardsOpen = 0;
@@ -177,6 +187,9 @@ void InspectorPanel::onDraw(PanelContext& context) {
     drawRecordValue.addComponentDashed = false;
     drawRecordValue.addComponentFirstDashWidth = 0.0F;
     drawRecordValue.addComponentFirstDashGap = 0.0F;
+    drawRecordValue.addComponentDashColour = 0U;  // 0 when nothing was drawn: a frame that returns below keeps none
+    drawRecordValue.addComponentLabelColour = 0U;
+    drawRecordValue.addComponentFillColour = 0U;
     headersSubmittedValue = 0;  // task E.6.1: a PER-FRAME count, taken before any early return below
     // task E.6.1 (I289): this frame's geometry, likewise before any early return. drawAxisRow writes the two
     // axis values, so a frame that draws no axis row reads 0 for both.
@@ -311,7 +324,7 @@ void InspectorPanel::drawComponent(PanelContext& context, Entity primary, const 
             ImGui::OpenPopup("##componentMenu");
         }
         if (ImGui::BeginPopup("##componentMenu")) {
-            if (ImGui::MenuItem("Remove Component")) {
+            if (ImGui::MenuItem("Remove Component", nullptr, false, !sceneLocked(context.play.mode()))) {
                 pending = PendingAction{.kind = ActionKind::RemoveComponent, .type = entry.typeId};
             }
             ImGui::EndPopup();  // ONLY when BeginPopup returned true
@@ -330,9 +343,12 @@ void InspectorPanel::drawComponent(PanelContext& context, Entity primary, const 
                 // the card's content channel (imgui.h:3532-3533): legal, I318.
                 ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, labelWidth);
                 ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
+                // task 4.7.1 (D4): every field reads live and none can be edited while a game plays.
+                ImGui::BeginDisabled(sceneLocked(context.play.mode()));
                 for (const FieldEntry& field : entry.fields) {
                     drawField(context, primary, entry, field);
                 }
+                ImGui::EndDisabled();  // 1:1 with BeginDisabled -- nothing between them can leave
                 ImGui::EndTable();
                 drawRecordValue.cards.lastBodyTableMaxX = ImGui::GetItemRectMax().x;  // EndTable's item: OuterRect
                 drawRecordValue.cards.lastBodyTableMinY = ImGui::GetItemRectMin().y;  // where ImGui PLACED it (I336)
@@ -378,6 +394,9 @@ void InspectorPanel::drawFieldResetMenu(PanelContext& context, Entity primary, c
 
 void InspectorPanel::resetField(PanelContext& context, Entity primary, const ComponentEntry& entry,
                                 const FieldEntry& field, FieldValue after) {
+    if (sceneLocked(context.play.mode())) {  // task 4.7.1 (D4): a reset is a push too
+        return;
+    }
     // BOTH SIDES, EXPLICITLY. A reset is a discrete edit, so it must never merge with a drag that was
     // released on the same field a moment earlier -- and a MenuItem inside a per-axis popup claims
     // ActiveId, which EndGroup then forwards, so gateForLastItem() would break the chain on the click
@@ -737,6 +756,7 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             // thumbnail key on its OWN queue, and rule 4 runs against the file's CURRENT name. "" for every
             // other kind, and until the card has been read -- the sentence is then byte-identical to today's.
             // `subtitle` views the card, which is stable for this whole draw walk.
+            const ProjectLanguage language = effectiveProjectLanguage(context.project);  // task 4.6.1
             std::string_view subtitle;
             if (thumbnails != nullptr && database != nullptr) {
                 if (const AssetRecord* const record = database->findByGuid(std::get<Guid>(field.value));
@@ -747,7 +767,7 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
                     }
                 }
             }
-            const GuidFieldRow row = guidFieldRow(std::get<Guid>(field.value), database, subtitle);
+            const GuidFieldRow row = guidFieldRow(std::get<Guid>(field.value), database, language, subtitle);
             const std::optional<AssetKind> wanted = assetReferenceKindFromToken(field.assetKindToken);
             const std::string_view unknown = (!field.assetKindToken.empty() && !wanted.has_value())
                                                  ? std::string_view(field.assetKindToken)
@@ -771,7 +791,7 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
                                               .unknownToken = unknown,
                                               .database = database,
                                               .thumbnails = thumbnails};
-                picked = drawAssetReferenceField(inputs, *assetPicker);
+                picked = drawAssetReferenceField(inputs, language, *assetPicker);
                 const ReferenceFieldRecord& drew = picked.drawn;  // task E.6.3: what the field drew
                 drawRecordValue.referenceSwatchDrawn = drawRecordValue.referenceSwatchDrawn || drew.swatchDrawn;
                 drawRecordValue.referenceWellDrawn = drawRecordValue.referenceWellDrawn || drew.wellDrawn;
@@ -833,23 +853,32 @@ void InspectorPanel::drawAddComponent(PanelContext& context, Entity primary) {
     const AddComponentLayout layout = addComponentLayout(start.x, ImGui::GetContentRegionAvail().x,
                                                          faceTextWidth(PanelFace::Strong, ADD_COMPONENT_LABEL), s);
     ImGui::SetCursorScreenPos(ImVec2(layout.minX, start.y));
+    // task 4.7.1 (D4, AC-11): while a game plays the button's outline and label carry ImGui's disabled alpha (their
+    // colours go through GetColorU32 inside the scope, which scales the alpha byte by Style.Alpha) and the button
+    // cannot open the popup. Nothing between BeginDisabled and EndDisabled returns.
+    ImGui::BeginDisabled(sceneLocked(context.play.mode()));
     const bool pressed = ImGui::InvisibleButton("##addComponentButton", ImVec2(layout.width, layout.height));
     const ImVec2 min = ImGui::GetItemRectMin();
     const ImVec2 max = ImGui::GetItemRectMax();
     ImDrawList* const list = ImGui::GetWindowDrawList();
     const float rounding = ImGui::GetStyle().FrameRounding;
+    const int fillVertices = list->VtxBuffer.Size;
     if (ImGui::IsItemActive()) {
         roleFill(list, min, max, ChromeRole::Active, rounding);
     } else if (ImGui::IsItemHovered()) {
         roleFill(list, min, max, ChromeRole::Hover, rounding);
     }
+    drawRecordValue.addComponentFillColour =
+        list->VtxBuffer.Size > fillVertices ? list->VtxBuffer[fillVertices].col : 0U;
     // What the list RECEIVES across the outline, never a flag set beside the call (the code-review round's finding
     // 11): each dash is one AddRectFilled at alpha 255 with no rounding, four vertices (imgui_draw.cpp:1530-1538).
     const int dashVertices = list->VtxBuffer.Size;
-    dashedRect(list, min, max);
+    dashedRect(list, min, max, ImGui::GetColorU32(toImU32(EDITOR_THEME.panels.addComponentDash)));
     drawRecordValue.addComponentDashVertices = list->VtxBuffer.Size - dashVertices;
     // The gaps stay open (D5), read off the same vertices: PrimRect writes a, (b.x, a.y), b, (a.x, b.y)
     // (imgui_draw.cpp:776-779) and the top run draws first, so [0]-[1] spans the first dash and [4] starts the next.
+    drawRecordValue.addComponentDashColour =
+        drawRecordValue.addComponentDashVertices > 0 ? list->VtxBuffer[dashVertices].col : 0U;
     if (drawRecordValue.addComponentDashVertices >= 8) {
         const float dashFrom = list->VtxBuffer[dashVertices].pos.x;
         const float dashTo = list->VtxBuffer[dashVertices + 1].pos.x;
@@ -857,8 +886,12 @@ void InspectorPanel::drawAddComponent(PanelContext& context, Entity primary) {
         drawRecordValue.addComponentFirstDashGap = list->VtxBuffer[dashVertices + 4].pos.x - dashTo;
     }
     const float labelY = min.y + ((max.y - min.y - panelFacePoints(PanelFace::Strong)) * 0.5F);
+    const int labelVertices = list->VtxBuffer.Size;
     drawRoleText(list, PanelFace::Strong, ImVec2(min.x + (EDITOR_THEME.panels.addComponentPaddingX * s), labelY),
-                 ChromeRole::Accent, ADD_COMPONENT_LABEL);
+                 ImGui::GetColorU32(roleU32(ChromeRole::Accent)), ADD_COMPONENT_LABEL);
+    drawRecordValue.addComponentLabelColour =
+        list->VtxBuffer.Size > labelVertices ? list->VtxBuffer[labelVertices].col : 0U;
+    ImGui::EndDisabled();  // 1:1 with BeginDisabled; the fill, the outline and the label all drew inside it
     drawRecordValue.addComponentMin = Vec2{min.x, min.y};
     drawRecordValue.addComponentMax = Vec2{max.x, max.y};
     drawRecordValue.addComponentDashed = drawRecordValue.addComponentDashVertices > 0;
@@ -868,13 +901,17 @@ void InspectorPanel::drawAddComponent(PanelContext& context, Entity primary) {
     if (ImGui::BeginPopup("##addComponent")) {
         bool anyAbsent = false;
         const std::size_t count = context.world.componentTypeCount();
+        const ProjectLanguage language = effectiveProjectLanguage(context.project);  // task 4.6.1 (D2)
         for (std::size_t i = 0; i < count; ++i) {
             const ComponentTypeId candidateId = context.world.componentTypeAt(i);
             if (context.world.hasRaw(candidateId, primary)) {
                 continue;
             }
-            anyAbsent = true;
             const std::string_view fullName = context.world.componentTypeName(candidateId);
+            if (!addComponentOffered(fullName, language)) {
+                continue;  // a C++ project offers no component that names a Script asset
+            }
+            anyAbsent = true;
             shortNameScratch = std::string(shortComponentName(fullName));
             // Review finding 4: keyed on the loop index -- two registered types can share a short name.
             ImGui::PushID(static_cast<int>(i));
@@ -893,6 +930,10 @@ void InspectorPanel::drawAddComponent(PanelContext& context, Entity primary) {
 }
 
 void InspectorPanel::applyPending(PanelContext& context, Entity primary) {
+    if (sceneLocked(context.play.mode())) {  // task 4.7.1 (D4): an add or a remove recorded in play is dropped
+        pending = PendingAction{};
+        return;
+    }
     switch (pending.kind) {
         case ActionKind::None:
             break;

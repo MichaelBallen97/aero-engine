@@ -87,12 +87,13 @@ constexpr std::array<std::string_view, 8> THUMBNAIL_DECODABLE_EXTENSIONS{"png", 
 
 }  // namespace
 
-AssetKind classifyAssetKind(std::string_view fileName, bool isDirectory) noexcept {
+AssetKind classifyAssetKind(std::string_view fileName, bool isDirectory, ProjectLanguage language) noexcept {
     if (isDirectory) {
         return AssetKind::Folder;
     }
-    // task 4.4.1: before the tables, so a .ts the transpiler bundles is never Text.
-    if (isScriptAssetName(fileName)) {
+    // task 4.4.1: before the tables, so a .ts the transpiler bundles is never Text. Task 4.6.1: only a TypeScript
+    // project transpiles, so a C++ project's .ts falls through to TEXT_EXTENSIONS.
+    if (language == ProjectLanguage::Ts && isScriptAssetName(fileName)) {
         return AssetKind::Script;
     }
     const std::string_view ext = rawExtensionOf(fileName);
@@ -162,7 +163,7 @@ constexpr std::size_t ICON_LABEL_MAX_LENGTH = 4;
 
 std::string iconLabelFor(std::string_view fileName) {
     // task 4.4.4: ahead of the extension rule, which would keep "AERB" of a long extension.
-    if (classifyAssetKind(fileName, /*isDirectory=*/false) == AssetKind::Prefab) {
+    if (classifyAssetKind(fileName, /*isDirectory=*/false, KIND_LANGUAGE_NEUTRAL) == AssetKind::Prefab) {
         return "PFAB";
     }
     const std::string_view ext = rawExtensionOf(fileName);
@@ -251,9 +252,10 @@ int gridColumnsFor(float availWidth, float tileWidth, float spacing) noexcept {
     return static_cast<int>(columnsF);  // floor: a positive float truncates toward zero, i.e. floors
 }
 
-bool matchesFilter(std::string_view leafName, bool isDirectory, const AssetFilter& filter) noexcept {
+bool matchesFilter(std::string_view leafName, bool isDirectory, const AssetFilter& filter,
+                   ProjectLanguage language) noexcept {
     if (!filter.anyKind) {
-        const AssetKind kind = classifyAssetKind(leafName, isDirectory);
+        const AssetKind kind = classifyAssetKind(leafName, isDirectory, language);
         if (kind != filter.kind) {
             return false;
         }
@@ -289,18 +291,20 @@ bool isBrowserVisibleName(std::string_view leafName, bool isDirectory) noexcept 
     return isDirectory || (!isMetaFileName(leafName) && !isIgnoredAssetName(leafName));
 }
 
-std::vector<std::size_t> filterEntriesByKind(std::span<const FileEntry> entries, const AssetFilter& filter) {
+std::vector<std::size_t> filterEntriesByKind(std::span<const FileEntry> entries, const AssetFilter& filter,
+                                             ProjectLanguage language) {
     std::vector<std::size_t> indices;
     indices.reserve(entries.size());
     for (std::size_t i = 0; i < entries.size(); ++i) {
-        if (matchesFilter(entries[i].name, entries[i].isDirectory, filter)) {
+        if (matchesFilter(entries[i].name, entries[i].isDirectory, filter, language)) {
             indices.push_back(i);
         }
     }
     return indices;
 }
 
-SearchResult searchAssets(std::span<const AssetRecord> records, const AssetFilter& filter, std::size_t cap) {
+SearchResult searchAssets(std::span<const AssetRecord> records, const AssetFilter& filter, ProjectLanguage language,
+                          std::size_t cap) {
     SearchResult result;
     for (std::size_t i = 0; i < records.size(); ++i) {
         const AssetRecord& record = records[i];
@@ -310,7 +314,7 @@ SearchResult searchAssets(std::span<const AssetRecord> records, const AssetFilte
                                           : std::string_view(record.relativePath).substr(lastSlash + 1);
         // A record never carries its own isDirectory flag (AssetDatabase records only FILES) -- every
         // record here is a file, so `isDirectory` is always false at this call site.
-        if (!matchesFilter(leaf, /*isDirectory=*/false, filter)) {
+        if (!matchesFilter(leaf, /*isDirectory=*/false, filter, language)) {
             continue;
         }
         ++result.total;  // UNCAPPED (seed S15) -- incremented for every match, capped or not

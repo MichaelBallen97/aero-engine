@@ -362,20 +362,22 @@ void drawWelcomeBody(FileMenuContext& fileMenu, const WelcomeLayout& layout, flo
 
 // ---- the New Project dialog (D10-D20) --------------------------------------------------------------------------
 
-void drawLanguageCards(ImDrawList* list, const NewProjectDialogLayout& layout, NewProjectRecord* record) {
+void drawLanguageCards(ImDrawList* list, const NewProjectDialogLayout& layout, ProjectLanguage& chosen,
+                       NewProjectRecord* record) {
     const auto strongWidth = [](std::string_view text) { return faceTextWidth(PanelFace::Strong, text); };
     const auto smallWidth = [](std::string_view text) { return faceTextWidth(PanelFace::BodySmall, text); };
-    // D18: ONE disabled pair around both cards, whatever the build -- task 4.6.1 owns the choice, and the card drawn
-    // selected is the language Create writes (NEW_PROJECT_LANGUAGE).
-    ImGui::BeginDisabled();
+    // D18: the card's own click is the only writer of the form's language inside the dialog; the next frame draws the
+    // new selection.
     for (std::size_t i = 0; i < NEW_PROJECT_LANGUAGE_CARDS.size(); ++i) {
         const LanguageCard& card = NEW_PROJECT_LANGUAGE_CARDS[i];
-        const bool selected = languageCardSelected(card.language);
+        const bool selected = languageCardSelected(card.language, chosen);
         if (i > 0U) {
             ImGui::SameLine(0.0F, layout.cardGap);
         }
         ImGui::PushID(static_cast<int>(i));
-        ImGui::InvisibleButton("##language", ImVec2(layout.cardWidth, layout.cardHeight));
+        if (ImGui::InvisibleButton("##language", ImVec2(layout.cardWidth, layout.cardHeight))) {
+            chosen = card.language;
+        }
         ImGui::PopID();
         const ImVec2 min = ImGui::GetItemRectMin();
         const ImVec2 max = ImGui::GetItemRectMax();
@@ -399,12 +401,10 @@ void drawLanguageCards(ImDrawList* list, const NewProjectDialogLayout& layout, N
         const ChromeRole titleRole = selected ? ChromeRole::TextBright : ChromeRole::Text;
         drawFadedText(list, PanelFace::Strong, ImVec2(textX, titleY), titleRole, title);
         drawFadedText(list, PanelFace::BodySmall, ImVec2(textX, subtitleY), ChromeRole::TextLabel, subtitle);
-        itemTooltip(LANGUAGE_CONTROL_TOOLTIP);
         if (record != nullptr) {
             recordItem(record->language[i], selected);
         }
     }
-    ImGui::EndDisabled();
 }
 
 void drawInfoBox(ImDrawList* list, const NewProjectDialogLayout& layout) {
@@ -433,7 +433,7 @@ struct FooterPresses {
 };
 
 FooterPresses drawFooter(ImDrawList* list, const NewProjectDialogLayout& layout, std::string_view name,
-                         bool createEnabled, NewProjectRecord* record) {
+                         ProjectLanguage language, bool createEnabled, NewProjectRecord* record) {
     // The band is the 1-dp rule, the 64-dp strip and the outer border's row (D5): the rule paints its first row and the
     // fill stops one border short of the bottom, so the outline the window drew is never painted over.
     const ImVec2 top = ImGui::GetCursorScreenPos();   // the window's left edge: the body is unindented
@@ -453,7 +453,8 @@ FooterPresses drawFooter(ImDrawList* list, const NewProjectDialogLayout& layout,
         createWidth = ImGui::CalcTextSize(NEW_PROJECT_CREATE_LABEL.data()).x + (2.0F * layout.buttonPadding.x);
     }
     const NewProjectFooterLayout footer = newProjectFooterLayout(layout, cancelWidth, createWidth);
-    const std::string summary = fitTextRight(newProjectFooterSummary(name), footer.summaryMaxWidth, monoSmallWidth);
+    const std::string summary =
+        fitTextRight(newProjectFooterSummary(name, language), footer.summaryMaxWidth, monoSmallWidth);
     const float summaryY = top.y + ((layout.footerHeight - panelFacePoints(PanelFace::MonoSmall)) * 0.5F);
     drawRoleText(list, PanelFace::MonoSmall, ImVec2(top.x + footer.summaryX, summaryY), ChromeRole::TextMuted, summary);
     FooterPresses presses;
@@ -611,18 +612,22 @@ void drawNewProjectBody(FileMenuContext& fileMenu, NewProjectForm& form, const N
             roleText(ChromeRole::TextLabel, NEW_PROJECT_LANGUAGE_LABEL);
         }
         gap(layout.labelGap);
-        drawLanguageCards(list, layout, record);
+        drawLanguageCards(list, layout, form.language, record);
         gap(layout.hintGap);
         {
             const ScopedFace face(PanelFace::MonoSmall);
-            const std::string hint = fitTextRight(NEW_PROJECT_LANGUAGE_HINT, layout.contentWidth, monoSmallWidth);
+            const std::string hint =
+                fitTextRight(newProjectLanguageHint(form.language), layout.contentWidth, monoSmallWidth);
             roleText(ChromeRole::TextFaint, hint);
+            if (record != nullptr) {
+                record->languageHint = hint;
+            }
         }
         gap(layout.infoGap);
         drawInfoBox(list, layout);
         gap(layout.infoGap);
         ImGui::Unindent(layout.paddingX);
-        const FooterPresses presses = drawFooter(list, layout, form.name, createEnabled, record);
+        const FooterPresses presses = drawFooter(list, layout, form.name, form.language, createEnabled, record);
         dismiss = dismiss || presses.cancel;
         commit = presses.create;
     }

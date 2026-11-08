@@ -40,6 +40,8 @@ std::ostream& operator<<(std::ostream& out, ScriptTypesWrite state) { return out
 
 namespace {
 
+constexpr auto TS = engine::editor::ProjectLanguage::Ts;
+
 namespace ed = engine::editor;
 
 // The declarations path relative to a project root: the contract DT8's template and DT11's writer must agree on.
@@ -423,7 +425,7 @@ TEST_CASE("script_types: createAndOpenProject writes the declarations and the ts
     scope.sink()->take(records);
     records.clear();
 
-    REQUIRE(ed::createAndOpenProject(f.ctx, f.commands, session, f.project, dir.utf8(), "demo"));
+    REQUIRE(ed::createAndOpenProject(f.ctx, f.commands, session, f.project, dir.utf8(), "demo", TS));
     REQUIRE(f.projectSession.isOpen());
     const std::string root(f.projectSession.root());
 
@@ -443,7 +445,7 @@ TEST_CASE("script_types: openProjectPath adds both files to an older project and
     const ed::LogSinkScope scope;
     std::vector<ed::LogEntry> records;
     const TempDir dir("DT18");
-    const ed::ProjectCreateOutcome created = ed::createProject(dir.utf8(), "demo", "0.1.0");
+    const ed::ProjectCreateOutcome created = ed::createProject(dir.utf8(), "demo", "0.1.0", TS);
     REQUIRE(created.problem == ed::CreateProblem::Ok);
     const std::string root = created.root;
     CHECK_FALSE(ed::fileExists(root + "/" + std::string(ed::ASSET_CACHE_DIR_NAME)));
@@ -487,7 +489,7 @@ TEST_CASE("script_types: a C++ project is opened without either file (DT19)") {
     const ed::LogSinkScope scope;
     std::vector<ed::LogEntry> records;
     const TempDir dir("DT19");
-    const ed::ProjectCreateOutcome created = ed::createProject(dir.utf8(), "demo", "0.1.0");
+    const ed::ProjectCreateOutcome created = ed::createProject(dir.utf8(), "demo", "0.1.0", TS);
     REQUIRE(created.problem == ed::CreateProblem::Ok);
     const std::string root = created.root;
     const std::string manifestPath = root + "/" + std::string(ed::PROJECT_FILE_NAME);
@@ -510,7 +512,7 @@ TEST_CASE("script_types: a failed write is one WARN that names the file, and the
     const ed::LogSinkScope scope;
     std::vector<ed::LogEntry> records;
     const TempDir dir("DT20");
-    const ed::ProjectCreateOutcome created = ed::createProject(dir.utf8(), "demo", "0.1.0");
+    const ed::ProjectCreateOutcome created = ed::createProject(dir.utf8(), "demo", "0.1.0", TS);
     REQUIRE(created.problem == ed::CreateProblem::Ok);
     const std::string root = created.root;
     writeBytes(root + "/" + std::string(ed::ASSET_CACHE_DIR_NAME), "a file where the cache directory belongs");

@@ -1,6 +1,7 @@
 #include <aero/core/log.hpp>
 #include <aero/core/math.hpp>                   // task E.3.1: degrees/radians/eulerAngles/fromEulerAngles
 #include <aero/editor/asset_database.hpp>       // task 3.1.5: the Guid row resolves a reference to a record
+#include <aero/editor/asset_drag.hpp>           // task 4.6.1: assetReferenceKindFromToken
 #include <aero/editor/asset_view.hpp>           // classifyAssetKind, assetKindLabel
 #include <aero/editor/editor_theme.hpp>         // task E.6.1: the out-of-range axis row's neutral
 #include <aero/editor/entity_presentation.hpp>  // humanizeIdentifier, componentIconFor
@@ -221,7 +222,8 @@ void buildInspectorModel(const World& world, Entity entity, InspectorModel& out)
     out.components.resize(writeIndex);  // drop any stale tail; never shrinks capacity
 }
 
-GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database, std::string_view subtitle) {
+GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database, ProjectLanguage language,
+                          std::string_view subtitle) {
     if (!value.valid()) {
         // A NIL GUID IS "no reference", which is a legal, ordinary value -- not a broken one. Clear is
         // disabled because clearing nothing would push an undo entry that changes no byte.
@@ -236,7 +238,7 @@ GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database, std::string
         // user most wants to remove.
         return {.text = formatGuid(value).substr(0, 8) + "...  (missing)", .clearEnabled = true};
     }
-    const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
+    const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false, language);
     // task E.4.5: the file name, then -- for a material whose name is worth showing -- the separator and that
     // name, through the ONE row function. An empty subtitle leaves 3.1.5's sentence byte-identical. Built in
     // steps rather than as one `+` chain, so no line of it sits at the column limit.
@@ -310,6 +312,31 @@ FieldValue namedSelectorValue(FieldKind kind, std::size_t index) {
             break;
     }
     return FieldValue{};
+}
+
+// ---- task 4.6.1: which components Add Component offers ---------------------------------------------
+
+bool componentReferencesScriptAsset(std::string_view registrationName) {
+    const entt::meta_type metaType = resolveComponentMeta(registrationName);
+    if (!metaType) {
+        return false;
+    }
+    for (auto&& [dataId, data] : metaType.data()) {
+        (void)dataId;
+        const engine::reflect::FieldUiMeta* const uiMeta = data.custom();
+        if (uiMeta == nullptr || uiMeta->assetKind == nullptr) {
+            continue;
+        }
+        const std::optional<AssetKind> kind = assetReferenceKindFromToken(uiMeta->assetKind);
+        if (kind.has_value() && *kind == AssetKind::Script) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool addComponentOffered(std::string_view registrationName, ProjectLanguage language) {
+    return language == ProjectLanguage::Ts || !componentReferencesScriptAsset(registrationName);
 }
 
 // ---- task E.3.1: the axis row's decisions, all of them ---------------------------------------------

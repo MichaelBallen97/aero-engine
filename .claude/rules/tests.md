@@ -207,6 +207,16 @@ release that comes less than 250 ms after its press (`SDL_gamepad.c:44`, read, n
 consecutive pumps sees no release.
 
 
+**A CASE THAT DRIVES THE GAME'S INPUT USES `requestGameInputEvent`, AFTER AN INJECTED `WindowFocusGained` (4.7.1).**
+Game focus needs the OS window to be focused (`gameHasFocus`), and a CI runner's window may not be in front, so a case
+that reads `PlaySession::input()` first waits for the Viewport to hold the keyboard (a bounded loop on
+`keyboardFocusPanelId()`, ending on the predicate and then `REQUIRE`-ing it), then queues a `WindowFocusGained` and
+ticks, and only then queues its key, button and wheel events. `requestGameInputEvent` drains after the polled events,
+through the same `handleEvent`, so the injected event takes the production path and no real key press is needed. The
+Context stays `Off` or `VirtualOnly`. The viewport image's rect is real only where the viewport drew: a pointer arm is
+guarded by `GameImageRect::valid` and says so with a `MESSAGE` when it did not run.
+
+
 ## Sabotage method
 
 **SEED THE MISTAKE, NOT THE SYMPTOM, AND A SEED PLACED AFTER THE GUARD THAT REFUSES IT IS INERT (E.3.2).**

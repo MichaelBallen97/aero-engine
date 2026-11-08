@@ -23,6 +23,7 @@
 #include <aero/editor/asset_browser_chrome.hpp>  // task E.6.3 -- the chrome's layouts, counts and record (pure)
 #include <aero/editor/asset_view.hpp>            // task 3.1.3 -- AssetViewMode, TileSize (pure enums, ImGui-free)
 #include <aero/editor/panel.hpp>
+#include <aero/editor/project.hpp>  // task 4.6.1: ProjectLanguage (pure)
 #include <aero/editor/project_files.hpp>
 #include <aero/editor/thumbnail_cache.hpp>  // task 3.1.3 -- ThumbnailKey/ThumbnailLedger (pure, GPU-free)
 
@@ -247,6 +248,9 @@ public:
     // prove the section was open and drawing. scrollMaxY() is the panel window's GetScrollMaxY(), read at
     // the END of the last onDraw: 0 means everything the panel drew fits inside it.
     [[nodiscard]] std::size_t issueRowsDrawn() const noexcept { return issueRowsDrawnCount; }
+    // task 4.6.1: how many entries the directory list or grid kept after the kind filter on the last frame, classified
+    // in the project's language (an EFFECT, reset at the top of every onDraw; 0 on a frame that listed none).
+    [[nodiscard]] std::size_t kindFilteredEntriesDrawn() const noexcept { return kindFilteredEntriesCount; }
     // The height the Issues body child was given on the last frame it drew (0 when it did not draw).
     [[nodiscard]] float issuesBodyHeightDrawn() const noexcept { return issuesBodyDrawnHeight; }
     // EXACTLY the metrics the last onDraw fed assetBrowserLayout -- the recorded available height, the row
@@ -516,11 +520,15 @@ private:
     float issuesContentHeight = 0.0F;
     std::optional<bool> issuesOpenRequest;          // requestIssuesOpen's, applied where a header click lands
     std::size_t issueRowsDrawnCount = 0;            // reset at the TOP of every onDraw
+    std::size_t kindFilteredEntriesCount = 0;       // reset at the TOP of every onDraw
     float issuesBodyDrawnHeight = 0.0F;             // reset at the TOP of every onDraw
     AssetBrowserLayoutMetrics layoutMetricsAtDraw;  // written by every onDraw, as assetBrowserLayout read it
     float scrollMaxYAtDraw = 0.0F;                  // written at the END of every onDraw
     // ---- task E.6.3 ------------------------------------------------------------------------------------------
-    AssetChromeRecord chrome;                    // opened at the TOP of every onDraw
+    AssetChromeRecord chrome;  // opened at the TOP of every onDraw
+    // task 4.6.1: the open project's language, latched from the context on the first statement of every onDraw, so
+    // every kind question the panel asks (the filter, the search, a tile's kind) reads one value per frame.
+    ProjectLanguage languageValue = ProjectLanguage::Ts;
     FolderCountCache folderCounts;               // the tree's, the crumb row's and the folder tiles' ONE count
     std::optional<std::string> navigateRequest;  // requestNavigate's; "" is the root, so it is an optional
     ItemRectRecord segmentScratch;               // the Grid | List segments' rects (segmentButton's out-parameter)

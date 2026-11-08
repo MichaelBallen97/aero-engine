@@ -6,6 +6,7 @@
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/entity_presentation.hpp>
 #include <aero/editor/panel_context.hpp>
+#include <aero/editor/play_session.hpp>   // task 4.7.1: sceneLocked
 #include <aero/editor/project.hpp>        // task 4.4.4: ProjectSession::isOpen, for the Save as Prefab item
 #include <aero/editor/scene_session.hpp>  // task 4.4.4: sceneIoAvailable
 #include <aero/editor/selection.hpp>
@@ -93,6 +94,12 @@ void HierarchyPanel::onDraw(PanelContext& context) {
         renaming = {};  // E24: the renamed entity was deleted mid-rename
         renameFocusPending = false;
     }
+    // task 4.7.1 (D4): while a game plays the scene is its own. A rename in flight when the lock begins ends here
+    // without a commit (a rename is an edit), before the stale-field check below could push it.
+    lockedFrame = sceneLocked(context.play.mode());
+    if (lockedFrame && renaming.valid()) {
+        cancelRename();
+    }
     // A rename whose ##rename field was NOT SUBMITTED on the previous frame ends here, as the field's own
     // deactivation would: committed when the buffer differs from the name the rename began with (an edit,
     // IsItemDeactivatedAfterEdit's case), cancelled otherwise -- through the two helpers phase 5's arms call (task
@@ -172,7 +179,7 @@ void HierarchyPanel::onDraw(PanelContext& context) {
     //    because the panel window is on its focus route.
     const bool shortcutsLive = hierarchyShortcutsLive(renaming.valid(), searchOwnsKeys);
     drawRecordValue.shortcutsLive = shortcutsLive;
-    if (shortcutsLive) {
+    if (shortcutsLive && !lockedFrame) {
         if (ImGui::Shortcut(ImGuiKey_Delete) || ImGui::Shortcut(ImGuiKey_Backspace)) {
             pending = PendingAction{.kind = ActionKind::Delete};
         }
@@ -185,7 +192,7 @@ void HierarchyPanel::onDraw(PanelContext& context) {
     }
     // The rename request (requestBeginRename): F2's own gate and no modal, drained here and dropped either way (I337,
     // I338).
-    if (pendingBeginRename.has_value() && shortcutsLive && noModal) {
+    if (pendingBeginRename.has_value() && shortcutsLive && noModal && !lockedFrame) {
         pending = PendingAction{.kind = ActionKind::BeginRename, .target = *pendingBeginRename};
     }
     pendingBeginRename.reset();
@@ -398,13 +405,13 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
     rows.push_back(entity);  // visible-row order -- the Shift-range domain (E20)
 
     // -- drag SOURCE ------------------------------------------------------------------------------
-    if (ImGui::BeginDragDropSource()) {
+    if (!lockedFrame && ImGui::BeginDragDropSource()) {  // task 4.7.1: no reparent drag in play
         ImGui::SetDragDropPayload(ENTITY_PAYLOAD_TYPE, &entity, sizeof(Entity));  // trivially copyable (F24)
         ImGui::TextUnformatted(labelScratch.c_str());
         ImGui::EndDragDropSource();  // ONLY when BeginDragDropSource returned true (F18)
     }
     // -- drop TARGET ------------------------------------------------------------------------------
-    if (ImGui::BeginDragDropTarget()) {
+    if (!lockedFrame && ImGui::BeginDragDropTarget()) {  // task 4.7.1: nothing drops into a playing scene
         Entity dragged{};
         if (peekDraggedEntity(dragged)) {
             const std::vector<Entity> moved = reparentTargets(world, selection.entities(), dragged);
@@ -489,7 +496,7 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
         }
         deferredSelectTarget = {};
     }
-    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+    if (!lockedFrame && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
         pending = PendingAction{.kind = ActionKind::BeginRename, .target = entity};  // AC-14
     }
 
@@ -498,22 +505,23 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
         // task E.5.2 (D6): Create Empty is ONE kind through the ONE pipeline -- recorded here, placed,
         // pushed, framed and revealed by EditorApp::applyCreate on the next tick.
         // task E.6.1: the item draws with its icon.
-        if (drawCreateKindItem("Create Empty", CreateKind::Empty, true)) {
+        if (drawCreateKindItem("Create Empty", CreateKind::Empty, !lockedFrame)) {
             pendingCreate = CreateKind::Empty;
         }
-        if (ImGui::MenuItem("Create Child")) {
+        if (ImGui::MenuItem("Create Child", nullptr, false, !lockedFrame)) {
             pending = PendingAction{.kind = ActionKind::CreateChild, .target = entity};
         }
         // task E.5.2 (D5): the typed entries create at the ROOT, never under this row -- a world-space
         // default made local to an arbitrary parent would be a tilted, stretched Plane.
-        if (const std::optional<CreateKind> typed = drawCreateMenuItems(true); typed.has_value()) {
+        if (const std::optional<CreateKind> typed = drawCreateMenuItems(!lockedFrame); typed.has_value()) {
             pendingCreate = typed;
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Rename", "F2")) {
+        if (ImGui::MenuItem("Rename", "F2", false, !lockedFrame)) {
             pending = PendingAction{.kind = ActionKind::BeginRename, .target = entity};
         }
-        if (ImGui::MenuItem("Duplicate", chordHint(currentHostOs(), {.ctrl = true}, "D").c_str())) {
+        if (ImGui::MenuItem("Duplicate", chordHint(currentHostOs(), {.ctrl = true}, "D").c_str(), false,
+                            !lockedFrame)) {
             pending = PendingAction{.kind = ActionKind::Duplicate, .target = entity};
         }
         // task 4.4.4: records the row and nothing more; EditorApp::tick writes the file (a panel has neither the
@@ -521,7 +529,7 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
         if (ImGui::MenuItem("Save as Prefab", nullptr, false, sceneIoAvailable() && context.project.isOpen())) {
             pendingSavePrefab = entity;
         }
-        if (ImGui::MenuItem("Delete", "Del")) {
+        if (ImGui::MenuItem("Delete", "Del", false, !lockedFrame)) {
             pending = PendingAction{.kind = ActionKind::Delete, .target = entity};
         }
         ImGui::EndPopup();  // ONLY when BeginPopupContextItem returned true
@@ -611,7 +619,7 @@ void HierarchyPanel::drawVoidTarget(PanelContext& context) {
     if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
         pending = PendingAction{.kind = ActionKind::ClearSelection};
     }
-    if (ImGui::BeginDragDropTarget()) {
+    if (!lockedFrame && ImGui::BeginDragDropTarget()) {
         Entity dragged{};
         if (peekDraggedEntity(dragged)) {
             const std::vector<Entity> moved = reparentTargets(context.world, context.selection.entities(), dragged);
@@ -634,11 +642,11 @@ void HierarchyPanel::drawVoidTarget(PanelContext& context) {
     }
     if (ImGui::BeginPopupContextItem("##voidmenu")) {
         // task E.6.1: the item draws with its icon.
-        if (drawCreateKindItem("Create Empty", CreateKind::Empty, true)) {
+        if (drawCreateKindItem("Create Empty", CreateKind::Empty, !lockedFrame)) {
             pendingCreate = CreateKind::Empty;  // task E.5.2 (D6): through the one pipeline
         }
         ImGui::Separator();
-        if (const std::optional<CreateKind> typed = drawCreateMenuItems(true); typed.has_value()) {
+        if (const std::optional<CreateKind> typed = drawCreateMenuItems(!lockedFrame); typed.has_value()) {
             pendingCreate = typed;
         }
         ImGui::EndPopup();
@@ -646,6 +654,11 @@ void HierarchyPanel::drawVoidTarget(PanelContext& context) {
 }
 
 void HierarchyPanel::commitRename(PanelContext& context, Entity target) {
+    if (sceneLocked(context.play.mode())) {  // task 4.7.1 (D4): no push in play; the rename simply ends
+        renaming = {};
+        renameFocusPending = false;
+        return;
+    }
     const World& world = context.world;
     // D19: compare first -- an unchanged name pushes nothing. The std::string(...) copy is MANDATORY, not
     // defensive: world.name()'s view is invalidated by the very rename commit this command is about to perform.
@@ -668,6 +681,18 @@ void HierarchyPanel::applyPending(PanelContext& context) {
     // READS the World directly (alive()/name(), and reparentTargets()'s own const query).
     const World& world = context.world;
     Selection& selection = context.selection;
+
+    // task 4.7.1 (D4): in play only the selection may change. Anything that would push, or begin a rename, is dropped
+    // here -- the menus and shortcuts are already off, so this is the defence for a record that got past them.
+    if (sceneLocked(context.play.mode())) {
+        const bool selectionOnly = pending.kind == ActionKind::None || pending.kind == ActionKind::Select ||
+                                   pending.kind == ActionKind::Toggle || pending.kind == ActionKind::Range ||
+                                   pending.kind == ActionKind::ClearSelection;
+        if (!selectionOnly) {
+            pending = PendingAction{};
+            return;
+        }
+    }
 
     switch (pending.kind) {
         case ActionKind::None:

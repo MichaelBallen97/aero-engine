@@ -46,7 +46,7 @@ std::string saveMaterialFile(std::string_view absolutePathUtf8, const MaterialDo
 }
 
 bool isMaterialFileName(std::string_view relativePath) noexcept {
-    return classifyAssetKind(leafOf(relativePath), false) == AssetKind::Material;
+    return classifyAssetKind(leafOf(relativePath), false, KIND_LANGUAGE_NEUTRAL) == AssetKind::Material;
 }
 
 void MaterialSession::clear() noexcept {

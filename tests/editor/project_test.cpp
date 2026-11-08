@@ -11,6 +11,7 @@
 #include <aero/core/log.hpp>
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/console_model.hpp>
+#include <aero/editor/cpp_project_template.hpp>
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/project.hpp>
@@ -87,6 +88,9 @@ using engine::editor::writeRecentProjectsText;
 using engine::editor::writeTextFileAtomic;
 
 namespace {
+
+constexpr auto TS = engine::editor::ProjectLanguage::Ts;
+constexpr auto CPP = engine::editor::ProjectLanguage::Cpp;
 
 // Count by LEVEL, never records.size() (the scene_session_test.cpp / command_stack_test.cpp
 // precedent): AERO_LOG_DEBUG is compiled out under NDEBUG, so counting by level makes an assertion
@@ -842,7 +846,7 @@ TEST_CASE("project: loadProjectFrom reads, validates and reports (AC-4/AC-8)") {
 
 TEST_CASE("project: createProject scaffolds and writes the exact bytes (P55-P57/AC-9/AC-10/AC-11)") {
     const TempDir dir;
-    const ProjectCreateOutcome outcome = createProject(dir.utf8(), "MyGame", "0.1.0");
+    const ProjectCreateOutcome outcome = createProject(dir.utf8(), "MyGame", "0.1.0", TS);
     REQUIRE(outcome.problem == CreateProblem::Ok);
     CHECK(directoryExists(outcome.root));
     CHECK(directoryExists(outcome.root + "/assets"));
@@ -865,7 +869,7 @@ TEST_CASE("project: createProject adopts an existing EMPTY directory (P58/E7/AC-
     std::filesystem::create_directory(std::filesystem::path(dir.utf8()) / "MyGame", ec);
     REQUIRE_FALSE(ec);
 
-    const ProjectCreateOutcome outcome = createProject(dir.utf8(), "MyGame", "0.1.0");
+    const ProjectCreateOutcome outcome = createProject(dir.utf8(), "MyGame", "0.1.0", TS);
     CHECK(outcome.problem == CreateProblem::Ok);
     CHECK(directoryExists(outcome.root + "/assets"));
     CHECK(directoryExists(outcome.root + "/scenes"));
@@ -878,12 +882,12 @@ TEST_CASE("project: createProject refuses a non-empty directory and a file targe
     REQUIRE_FALSE(ec);
     REQUIRE(writeTextFileAtomic(dir.join("NonEmpty/keep.txt"), "x").empty());
 
-    const ProjectCreateOutcome nonEmptyOutcome = createProject(dir.utf8(), "NonEmpty", "0.1.0");
+    const ProjectCreateOutcome nonEmptyOutcome = createProject(dir.utf8(), "NonEmpty", "0.1.0", TS);
     CHECK(nonEmptyOutcome.problem == CreateProblem::TargetNotEmpty);
     CHECK_FALSE(nonEmptyOutcome.message.empty());
 
     REQUIRE(writeTextFileAtomic(dir.join("AFile"), "x").empty());
-    const ProjectCreateOutcome fileOutcome = createProject(dir.utf8(), "AFile", "0.1.0");
+    const ProjectCreateOutcome fileOutcome = createProject(dir.utf8(), "AFile", "0.1.0", TS);
     CHECK(fileOutcome.problem == CreateProblem::TargetIsFile);
     CHECK_FALSE(fileOutcome.message.empty());
     CHECK(fileOutcome.message != nonEmptyOutcome.message);  // two DISTINCT messages
@@ -891,14 +895,14 @@ TEST_CASE("project: createProject refuses a non-empty directory and a file targe
 
 TEST_CASE("project: createProject refuses a bad name and a missing location (P61/P62/AC-12)") {
     const TempDir dir;
-    const ProjectCreateOutcome badName = createProject(dir.utf8(), "CON", "0.1.0");
+    const ProjectCreateOutcome badName = createProject(dir.utf8(), "CON", "0.1.0", TS);
     CHECK(badName.problem == CreateProblem::BadName);
     CHECK(badName.message == nameProblemMessage(NameProblem::ReservedDeviceName));
 
-    const ProjectCreateOutcome missingLocation = createProject(dir.join("does-not-exist"), "MyGame", "0.1.0");
+    const ProjectCreateOutcome missingLocation = createProject(dir.join("does-not-exist"), "MyGame", "0.1.0", TS);
     CHECK(missingLocation.problem == CreateProblem::LocationMissing);
 
-    const ProjectCreateOutcome emptyLocation = createProject("", "MyGame", "0.1.0");
+    const ProjectCreateOutcome emptyLocation = createProject("", "MyGame", "0.1.0", TS);
     CHECK(emptyLocation.problem == CreateProblem::BadLocation);
 }
 
@@ -914,7 +918,7 @@ TEST_CASE(
     "(P83/SHOULD-FIX-8)") {
     const TempDir dir;
     const ProjectCreateOutcome outcome =
-        createProject(dir.utf8(), std::string(engine::editor::PROJECT_FILE_NAME), "0.1.0");
+        createProject(dir.utf8(), std::string(engine::editor::PROJECT_FILE_NAME), "0.1.0", TS);
     REQUIRE(outcome.problem == CreateProblem::Ok);
 
     // createProject builds its root through std::filesystem::path, so it is fully native; dir.join
@@ -936,7 +940,7 @@ TEST_CASE(
     FlowFixture f;
     SceneSession session;
     const bool ok = createAndOpenProject(f.ctx, f.commands, session, f.project, dir2.utf8(),
-                                         std::string(engine::editor::PROJECT_FILE_NAME));
+                                         std::string(engine::editor::PROJECT_FILE_NAME), TS);
     CHECK(ok);
     CHECK(f.projectSession.root() == expectedRoot2);
     CHECK(f.projectSession.assetsRoot() == expectedRoot2 + "/assets");
@@ -976,7 +980,7 @@ TEST_CASE("project: createProject deletes NOTHING when a later step fails (E11/D
                                  std::filesystem::perm_options::replace, ec);
     REQUIRE_FALSE(ec);
 
-    const ProjectCreateOutcome outcome = createProject(dir.utf8(), "MyGame", "0.1.0");
+    const ProjectCreateOutcome outcome = createProject(dir.utf8(), "MyGame", "0.1.0", TS);
 
     // Restore permissions BEFORE any assertion can throw/fail loudly and BEFORE ~TempDir runs, or
     // cleanup itself fails (the project_files_test.cpp precedent for the identical hazard).
@@ -1194,7 +1198,7 @@ TEST_CASE("project_golden: a save strips exactly the three unknown keys (PG8/AC-
 
 TEST_CASE("project_golden: a created project.json on disk is a fixpoint (PG9/AC-11)") {
     const TempDir dir;
-    const ProjectCreateOutcome outcome = createProject(dir.utf8(), "MyGame", "0.1.0");
+    const ProjectCreateOutcome outcome = createProject(dir.utf8(), "MyGame", "0.1.0", TS);
     REQUIRE(outcome.problem == CreateProblem::Ok);
 
     const FileReadResult written = readTextFile(outcome.root + "/project.json");
@@ -1245,7 +1249,7 @@ TEST_CASE("project: openProjectPath opens, resets the scene and promotes the rec
     std::vector<engine::editor::LogEntry> records;
 
     const TempDir dir;
-    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == CreateProblem::Ok);
 
     FlowFixture f;
@@ -1321,7 +1325,7 @@ TEST_CASE("project: createAndOpenProject scaffolds and adopts in one operation (
     scope.sink()->take(records);
     records.clear();
 
-    const bool ok = createAndOpenProject(f.ctx, f.commands, session, f.project, dir.utf8(), "MyGame");
+    const bool ok = createAndOpenProject(f.ctx, f.commands, session, f.project, dir.utf8(), "MyGame", TS);
 
     CHECK(ok);
     CHECK(directoryExists(dir.join("MyGame")));
@@ -1455,7 +1459,7 @@ TEST_CASE("project: projectFlow.requestedPath is cleared on every abandoning pat
 
 TEST_CASE("project: applyDialogResult -- ProjectFolder opens, ProjectLocation only fills the form (P79/E18/E19)") {
     const TempDir dir;
-    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == CreateProblem::Ok);
 
     {
@@ -1520,7 +1524,7 @@ TEST_CASE(
     std::vector<engine::editor::LogEntry> records;
 
     const TempDir dir;
-    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == CreateProblem::Ok);
 
     {
@@ -1734,7 +1738,7 @@ private:
 
 TEST_CASE("project: loadProjectFrom reports an ABSOLUTE root for a relative path (P84)") {
     const TempDir dir;
-    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == CreateProblem::Ok);
 
     // Open it the way argv[1] does: by a path relative to the current directory.
@@ -1752,7 +1756,7 @@ TEST_CASE("project: createProject reports an ABSOLUTE root for a relative locati
     std::filesystem::create_directory("here", ec);
     REQUIRE_FALSE(ec);
 
-    const ProjectCreateOutcome created = createProject("here", "MyGame", "0.1.0");
+    const ProjectCreateOutcome created = createProject("here", "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == CreateProblem::Ok);
     CHECK(std::filesystem::path(created.root).is_absolute());
     CHECK(std::filesystem::path(created.root).filename() == "MyGame");
@@ -1775,7 +1779,7 @@ TEST_CASE("project: a CORRUPT editor-state.json produces exactly ONE warning (PJ
     std::vector<engine::editor::LogEntry> records;
 
     const TempDir dir;
-    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == CreateProblem::Ok);
     std::error_code ec;
     std::filesystem::create_directories(created.root + "/Library", ec);
@@ -1812,7 +1816,7 @@ TEST_CASE("project: a MISSING editor-state.json produces NO warning at all (PJ42
     std::vector<engine::editor::LogEntry> records;
 
     const TempDir dir;
-    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == CreateProblem::Ok);
     REQUIRE_FALSE(engine::editor::fileExists(created.root + "/Library"));
 
@@ -1838,7 +1842,7 @@ TEST_CASE("project: an UNREADABLE Library still opens the project (PJ43/AC-10)")
     std::vector<engine::editor::LogEntry> records;
 
     const TempDir dir;
-    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == CreateProblem::Ok);
     std::error_code ec;
     std::filesystem::create_directories(created.root + "/Library/editor-state.json", ec);
@@ -1876,7 +1880,7 @@ TEST_CASE("project: the sceneIoAvailable gate sits BELOW the read and ABOVE the 
     std::vector<engine::editor::LogEntry> records;
 
     const TempDir dir;
-    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == CreateProblem::Ok);
     REQUIRE(writeTextFileAtomic(created.root + "/scenes/a.scene.json", "{\n  \"version\": 1,\n  \"entities\": []\n}\n")
                 .empty());
@@ -1904,7 +1908,6 @@ TEST_CASE("project: the sceneIoAvailable gate sits BELOW the read and ABOVE the 
 // task E.6.4 -- the New Project dialog's probe, and its ONE target-path rule (P86-P94)
 // ==================================================================================================
 
-using engine::editor::NEW_PROJECT_LANGUAGE;
 using engine::editor::NewProjectTargetFacts;
 using engine::editor::NewProjectTargetKind;
 using engine::editor::newProjectTargetPath;
@@ -1914,7 +1917,7 @@ TEST_CASE("project: the New Project preview names the root createProject makes (
     SUBCASE("a fresh target") {
         const TempDir dir;
         const std::string preview = newProjectTargetPath(dir.utf8(), "Kart");
-        const ProjectCreateOutcome made = createProject(dir.utf8(), "Kart", "0.1.0");
+        const ProjectCreateOutcome made = createProject(dir.utf8(), "Kart", "0.1.0", TS);
         REQUIRE(made.problem == CreateProblem::Ok);
         CHECK_FALSE(preview.empty());
         CHECK(preview == made.root);
@@ -1922,7 +1925,7 @@ TEST_CASE("project: the New Project preview names the root createProject makes (
     SUBCASE("a project literally named project.json (SHOULD-FIX 8)") {
         const TempDir dir;
         const std::string preview = newProjectTargetPath(dir.utf8(), "project.json");
-        const ProjectCreateOutcome made = createProject(dir.utf8(), "project.json", "0.1.0");
+        const ProjectCreateOutcome made = createProject(dir.utf8(), "project.json", "0.1.0", TS);
         REQUIRE(made.problem == CreateProblem::Ok);
         CHECK(preview == made.root);
     }
@@ -1933,7 +1936,7 @@ TEST_CASE("project: the New Project preview names the root createProject makes (
         std::filesystem::create_directory("here", ec);
         REQUIRE_FALSE(ec);
         const std::string preview = newProjectTargetPath("here", "Kart");
-        const ProjectCreateOutcome made = createProject("here", "Kart", "0.1.0");
+        const ProjectCreateOutcome made = createProject("here", "Kart", "0.1.0", TS);
         REQUIRE(made.problem == CreateProblem::Ok);
         CHECK(std::filesystem::path(preview).is_absolute());
         CHECK(preview == made.root);
@@ -2023,7 +2026,7 @@ TEST_CASE("project: the probe and createProject agree on every on-disk shape (ta
         if (row.locationIsDirectory) {
             CHECK((facts.target == row.target));
         }
-        const ProjectCreateOutcome made = createProject(location, "Kart", "0.1.0");
+        const ProjectCreateOutcome made = createProject(location, "Kart", "0.1.0", TS);
         CHECK((made.problem == row.problem));
         if (made.problem == CreateProblem::Ok) {
             CHECK(made.root == facts.targetPath);  // the probe named the root Create made
@@ -2054,14 +2057,18 @@ TEST_CASE("project: the probe writes nothing, and a hidden entry makes a folder 
     CHECK((probeNewProjectTarget(dir.utf8(), "Kart").target == NewProjectTargetKind::NonEmptyDirectory));
 }
 
-TEST_CASE("project: New Project writes the one language the dialog shows (task E.6.4, P90)") {
-    CHECK((NEW_PROJECT_LANGUAGE == ProjectLanguage::Ts));
+TEST_CASE("project: the New Project form preselects TypeScript every time (task 4.6.1, P90)") {
+    engine::editor::NewProjectForm form;
+    CHECK((form.language == ProjectLanguage::Ts));
+    form.language = CPP;
+    form = {};  // the one reset every close of the dialog runs
+    CHECK((form.language == ProjectLanguage::Ts));
     const TempDir dir;
-    const ProjectCreateOutcome made = createProject(dir.utf8(), "Kart", "0.1.0");
+    const ProjectCreateOutcome made = createProject(dir.utf8(), "Kart", "0.1.0", TS);
     REQUIRE(made.problem == CreateProblem::Ok);
     const ProjectLoadOutcome opened = loadProjectFrom(made.root);
     REQUIRE(opened.ok);
-    CHECK((opened.manifest.language == NEW_PROJECT_LANGUAGE));
+    CHECK((opened.manifest.language == ProjectLanguage::Ts));
 }
 
 using engine::editor::NEW_PROJECT_PROBE_REFRESH_TICKS;
@@ -2209,7 +2216,7 @@ TEST_CASE("project: New Project creates exactly what the dialog's info box names
     REQUIRE(expected.size() == 3U);  // ANTI-VACUITY: the spans really name three things
 
     const TempDir dir;
-    const ProjectCreateOutcome made = createProject(dir.utf8(), "Kart", "0.1.0");
+    const ProjectCreateOutcome made = createProject(dir.utf8(), "Kart", "0.1.0", TS);
     REQUIRE(made.problem == CreateProblem::Ok);
     std::vector<std::string> found;
     std::error_code ec;
@@ -2229,4 +2236,184 @@ TEST_CASE("project: New Project creates exactly what the dialog's info box names
     }
     CHECK(directoryExists(made.root + "/assets"));
     CHECK(directoryExists(made.root + "/scenes"));
+}
+
+// ==================================================================================================
+// task 4.6.1 -- the language a project is created in (P96-P100)
+// ==================================================================================================
+
+TEST_CASE(
+    "project: createProject writes the language it is given and loadProjectFrom reads it back (task 4.6.1, P96)") {
+    const TempDir dir;
+    const ProjectCreateOutcome cpp = createProject(dir.utf8(), "Kart", "0.1.0", CPP);
+    REQUIRE(cpp.problem == CreateProblem::Ok);
+    const FileReadResult cppText = readTextFile(cpp.root + "/project.json");
+    REQUIRE(cppText.text.has_value());
+    CHECK(cppText.text->find("\"language\": \"cpp\"") != std::string::npos);
+    const ProjectLoadOutcome cppOpened = loadProjectFrom(cpp.root);
+    REQUIRE(cppOpened.ok);
+    CHECK((cppOpened.manifest.language == ProjectLanguage::Cpp));
+
+    const ProjectCreateOutcome ts = createProject(dir.utf8(), "Racer", "0.1.0", TS);
+    REQUIRE(ts.problem == CreateProblem::Ok);
+    const FileReadResult tsText = readTextFile(ts.root + "/project.json");
+    REQUIRE(tsText.text.has_value());
+    CHECK(tsText.text->find("\"language\": \"ts\"") != std::string::npos);
+    CHECK(tsText.text->find("\"cpp\"") == std::string::npos);
+    const ProjectLoadOutcome tsOpened = loadProjectFrom(ts.root);
+    REQUIRE(tsOpened.ok);
+    CHECK((tsOpened.manifest.language == ProjectLanguage::Ts));
+}
+
+TEST_CASE("project: creating a C++ project writes the template into the new root (task 4.6.1, P97)") {
+    const LogFixture fixture;
+    const TempDir dir;
+    FlowFixture f;
+    SceneSession session;
+
+    REQUIRE(createAndOpenProject(f.ctx, f.commands, session, f.project, dir.utf8(), "Kart", CPP));
+    REQUIRE(f.projectSession.isOpen());
+    CHECK((f.projectSession.manifest().language == ProjectLanguage::Cpp));
+    const std::string root(f.projectSession.root());
+    const auto rendered = engine::editor::renderCppProject("Kart");
+    for (const engine::editor::CppProjectFile& file : rendered) {
+        CAPTURE(file.relativePath);
+        const FileReadResult read = readTextFile(root + "/" + std::string(file.relativePath));
+        REQUIRE(read.text.has_value());
+        CHECK(*read.text == file.text);
+        CHECK_FALSE(fileExists(dir.join(std::string(file.relativePath))));  // never in the location itself
+    }
+    CHECK_FALSE(fileExists(root + "/tsconfig.json"));
+    CHECK_FALSE(directoryExists(root + "/Library/types"));
+    CHECK_FALSE(directoryExists(root + "/Library"));
+}
+
+TEST_CASE("project: creating a TypeScript project writes no C++ template file (task 4.6.1, P98)") {
+    const LogFixture fixture;
+    const TempDir dir;
+    FlowFixture f;
+    SceneSession session;
+
+    REQUIRE(createAndOpenProject(f.ctx, f.commands, session, f.project, dir.utf8(), "Kart", TS));
+    REQUIRE(f.projectSession.isOpen());
+    const std::string root(f.projectSession.root());
+    CHECK(fileExists(root + "/tsconfig.json"));
+    for (const engine::editor::CppProjectFile& file : engine::editor::renderCppProject("Kart")) {
+        CAPTURE(file.relativePath);
+        CHECK_FALSE(fileExists(root + "/" + std::string(file.relativePath)));
+    }
+}
+
+TEST_CASE("project: a failed template file is one warning line and the others are silent (task 4.6.1, P99)") {
+    using engine::editor::CppProjectFileOutcome;
+    using engine::editor::CppProjectReport;
+    using engine::editor::CppProjectWrite;
+    CppProjectReport report;
+    report.files[0] = CppProjectFileOutcome{.relativePath = "CMakeLists.txt", .state = CppProjectWrite::Written};
+    report.files[1] = CppProjectFileOutcome{.relativePath = "src/main.cpp", .state = CppProjectWrite::Unchanged};
+    report.files[2] =
+        CppProjectFileOutcome{.relativePath = "README.md", .state = CppProjectWrite::Failed, .error = "denied"};
+    report.files[3] =
+        CppProjectFileOutcome{.relativePath = ".gitignore", .state = CppProjectWrite::Failed, .error = "busy"};
+
+    const std::vector<std::string> lines = engine::editor::cppTemplateWarnings(report, "/work/Kart");
+    REQUIRE(lines.size() == 2U);
+    CHECK(lines[0] == "editor: could not write '/work/Kart/README.md' of the C++ template -- denied");
+    CHECK(lines[1] == "editor: could not write '/work/Kart/.gitignore' of the C++ template -- busy");
+
+    for (CppProjectFileOutcome& file : report.files) {
+        file.state = CppProjectWrite::Written;
+        file.error.clear();
+    }
+    CHECK(engine::editor::cppTemplateWarnings(report, "/work/Kart").empty());
+}
+
+namespace {
+
+// The comment-stripped text of one editor source file (line and block comments), so a comment naming a call is not a
+// call. A single left-to-right pass: no recursion.
+[[nodiscard]] std::string codeOf(const std::filesystem::path& path) {
+    const FileReadResult read = readTextFile(path.string());
+    if (!read.text.has_value()) {
+        return {};
+    }
+    const std::string& text = *read.text;
+    std::string out;
+    out.reserve(text.size());
+    std::size_t i = 0;
+    while (i < text.size()) {
+        if (text.compare(i, 2, "//") == 0) {
+            while (i < text.size() && text[i] != '\n') {
+                ++i;
+            }
+        } else if (text.compare(i, 2, "/*") == 0) {
+            const std::size_t close = text.find("*/", i + 2U);
+            i = close == std::string::npos ? text.size() : close + 2U;
+        } else {
+            out.push_back(text[i]);
+            ++i;
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] std::size_t countOf(const std::string& haystack, std::string_view needle) {
+    std::size_t n = 0;
+    for (std::size_t at = haystack.find(needle); at != std::string::npos; at = haystack.find(needle, at + 1U)) {
+        ++n;
+    }
+    return n;
+}
+
+}  // namespace
+
+TEST_CASE("project: the manifest has one writer and the template one caller (task 4.6.1, P100)") {
+    std::vector<std::string> manifestFiles;
+    std::vector<std::string> templateFiles;
+    std::size_t manifestCalls = 0;
+    std::size_t templateCalls = 0;
+    std::size_t scanned = 0;
+    std::size_t languageConstant = 0;
+    std::error_code ec;
+    for (const std::filesystem::directory_entry& entry :
+         std::filesystem::directory_iterator(std::filesystem::path(AERO_EDITOR_SRC_DIR), ec)) {
+        const std::string name = entry.path().filename().string();
+        if (!name.ends_with(".cpp")) {
+            continue;
+        }
+        const std::string code = codeOf(entry.path());
+        ++scanned;
+        // The retired constant itself, not NEW_PROJECT_LANGUAGE_CARDS or _HINT, which share its prefix.
+        for (std::size_t at = code.find("NEW_PROJECT_LANGUAGE"); at != std::string::npos;
+             at = code.find("NEW_PROJECT_LANGUAGE", at + 1U)) {
+            const std::size_t after = at + std::string_view("NEW_PROJECT_LANGUAGE").size();
+            if (after >= code.size() || code[after] != '_') {
+                ++languageConstant;
+            }
+        }
+        const std::size_t manifest = countOf(code, "writeProjectText(");
+        const std::size_t cppTemplate = countOf(code, "writeCppProject(");
+        if (manifest != 0U) {
+            manifestFiles.push_back(name);
+            if (name == "project_file.cpp") {
+                manifestCalls = manifest;
+            }
+        }
+        if (cppTemplate != 0U) {
+            templateFiles.push_back(name);
+            if (name == "scene_session.cpp") {
+                templateCalls = cppTemplate;
+            }
+        }
+    }
+    REQUIRE_FALSE(ec);
+    REQUIRE(scanned > 50U);  // ANTI-VACUITY: the tree was really read
+    std::sort(manifestFiles.begin(), manifestFiles.end());
+    std::sort(templateFiles.begin(), templateFiles.end());
+    // The definition's file, then the one caller: a second manifest writer would be a language-change path.
+    CHECK(manifestFiles == std::vector<std::string>{"project.cpp", "project_file.cpp"});
+    CHECK(manifestCalls == 1U);
+    CHECK(templateFiles == std::vector<std::string>{"cpp_project_template.cpp", "scene_session.cpp"});
+    CHECK(templateCalls == 1U);
+    CHECK(languageConstant == 0U);
 }

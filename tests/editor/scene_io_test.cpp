@@ -48,6 +48,8 @@ using engine::editor::Selection;
 
 namespace {
 
+constexpr auto TS = engine::editor::ProjectLanguage::Ts;
+
 // Count by LEVEL, never records.size() (the command_stack_test.cpp precedent, plan A31).
 [[nodiscard]] std::size_t countAtLevel(const std::vector<engine::editor::LogEntry>& records, engine::LogLevel level) {
     return static_cast<std::size_t>(std::count_if(
@@ -138,7 +140,7 @@ struct SceneProject {
 
 [[nodiscard]] SceneProject makeSceneProject(const TempDir& dir,
                                             std::initializer_list<std::pair<std::string_view, std::size_t>> scenes) {
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(dir.utf8(), "MyGame", "");
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(dir.utf8(), "MyGame", "", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     for (const auto& [relative, extra] : scenes) {
         const std::string path = created.root + "/" + std::string(relative);
@@ -889,7 +891,7 @@ TEST_CASE("scene_io: createAndOpenProject lands on a NEW scene and reads no stat
     scope.sink()->take(records);
     records.clear();
 
-    REQUIRE(engine::editor::createAndOpenProject(f.ctx, f.commands, session, f.project, dir.utf8(), "Fresh"));
+    REQUIRE(engine::editor::createAndOpenProject(f.ctx, f.commands, session, f.project, dir.utf8(), "Fresh", TS));
 
     CHECK(session.path().empty());
     CHECK(f.world.entityCount() == 4);
@@ -1023,7 +1025,8 @@ TEST_CASE("scene_io: a scene inside a real project round-trips (IO17, AC-1/AC-2)
     //   created.root is under TMPDIR, which on macOS is /var/folders/... while its realpath is
     //   /private/var/folders/.... If it ever goes red with a refusal, the rescue is the first thing
     //   to look at.
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(dir.utf8(), "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(dir.utf8(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const std::string target = created.root + "/scenes/level1.scene.json";
     const SceneFileContext inProject{created.root, nullptr};
@@ -1055,7 +1058,8 @@ TEST_CASE("scene_io: a nested subdirectory of the ROOT is permitted, not only <r
     using engine::editor::SceneFileContext;
 
     const TempDir dir;
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(dir.utf8(), "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(dir.utf8(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::error_code ec;
     std::filesystem::create_directories(pathOfUtf8(created.root + "/assets/levels"), ec);
@@ -1093,7 +1097,8 @@ TEST_CASE("scene_io: <root>/Library/ is permitted -- the stated non-goal (IO19, 
     // Pinned so that a later reserved-path policy (E.4.3's) is a DELIBERATE change with a red test,
     // never a drift. Containment asks ONE question -- is this inside the project -- and Library/ is.
     const TempDir dir;
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(dir.utf8(), "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(dir.utf8(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     std::error_code ec;
     std::filesystem::create_directories(pathOfUtf8(created.root + "/Library"), ec);
@@ -1119,7 +1124,8 @@ TEST_CASE("scene_io: containment is checked on the APPENDED target, not the argu
 
     const LogFixture fixture;
     const TempDir dir;
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(dir.utf8(), "MyGame", "0.1.0");
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(dir.utf8(), "MyGame", "0.1.0", TS);
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
     const SceneFileContext inProject{created.root, nullptr};
 

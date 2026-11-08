@@ -13,6 +13,7 @@
 #include <aero/editor/asset_view.hpp>
 #include <aero/editor/editor_theme.hpp>  // task 4.4.1 (AV70): the Script colour token
 #include <aero/editor/esbuild_tool.hpp>  // task 4.4.1 (AV68): isScriptAssetName
+#include <aero/editor/project.hpp>       // task 4.6.1: ProjectLanguage
 #include <aero/editor/project_files.hpp>
 
 #include <doctest/doctest.h>
@@ -24,6 +25,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <ostream>
 #include <span>
@@ -57,13 +59,18 @@ using engine::editor::SearchResult;
 using engine::editor::tileEdgeFontMultiple;
 using engine::editor::TileSize;
 
+namespace {
+constexpr engine::editor::ProjectLanguage TS = engine::editor::ProjectLanguage::Ts;
+constexpr engine::editor::ProjectLanguage CPP = engine::editor::ProjectLanguage::Cpp;
+}  // namespace
+
 TEST_CASE("asset view: every Texture extension classifies as Texture (AV1)") {
     constexpr std::array<std::string_view, 10> EXTS{"png", "jpg", "jpeg", "tga",  "bmp",
                                                     "gif", "hdr", "psd",  "ktx2", "dds"};
     for (const std::string_view ext : EXTS) {
         const std::string name = std::string("x.") + std::string(ext);
         INFO("ext: ", std::string(ext));
-        CHECK(classifyAssetKind(name, false) == AssetKind::Texture);
+        CHECK(classifyAssetKind(name, false, TS) == AssetKind::Texture);
     }
 }
 
@@ -75,7 +82,7 @@ TEST_CASE("asset view: every Model extension classifies as Model (AV2)") {
     for (const std::string_view ext : EXTS) {
         const std::string name = std::string("x.") + std::string(ext);
         INFO("ext: ", std::string(ext));
-        CHECK(classifyAssetKind(name, false) == AssetKind::Model);
+        CHECK(classifyAssetKind(name, false, TS) == AssetKind::Model);
     }
 }
 
@@ -83,7 +90,7 @@ TEST_CASE("asset view: every Audio extension classifies as Audio (AV3)") {
     constexpr std::array<std::string_view, 4> EXTS{"wav", "mp3", "ogg", "flac"};
     for (const std::string_view ext : EXTS) {
         const std::string name = std::string("x.") + std::string(ext);
-        CHECK(classifyAssetKind(name, false) == AssetKind::Audio);
+        CHECK(classifyAssetKind(name, false, TS) == AssetKind::Audio);
     }
 }
 
@@ -93,53 +100,53 @@ TEST_CASE("asset view: every Text extension classifies as Text (AV4)") {
     constexpr std::array<std::string_view, 6> EXTS{"json", "txt", "md", "hlsl", "glsl", "js"};
     for (const std::string_view ext : EXTS) {
         const std::string name = std::string("x.") + std::string(ext);
-        CHECK(classifyAssetKind(name, false) == AssetKind::Text);
+        CHECK(classifyAssetKind(name, false, TS) == AssetKind::Text);
     }
 }
 
 TEST_CASE("asset view: no extension is Unknown (AV5)") {
-    CHECK(classifyAssetKind("README", false) == AssetKind::Unknown);
+    CHECK(classifyAssetKind("README", false, TS) == AssetKind::Unknown);
 }
 
 TEST_CASE("asset view: a trailing dot is Unknown (AV6)") {
-    CHECK(classifyAssetKind("x.", false) == AssetKind::Unknown);
+    CHECK(classifyAssetKind("x.", false, TS) == AssetKind::Unknown);
 }
 
 TEST_CASE("asset view: only the LAST extension is used, and an unknown last extension wins (AV7)") {
-    CHECK(classifyAssetKind("archive.tar.gz", false) == AssetKind::Unknown);
+    CHECK(classifyAssetKind("archive.tar.gz", false, TS) == AssetKind::Unknown);
 }
 
 TEST_CASE("asset view: the last extension wins the other way too (AV8)") {
-    CHECK(classifyAssetKind("scene.tar.gltf", false) == AssetKind::Model);
+    CHECK(classifyAssetKind("scene.tar.gltf", false, TS) == AssetKind::Model);
 }
 
 TEST_CASE("asset view: a directory named like a texture is still Folder (AV9)") {
-    CHECK(classifyAssetKind("textures.png", true) == AssetKind::Folder);
+    CHECK(classifyAssetKind("textures.png", true, TS) == AssetKind::Folder);
 }
 
 TEST_CASE("asset view: a directory with no extension is Folder (AV10)") {
-    CHECK(classifyAssetKind("textures", true) == AssetKind::Folder);
+    CHECK(classifyAssetKind("textures", true, TS) == AssetKind::Folder);
 }
 
 TEST_CASE("asset view: extension classification is ASCII-case-insensitive (AV11, seed S17)") {
-    CHECK(classifyAssetKind("x.PNG", false) == AssetKind::Texture);
-    CHECK(classifyAssetKind("x.PnG", false) == AssetKind::Texture);
-    CHECK(classifyAssetKind("x.pNg", false) == AssetKind::Texture);
+    CHECK(classifyAssetKind("x.PNG", false, TS) == AssetKind::Texture);
+    CHECK(classifyAssetKind("x.PnG", false, TS) == AssetKind::Texture);
+    CHECK(classifyAssetKind("x.pNg", false, TS) == AssetKind::Texture);
 }
 
 TEST_CASE("asset view: a non-ASCII extension is Unknown, no byte mangling (AV12)") {
-    CHECK(classifyAssetKind("x.p\xC3\xB1g", false) == AssetKind::Unknown);  // "pñg"
+    CHECK(classifyAssetKind("x.p\xC3\xB1g", false, TS) == AssetKind::Unknown);  // "pñg"
 }
 
 TEST_CASE("asset view: an empty name is Unknown, or Folder when isDirectory (AV13)") {
-    CHECK(classifyAssetKind("", false) == AssetKind::Unknown);
-    CHECK(classifyAssetKind("", true) == AssetKind::Folder);
+    CHECK(classifyAssetKind("", false, TS) == AssetKind::Unknown);
+    CHECK(classifyAssetKind("", true, TS) == AssetKind::Folder);
 }
 
 TEST_CASE("asset view: classifyAssetKind is total (AV14)") {
     constexpr std::array<std::string_view, 6> UNKNOWNS{"a.zip", "a.exe", "a.rar", "a.7z", "a.iso", "a.bin"};
     for (const std::string_view name : UNKNOWNS) {
-        const AssetKind kind = classifyAssetKind(name, false);
+        const AssetKind kind = classifyAssetKind(name, false, TS);
         CHECK((kind == AssetKind::Folder || kind == AssetKind::Texture || kind == AssetKind::Model ||
                kind == AssetKind::Audio || kind == AssetKind::Text || kind == AssetKind::Material ||
                kind == AssetKind::Script || kind == AssetKind::Unknown));
@@ -158,8 +165,8 @@ TEST_CASE("asset view: isThumbnailDecodable is FALSE for .ktx2 and .dds (AV16, D
     CHECK_FALSE(isThumbnailDecodable("x.ktx2"));
     CHECK_FALSE(isThumbnailDecodable("x.dds"));
     // Still classified as Texture -- a strict subset, not a redefinition of the kind.
-    CHECK(classifyAssetKind("x.ktx2", false) == AssetKind::Texture);
-    CHECK(classifyAssetKind("x.dds", false) == AssetKind::Texture);
+    CHECK(classifyAssetKind("x.ktx2", false, TS) == AssetKind::Texture);
+    CHECK(classifyAssetKind("x.dds", false, TS) == AssetKind::Texture);
 }
 
 TEST_CASE("asset view: isThumbnailDecodable false for every non-Texture extension (AV17)") {
@@ -283,39 +290,39 @@ TEST_CASE("asset view: gridColumnsFor boundary widths (AV33)") {
 TEST_CASE("asset view: matchesFilter is ASCII-case-insensitive on the query (AV34)") {
     AssetFilter filter;
     filter.query = "WOOD";
-    CHECK(matchesFilter("wood.png", false, filter));
+    CHECK(matchesFilter("wood.png", false, filter, TS));
 }
 
 TEST_CASE("asset view: an empty query matches everything with anyKind (AV35)") {
     const AssetFilter filter;
-    CHECK(matchesFilter("anything.xyz", false, filter));
-    CHECK(matchesFilter("folder", true, filter));
+    CHECK(matchesFilter("anything.xyz", false, filter, TS));
+    CHECK(matchesFilter("folder", true, filter, TS));
 }
 
 TEST_CASE("asset view: matchesFilter over the LEAF only, never the parent path (AV36, D5, seed S14)") {
     AssetFilter filter;
     filter.query = "wood";
-    CHECK_FALSE(matchesFilter("plank.png", false, filter));
+    CHECK_FALSE(matchesFilter("plank.png", false, filter, TS));
 }
 
 TEST_CASE("asset view: every kind arm filters correctly; a directory matches only Folder (AV37)") {
     AssetFilter filter;
     filter.anyKind = false;
     filter.kind = AssetKind::Texture;
-    CHECK(matchesFilter("x.png", false, filter));
-    CHECK_FALSE(matchesFilter("x.wav", false, filter));
-    CHECK_FALSE(matchesFilter("x.png", true, filter));  // it's a DIRECTORY -- Folder, not Texture
+    CHECK(matchesFilter("x.png", false, filter, TS));
+    CHECK_FALSE(matchesFilter("x.wav", false, filter, TS));
+    CHECK_FALSE(matchesFilter("x.png", true, filter, TS));  // it's a DIRECTORY -- Folder, not Texture
 
     filter.kind = AssetKind::Folder;
-    CHECK(matchesFilter("anything", true, filter));
-    CHECK_FALSE(matchesFilter("anything.png", false, filter));
+    CHECK(matchesFilter("anything", true, filter, TS));
+    CHECK_FALSE(matchesFilter("anything.png", false, filter, TS));
 }
 
 TEST_CASE("asset view: anyKind = true ignores kind entirely (AV38)") {
     AssetFilter filter;
     filter.anyKind = true;
     filter.kind = AssetKind::Audio;  // deliberately mismatched -- must be ignored
-    CHECK(matchesFilter("x.png", false, filter));
+    CHECK(matchesFilter("x.png", false, filter, TS));
 }
 
 TEST_CASE("asset view: searchAssets preserves order and fills recordIndex (AV39)") {
@@ -325,7 +332,7 @@ TEST_CASE("asset view: searchAssets preserves order and fills recordIndex (AV39)
     records[2].relativePath = "c/three.png";
     AssetFilter filter;
     filter.query = "png";
-    const SearchResult result = searchAssets(std::span<const AssetRecord>(records), filter);
+    const SearchResult result = searchAssets(std::span<const AssetRecord>(records), filter, TS);
     REQUIRE(result.hits.size() == 3);
     CHECK(result.hits[0].relativePath == "a/one.png");
     CHECK(result.hits[0].recordIndex == 0);
@@ -347,7 +354,7 @@ TEST_CASE("asset view: searchAssets matches the LEAF, never a parent directory s
     records[0].relativePath = "wood/plank.png";
     AssetFilter filter;
     filter.query = "wood";
-    const SearchResult result = searchAssets(std::span<const AssetRecord>(records), filter);
+    const SearchResult result = searchAssets(std::span<const AssetRecord>(records), filter, TS);
     CHECK(result.hits.empty());
     CHECK(result.total == 0);
 }
@@ -359,7 +366,7 @@ TEST_CASE("asset view: total is UNCAPPED while hits is capped (AV40, AC-14, seed
     }
     AssetFilter filter;
     filter.query = "png";
-    const SearchResult result = searchAssets(std::span<const AssetRecord>(records), filter, /*cap=*/2);
+    const SearchResult result = searchAssets(std::span<const AssetRecord>(records), filter, TS, /*cap=*/2);
     CHECK(result.hits.size() == 2);
     CHECK(result.total == 5);
     CHECK(result.truncated);
@@ -368,7 +375,7 @@ TEST_CASE("asset view: total is UNCAPPED while hits is capped (AV40, AC-14, seed
 TEST_CASE("asset view: an empty span is zero hits, zero total, not truncated (AV41)") {
     const std::vector<AssetRecord> records;
     const AssetFilter filter;
-    const SearchResult result = searchAssets(std::span<const AssetRecord>(records), filter);
+    const SearchResult result = searchAssets(std::span<const AssetRecord>(records), filter, TS);
     CHECK(result.hits.empty());
     CHECK(result.total == 0);
     CHECK_FALSE(result.truncated);
@@ -380,7 +387,7 @@ TEST_CASE("asset view: cap == 0 gives zero hits but the full total, and truncate
         records[i].relativePath = std::to_string(i) + ".txt";
     }
     const AssetFilter filter;
-    const SearchResult result = searchAssets(std::span<const AssetRecord>(records), filter, /*cap=*/0);
+    const SearchResult result = searchAssets(std::span<const AssetRecord>(records), filter, TS, /*cap=*/0);
     CHECK(result.hits.empty());
     CHECK(result.total == 3);
     CHECK(result.truncated);
@@ -395,7 +402,7 @@ TEST_CASE("asset view: filterEntriesByKind with anyKind returns every index, in 
     entries[1].isDirectory = true;
     entries[2].name = "readme.txt";
     const AssetFilter filter;  // anyKind == true (the default)
-    const std::vector<std::size_t> indices = filterEntriesByKind(std::span<const FileEntry>(entries), filter);
+    const std::vector<std::size_t> indices = filterEntriesByKind(std::span<const FileEntry>(entries), filter, TS);
     REQUIRE(indices.size() == 3);
     CHECK(indices[0] == 0);
     CHECK(indices[1] == 1);
@@ -412,7 +419,7 @@ TEST_CASE("asset view: filterEntriesByKind(Texture) keeps only Texture files, an
     AssetFilter filter;
     filter.anyKind = false;
     filter.kind = AssetKind::Texture;
-    const std::vector<std::size_t> indices = filterEntriesByKind(std::span<const FileEntry>(entries), filter);
+    const std::vector<std::size_t> indices = filterEntriesByKind(std::span<const FileEntry>(entries), filter, TS);
     REQUIRE(indices.size() == 2);
     CHECK(indices[0] == 0);  // wood.png
     CHECK(indices[1] == 3);  // stone.jpg
@@ -428,7 +435,7 @@ TEST_CASE("asset view: filterEntriesByKind(Folder) keeps ONLY directories (AV45)
     AssetFilter filter;
     filter.anyKind = false;
     filter.kind = AssetKind::Folder;
-    const std::vector<std::size_t> indices = filterEntriesByKind(std::span<const FileEntry>(entries), filter);
+    const std::vector<std::size_t> indices = filterEntriesByKind(std::span<const FileEntry>(entries), filter, TS);
     REQUIRE(indices.size() == 2);
     CHECK(indices[0] == 1);
     CHECK(indices[1] == 2);
@@ -439,7 +446,7 @@ TEST_CASE("asset view: filterEntriesByKind over an empty span is an empty result
     AssetFilter filter;
     filter.anyKind = false;
     filter.kind = AssetKind::Audio;
-    CHECK(filterEntriesByKind(std::span<const FileEntry>(entries), filter).empty());
+    CHECK(filterEntriesByKind(std::span<const FileEntry>(entries), filter, TS).empty());
 }
 
 TEST_CASE(
@@ -451,25 +458,25 @@ TEST_CASE(
     AssetFilter filter;
     filter.anyKind = false;
     filter.kind = AssetKind::Texture;
-    CHECK(filterEntriesByKind(std::span<const FileEntry>(entries), filter).empty());
+    CHECK(filterEntriesByKind(std::span<const FileEntry>(entries), filter, TS).empty());
 }
 
 // ---- task 3.4.2: .aeromat becomes a first-class kind (AV48-AV52, AC-1/AC-3) ----------------------
 
 TEST_CASE("asset view: .aeromat classifies Material, in any ASCII case (AV48, AC-1, seed S1)") {
-    CHECK((classifyAssetKind("wood.aeromat", false) == AssetKind::Material));
-    CHECK((classifyAssetKind("WOOD.AEROMAT", false) == AssetKind::Material));
-    CHECK((classifyAssetKind("Wood.AeroMat", false) == AssetKind::Material));
+    CHECK((classifyAssetKind("wood.aeromat", false, TS) == AssetKind::Material));
+    CHECK((classifyAssetKind("WOOD.AEROMAT", false, TS) == AssetKind::Material));
+    CHECK((classifyAssetKind("Wood.AeroMat", false, TS) == AssetKind::Material));
     // A DIRECTORY called "materials.aeromat" is still a Folder -- the isDirectory arm wins first.
-    CHECK((classifyAssetKind("materials.aeromat", true) == AssetKind::Folder));
+    CHECK((classifyAssetKind("materials.aeromat", true, TS) == AssetKind::Folder));
 }
 
 TEST_CASE("asset view: .mtl STAYS Unknown -- the 3.2.3 fact, re-pinned (AV49)") {
     // Recorded at task 3.2.3: a Wavefront material library is a CLAIMED IMPORTABLE FILE but not a
     // browser kind, so it is invisible while the kind filter is set to Model. This task touches the
     // same table, so the fact is pinned here rather than left to be re-derived.
-    CHECK((classifyAssetKind("chair.mtl", false) == AssetKind::Unknown));
-    CHECK((classifyAssetKind("chair.aeromat", false) == AssetKind::Material));
+    CHECK((classifyAssetKind("chair.mtl", false, TS) == AssetKind::Unknown));
+    CHECK((classifyAssetKind("chair.aeromat", false, TS) == AssetKind::Material));
 }
 
 TEST_CASE("asset view: assetKindLabel answers \"Material\" (AV50, AC-1)") {
@@ -522,20 +529,20 @@ TEST_CASE("asset view: the Material kind FILTERS, both predicate and wiring (AV5
     // nothing drove the two functions that actually decide what a chosen kind SHOWS. Those are the
     // filter's whole implementation, and both take AssetKind by value -- so a new enumerator is exactly
     // the input neither had ever been given.
-    CHECK(matchesFilter("brass.aeromat", false, AssetFilter{.kind = AssetKind::Material, .anyKind = false}));
-    CHECK_FALSE(matchesFilter("wood.png", false, AssetFilter{.kind = AssetKind::Material, .anyKind = false}));
+    CHECK(matchesFilter("brass.aeromat", false, AssetFilter{.kind = AssetKind::Material, .anyKind = false}, TS));
+    CHECK_FALSE(matchesFilter("wood.png", false, AssetFilter{.kind = AssetKind::Material, .anyKind = false}, TS));
     // A DIRECTORY only ever matches Folder, whatever it is called -- matchesFilter's own rule, restated
     // for the new kind because "a folder named like a material" is the case that would break it.
-    CHECK_FALSE(matchesFilter("brass.aeromat", true, AssetFilter{.kind = AssetKind::Material, .anyKind = false}));
+    CHECK_FALSE(matchesFilter("brass.aeromat", true, AssetFilter{.kind = AssetKind::Material, .anyKind = false}, TS));
     // And a .aeromat is NOT swept up by any other specific kind -- Unknown included, which is where it
     // used to land and where a reverted classification arm would put it back.
-    CHECK_FALSE(matchesFilter("brass.aeromat", false, AssetFilter{.kind = AssetKind::Unknown, .anyKind = false}));
-    CHECK_FALSE(matchesFilter("brass.aeromat", false, AssetFilter{.kind = AssetKind::Texture, .anyKind = false}));
+    CHECK_FALSE(matchesFilter("brass.aeromat", false, AssetFilter{.kind = AssetKind::Unknown, .anyKind = false}, TS));
+    CHECK_FALSE(matchesFilter("brass.aeromat", false, AssetFilter{.kind = AssetKind::Texture, .anyKind = false}, TS));
     // The query half still composes: the kind narrows, the substring narrows further, and both apply.
     CHECK(matchesFilter("brass.aeromat", false,
-                        AssetFilter{.query = "bra", .kind = AssetKind::Material, .anyKind = false}));
+                        AssetFilter{.query = "bra", .kind = AssetKind::Material, .anyKind = false}, TS));
     CHECK_FALSE(matchesFilter("brass.aeromat", false,
-                              AssetFilter{.query = "steel", .kind = AssetKind::Material, .anyKind = false}));
+                              AssetFilter{.query = "steel", .kind = AssetKind::Material, .anyKind = false}, TS));
 
     // The WIRING (the code-review BLOCKING-2 that AV43-AV46 exist for), driven with the new kind: the
     // panel's non-search path filters a listing through this, in the listing's own order.
@@ -546,7 +553,7 @@ TEST_CASE("asset view: the Material kind FILTERS, both predicate and wiring (AV5
     entries[2].name = "wood.png";
     entries[3].name = "steel.AEROMAT";  // case-folded, like every other extension table
     const AssetFilter filter{.kind = AssetKind::Material, .anyKind = false};
-    const std::vector<std::size_t> indices = filterEntriesByKind(std::span<const FileEntry>(entries), filter);
+    const std::vector<std::size_t> indices = filterEntriesByKind(std::span<const FileEntry>(entries), filter, TS);
     REQUIRE(indices.size() == 2);
     CHECK(indices[0] == 0);
     CHECK(indices[1] == 3);
@@ -1667,25 +1674,25 @@ TEST_CASE("asset view: a first code point wider than one byte is kept when it fi
 TEST_CASE("asset view: a .ts the transpiler bundles is a Script, every other spelling is not (AV68)") {
     for (const std::string_view name : {"mover.ts", "a.D.ts"}) {
         CAPTURE(name);
-        CHECK(classifyAssetKind(name, false) == AssetKind::Script);
+        CHECK(classifyAssetKind(name, false, TS) == AssetKind::Script);
     }
     for (const std::string_view name : {"mover.d.ts", "mover.TS", "mover.Ts", "mover.js", ".ts"}) {
         CAPTURE(name);
-        CHECK(classifyAssetKind(name, false) == AssetKind::Text);
+        CHECK(classifyAssetKind(name, false, TS) == AssetKind::Text);
     }
     for (const std::string_view name : {"mover.tsx", "mover.mts"}) {
         CAPTURE(name);
-        CHECK(classifyAssetKind(name, false) == AssetKind::Unknown);
+        CHECK(classifyAssetKind(name, false, TS) == AssetKind::Unknown);
     }
     for (const std::string_view name : {"mover.ts", "a.D.ts", "mover.d.ts", "mover.TS", "mover.Ts", "mover.js", ".ts",
                                         "mover.tsx", "mover.mts", "x.png", "README", "x.aeromat"}) {
         CAPTURE(name);
-        CHECK((classifyAssetKind(name, false) == AssetKind::Script) == isScriptAssetName(name));
+        CHECK((classifyAssetKind(name, false, TS) == AssetKind::Script) == isScriptAssetName(name));
     }
 }
 
 TEST_CASE("asset view: a directory named mover.ts is a Folder (AV69)") {
-    CHECK(classifyAssetKind("mover.ts", true) == AssetKind::Folder);
+    CHECK(classifyAssetKind("mover.ts", true, TS) == AssetKind::Folder);
 }
 
 TEST_CASE("asset view: Script has a label, a slot before Unknown and a theme colour (AV70)") {
@@ -1706,21 +1713,21 @@ TEST_CASE("asset view: Script has a label, a slot before Unknown and a theme col
 TEST_CASE("asset view: the kind filter separates a Script from Text by the kind, not the extension (AV71)") {
     const AssetFilter script{.kind = AssetKind::Script, .anyKind = false};
     const AssetFilter text{.kind = AssetKind::Text, .anyKind = false};
-    CHECK(matchesFilter("mover.ts", false, script));
-    CHECK_FALSE(matchesFilter("mover.ts", false, text));
-    CHECK(matchesFilter("mover.d.ts", false, text));
-    CHECK_FALSE(matchesFilter("mover.d.ts", false, script));
-    CHECK_FALSE(matchesFilter("mover.ts", true, script));
+    CHECK(matchesFilter("mover.ts", false, script, TS));
+    CHECK_FALSE(matchesFilter("mover.ts", false, text, TS));
+    CHECK(matchesFilter("mover.d.ts", false, text, TS));
+    CHECK_FALSE(matchesFilter("mover.d.ts", false, script, TS));
+    CHECK_FALSE(matchesFilter("mover.ts", true, script, TS));
 }
 
 TEST_CASE("asset view: an .aeroprefab is a Prefab, by the suffix constant and in any case (AV72)") {
-    CHECK(classifyAssetKind("x.aeroprefab", false) == AssetKind::Prefab);
-    CHECK(classifyAssetKind("x" + std::string(engine::editor::PREFAB_FILE_SUFFIX), false) == AssetKind::Prefab);
-    CHECK(classifyAssetKind("X.AEROPREFAB", false) == AssetKind::Prefab);
+    CHECK(classifyAssetKind("x.aeroprefab", false, TS) == AssetKind::Prefab);
+    CHECK(classifyAssetKind("x" + std::string(engine::editor::PREFAB_FILE_SUFFIX), false, TS) == AssetKind::Prefab);
+    CHECK(classifyAssetKind("X.AEROPREFAB", false, TS) == AssetKind::Prefab);
     // The directory test comes before every table: a folder is a folder whatever it is called.
-    CHECK(classifyAssetKind("x.aeroprefab", true) == AssetKind::Folder);
+    CHECK(classifyAssetKind("x.aeroprefab", true, TS) == AssetKind::Folder);
     // Only the LAST extension counts.
-    CHECK(classifyAssetKind("x.aeroprefab.txt", false) == AssetKind::Text);
+    CHECK(classifyAssetKind("x.aeroprefab.txt", false, TS) == AssetKind::Text);
     CHECK(engine::editor::PREFAB_FILE_SUFFIX == ".aeroprefab");
 }
 
@@ -1746,4 +1753,195 @@ TEST_CASE("asset view: Prefab has its own label, colour and tile text (AV73)") {
     CHECK(iconLabelFor("a.aeroprefab") == "PFAB");
     CHECK(iconLabelFor("A.AEROPREFAB") == "PFAB");
     CHECK(iconLabelFor("a.aeroprefab.txt") == "TXT");
+}
+
+// ---- AV74-AV77: task 4.6.1 -- a .ts is a Script asset only in a TypeScript project -----------------------
+
+TEST_CASE("asset view: a .ts is Script in a TypeScript project and Text in a C++ one (task 4.6.1, AV74)") {
+    CHECK(classifyAssetKind("mover.ts", false, TS) == AssetKind::Script);
+    CHECK(classifyAssetKind("mover.ts", false, CPP) == AssetKind::Text);
+    // The three neighbours the Script arm already refused stay identical in both languages.
+    CHECK(classifyAssetKind("mover.d.ts", false, TS) == AssetKind::Text);
+    CHECK(classifyAssetKind("mover.d.ts", false, CPP) == AssetKind::Text);
+    CHECK(classifyAssetKind("mover.TS", false, TS) == AssetKind::Text);
+    CHECK(classifyAssetKind("mover.TS", false, CPP) == AssetKind::Text);
+    CHECK(classifyAssetKind("x.ts", true, TS) == AssetKind::Folder);
+    CHECK(classifyAssetKind("x.ts", true, CPP) == AssetKind::Folder);
+    // .js stays Text in both: the language moves one arm, not the table.
+    CHECK(classifyAssetKind("mover.js", false, TS) == AssetKind::Text);
+    CHECK(classifyAssetKind("mover.js", false, CPP) == AssetKind::Text);
+}
+
+TEST_CASE("asset view: no kind but a .ts changes with the language (task 4.6.1, AV75)") {
+    const std::vector<std::string> names{
+        "a.png",        "a.JPG",   "a.tga",  "a.ktx2", "a.dds",  "a.gltf",   "a.glb",     "a.fbx",
+        "a.obj",        "a.blend", "a.wav",  "a.mp3",  "a.ogg",  "a.flac",   "a.json",    "a.txt",
+        "a.md",         "a.hlsl",  "a.glsl", "a.js",   "a.d.ts", "a.TS",     "a.aeromat", "a.aeroprefab",
+        "A.AEROPREFAB", "README",  "x.",     "",       ".ts",    "a.tar.gz", "a.ts.bak"};
+    for (const std::string& name : names) {
+        for (const bool directory : {false, true}) {
+            CAPTURE(name);
+            CAPTURE(directory);
+            CHECK(classifyAssetKind(name, directory, TS) == classifyAssetKind(name, directory, CPP));
+        }
+    }
+    // A name the Script arm takes is the only roster difference: no other name in this roster moved.
+    CHECK(classifyAssetKind("a.ts", false, TS) != classifyAssetKind("a.ts", false, CPP));
+}
+
+TEST_CASE("asset view: every kind consumer reads the language it is given (task 4.6.1, AV76)") {
+    const std::vector<AssetRecord> records{AssetRecord{.relativePath = "assets/player.ts"},
+                                           AssetRecord{.relativePath = "assets/brick.png"}};
+    const std::vector<FileEntry> entries{FileEntry{.name = "player.ts", .isDirectory = false},
+                                         FileEntry{.name = "brick.png", .isDirectory = false}};
+    const AssetFilter script{.kind = AssetKind::Script, .anyKind = false};
+    const AssetFilter text{.kind = AssetKind::Text, .anyKind = false};
+
+    CHECK(matchesFilter("player.ts", false, script, TS));
+    CHECK_FALSE(matchesFilter("player.ts", false, script, CPP));
+    CHECK_FALSE(matchesFilter("player.ts", false, text, TS));
+    CHECK(matchesFilter("player.ts", false, text, CPP));
+
+    CHECK(filterEntriesByKind(std::span<const FileEntry>(entries), script, TS) == std::vector<std::size_t>{0});
+    CHECK(filterEntriesByKind(std::span<const FileEntry>(entries), script, CPP).empty());
+    CHECK(filterEntriesByKind(std::span<const FileEntry>(entries), text, TS).empty());
+    CHECK(filterEntriesByKind(std::span<const FileEntry>(entries), text, CPP) == std::vector<std::size_t>{0});
+
+    const std::span<const AssetRecord> all(records);
+    CHECK(searchAssets(all, script, TS).total == 1);
+    CHECK(searchAssets(all, script, CPP).total == 0);
+    CHECK(searchAssets(all, text, TS).total == 0);
+    CHECK(searchAssets(all, text, CPP).total == 1);
+    CHECK(searchAssets(all, text, CPP, /*cap=*/0).total == 1);
+    CHECK(searchAssets(all, text, CPP, /*cap=*/0).truncated);
+}
+
+namespace {
+
+// Blanks the comments of one C++ source, keeping string and character literals intact, so a token in a comment
+// never counts. Not a full lexer (no raw strings), which the files this reads do not use around these calls.
+[[nodiscard]] std::string withoutComments(const std::string& source) {
+    std::string out;
+    out.reserve(source.size());
+    std::size_t i = 0;
+    while (i < source.size()) {
+        const char c = source[i];
+        if (c == '/' && i + 1 < source.size() && source[i + 1] == '/') {
+            while (i < source.size() && source[i] != '\n') {
+                ++i;
+            }
+        } else if (c == '/' && i + 1 < source.size() && source[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < source.size() && !(source[i] == '*' && source[i + 1] == '/')) {
+                ++i;
+            }
+            i += 2;
+            out += ' ';
+        } else if (c == '"' || c == '\'') {
+            const char quote = c;
+            out += c;
+            ++i;
+            while (i < source.size() && source[i] != quote) {
+                if (source[i] == '\\' && i + 1 < source.size()) {
+                    out += source[i++];
+                }
+                out += source[i++];
+            }
+            if (i < source.size()) {
+                out += source[i++];
+            }
+        } else {
+            out += c;
+            ++i;
+        }
+    }
+    return out;
+}
+
+// The text of the third argument of the call whose '(' is at `open`, trimmed; empty when there is none.
+[[nodiscard]] std::string thirdArgumentOf(const std::string& code, std::size_t open) {
+    std::size_t depth = 1;
+    std::size_t argument = 0;
+    std::size_t begin = open + 1;
+    for (std::size_t i = open + 1; i < code.size(); ++i) {
+        const char c = code[i];
+        if (c == '(' || c == '[' || c == '{') {
+            ++depth;
+        } else if (c == ')' || c == ']' || c == '}') {
+            --depth;
+            if (depth == 0) {
+                return argument == 2 ? code.substr(begin, i - begin) : std::string{};
+            }
+        } else if (c == ',' && depth == 1) {
+            if (argument == 2) {
+                return code.substr(begin, i - begin);
+            }
+            ++argument;
+            begin = i + 1;
+        }
+    }
+    return {};
+}
+
+[[nodiscard]] std::string trimmed(const std::string& text) {
+    const std::size_t first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return {};
+    }
+    const std::size_t last = text.find_last_not_of(" \t\r\n");
+    return text.substr(first, last - first + 1);
+}
+
+[[nodiscard]] bool startsWith(const std::string& text, std::string_view prefix) {
+    return text.compare(0, prefix.size(), prefix) == 0;
+}
+
+}  // namespace
+
+TEST_CASE("asset view: every classifyAssetKind call passes a language it earned (task 4.6.1, AV77)") {
+    // (a) The reader's own self-test on text it controls.
+    const std::string sample = "x = classifyAssetKind(a, b, language); // classifyAssetKind(c, d, TS)\n";
+    const std::string stripped = withoutComments(sample);
+    CHECK(stripped.find("TS") == std::string::npos);
+    CHECK(thirdArgumentOf(stripped, stripped.find('(')) == " language");
+
+    // (b) The sweep over editor/src/*.cpp.
+    const std::filesystem::path src{AERO_EDITOR_SRC_DIR};
+    std::error_code ec;
+    REQUIRE(std::filesystem::is_directory(src, ec));
+    constexpr std::string_view CALL = "classifyAssetKind(";
+    std::vector<std::string> neutral;
+    std::size_t calls = 0;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(src, ec)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".cpp") {
+            continue;
+        }
+        std::ifstream in(entry.path(), std::ios::binary);
+        REQUIRE(in.good());
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        const std::string code = withoutComments(text);
+        for (std::size_t at = code.find(CALL); at != std::string::npos; at = code.find(CALL, at + 1)) {
+            const std::string before = trimmed(code.substr(at > 12 ? at - 12 : 0, at > 12 ? 12 : at));
+            if (before.size() >= 9 && before.compare(before.size() - 9, 9, "AssetKind") == 0) {
+                continue;  // the definition: `AssetKind classifyAssetKind(`
+            }
+            ++calls;
+            const std::string language = trimmed(thirdArgumentOf(code, at + CALL.size() - 1));
+            INFO(entry.path().filename().string(), ": ", language);
+            CHECK_FALSE(language.find("ProjectLanguage::") != std::string::npos);
+            const bool earned = startsWith(language, "KIND_LANGUAGE_NEUTRAL") || language == "language" ||
+                                language == "languageValue" || startsWith(language, "effectiveProjectLanguage(");
+            CHECK(earned);
+            if (startsWith(language, "KIND_LANGUAGE_NEUTRAL")) {
+                neutral.push_back(entry.path().filename().string());
+            }
+        }
+    }
+    REQUIRE_FALSE(ec);
+    std::sort(neutral.begin(), neutral.end());
+    neutral.erase(std::unique(neutral.begin(), neutral.end()), neutral.end());
+    const std::vector<std::string> expected{"asset_view.cpp", "material_panel.cpp", "material_session.cpp",
+                                            "thumbnail_cache.cpp"};
+    CHECK(neutral == expected);
+    CHECK(calls >= 12U);  // anti-vacuity: 12 production calls at the branch point
 }

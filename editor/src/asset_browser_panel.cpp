@@ -814,8 +814,9 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
             // the kind filter". `filter.anyKind == true` (the default) returns every index, so this
             // costs nothing extra in the common case beyond one small per-frame scratch vector -- the
             // SAME "not persisted, rebuilt every frame" posture `crumbs` already has above.
-            const std::vector<std::size_t> kindFiltered = filterEntriesByKind(listing->entries, filter);
+            const std::vector<std::size_t> kindFiltered = filterEntriesByKind(listing->entries, filter, languageValue);
             ImGuiListClipper clipper;  // F14 -- only the visible rows are submitted (AC-12)
+            kindFilteredEntriesCount = kindFiltered.size();
             clipper.Begin(static_cast<int>(kindFiltered.size()));
             while (clipper.Step()) {
                 for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
@@ -891,7 +892,7 @@ void AssetBrowserPanel::beginAssetDragSource(const std::string& relativePath, co
     // FORCES Folder, so no draggable kind changes classification and the asset arm below is
     // byte-identical in behaviour -- a folder took the early return before and takes the MOVE branch
     // now.
-    const AssetKind kind = classifyAssetKind(leafOf(relativePath), isDirectory);
+    const AssetKind kind = classifyAssetKind(leafOf(relativePath), isDirectory, languageValue);
     const AssetRecord* const record =
         (assetKindIsDraggable(kind) && databasePtr != nullptr) ? databasePtr->findByPath(relativePath) : nullptr;
     if (record == nullptr || !record->guid.valid()) {
@@ -1152,7 +1153,7 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
     // A designated initialiser must follow DECLARATION order -- clang accepts a wrong one with a
     // warning while GCC and MSVC reject (E.2.2's finding 3). This is AssetTileFace's own order.
     const AssetTileFace face{.nativeTexture = texture,
-                             .kind = classifyAssetKind(entry.name, entry.isDirectory),
+                             .kind = classifyAssetKind(entry.name, entry.isDirectory, languageValue),
                              .isDirectory = entry.isDirectory,
                              .fileName = entry.name,
                              .captionSource = captionSource,
@@ -1292,8 +1293,9 @@ void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
         // code-review BLOCKING-2 (AC-13): the drawContentsList precedent immediately above, applied
         // here too -- `filter.query` is guaranteed empty in this branch, so filterEntriesByKind is
         // exactly "apply the kind filter alone", and costs nothing extra when filter.anyKind (default).
-        const std::vector<std::size_t> kindFiltered = filterEntriesByKind(listing->entries, filter);
+        const std::vector<std::size_t> kindFiltered = filterEntriesByKind(listing->entries, filter, languageValue);
         const std::vector<FileEntry>& items = listing->entries;
+        kindFilteredEntriesCount = kindFiltered.size();
         const int rows = (static_cast<int>(kindFiltered.size()) + columns - 1) / columns;
         ImGuiListClipper clipper;  // clips ROWS OF TILES, not tiles
         clipper.Begin(rows, rowHeight);
@@ -1832,7 +1834,7 @@ void AssetBrowserPanel::refreshSearchRows() {
         searchRows = SearchResult{};
         return;
     }
-    searchRows = searchAssets(databasePtr->records(), filter);
+    searchRows = searchAssets(databasePtr->records(), filter, languageValue);
 }
 
 void AssetBrowserPanel::applyPending() {
@@ -2128,7 +2130,8 @@ void AssetBrowserPanel::requestDropPeek(std::string sourcePath, std::string dest
 }
 
 // ---- the frame ---------------------------------------------------------------------------------
-void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context is IGNORED
+void AssetBrowserPanel::onDraw(PanelContext& context) {  // D18: the context is read for the project's language only
+    languageValue = effectiveProjectLanguage(context.project);  // task 4.6.1: before anything asks a kind question
     // task E.4.3: the EFFECT counters reset at the TOP of every frame, BEFORE reconcile(), so each
     // reports what THIS frame's bodies did rather than an accumulating lifetime total.
     contextMenuItemsDrawnCount = 0;
@@ -2136,6 +2139,7 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
     assetDeleteModalDrawn = 0;
     dropTargetsAcceptedCount = 0;
     issueRowsDrawnCount = 0;
+    kindFilteredEntriesCount = 0;
     issuesBodyDrawnHeight = 0.0F;
     beginAssetChromeRecordFrame(chrome);  // task E.6.3 (D14): one recorded frame per onDraw
     // task E.6.3: requestNavigate's drain -- the crumbs' own enabled term and no modal, the gate a real click has

@@ -10,6 +10,7 @@
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel_context.hpp>
+#include <aero/editor/play_session.hpp>
 #include <aero/editor/project.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/editor/tree_walk.hpp>
@@ -407,7 +408,8 @@ TEST_CASE("editor: PanelContext binds references, it does not copy (D7)") {
     engine::editor::CommandStack commands;
     engine::editor::RootOrder roots;
     const engine::editor::ProjectSession project;
-    engine::editor::PanelContext context{w, s, commands, roots, project};
+    const engine::editor::PlaySession play;
+    engine::editor::PanelContext context{w, s, commands, roots, project, play};
 
     CHECK(&context.world == &w);
     CHECK(&context.selection == &s);

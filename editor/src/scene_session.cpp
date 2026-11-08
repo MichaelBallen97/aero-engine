@@ -18,10 +18,12 @@
 
 #include <array>
 #include <cstddef>
+#include <format>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace engine::editor {
 
@@ -559,9 +561,21 @@ bool openProjectPath(CommandContext& context, CommandStack& commands, SceneSessi
     return true;
 }
 
+std::vector<std::string> cppTemplateWarnings(const CppProjectReport& report, std::string_view root) {
+    std::vector<std::string> lines;
+    for (const CppProjectFileOutcome& file : report.files) {
+        if (file.state == CppProjectWrite::Failed) {
+            lines.push_back(std::format("editor: could not write '{}/{}' of the C++ template -- {}", root,
+                                        file.relativePath, file.error));
+        }
+    }
+    return lines;
+}
+
 bool createAndOpenProject(CommandContext& context, CommandStack& commands, SceneSession& session,
-                          ProjectContext& project, std::string_view location, std::string_view name) {
-    const ProjectCreateOutcome outcome = createProject(location, name, project.engineVersion);
+                          ProjectContext& project, std::string_view location, std::string_view name,
+                          ProjectLanguage language) {
+    const ProjectCreateOutcome outcome = createProject(location, name, project.engineVersion, language);
     if (outcome.problem != CreateProblem::Ok) {
         AERO_LOG_ERROR("editor: could not create project '{}' -- {}", name, outcome.message);
         return false;  // D7: nothing was removed, and nothing is switched to
@@ -570,6 +584,14 @@ bool createAndOpenProject(CommandContext& context, CommandStack& commands, Scene
     adoptProject(context, commands, session, project, outcome.manifest, outcome.root);
     AERO_LOG_INFO("editor: created project '{}' at '{}'", outcome.manifest.name, outcome.root);
     adoptScriptTypes(project.session);  // task 4.2.2: the new project's own declarations and tsconfig.json
+    if (language == ProjectLanguage::Cpp) {
+        // task 4.6.1 (call 2): once, at creation. root() is a view into the session, so it is copied first.
+        const std::string root(project.session.root());
+        const CppProjectReport report = writeCppProject(root, outcome.manifest.name);
+        for (const std::string& line : cppTemplateWarnings(report, root)) {
+            AERO_LOG_WARN("{}", line);
+        }
+    }
     return true;
 }
 
@@ -735,7 +757,7 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
         project.flow.form.createRequested = false;
         createRan = true;
         const bool ok = createAndOpenProject(context, commands, session, project, project.flow.form.location,
-                                             project.flow.form.name);
+                                             project.flow.form.name, project.flow.form.language);
         if (ok) {
             project.flow.form = {};  // only SUCCESS closes the modal
         } else {

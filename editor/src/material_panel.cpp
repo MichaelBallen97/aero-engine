@@ -342,7 +342,8 @@ bool MaterialPanel::drawSlotRow(std::size_t index, MaterialDocument& form, const
                                       .database = databasePtr,
                                       .thumbnails = thumbnails,
                                       .thumbnailEdge = thumbEdge};
-        picked = drawAssetReferenceField(inputs, *assetPicker);
+        // A texture slot: its candidates are Textures, a kind no language changes (AV75).
+        picked = drawAssetReferenceField(inputs, KIND_LANGUAGE_NEUTRAL, *assetPicker);
     }
     switch (picked.outcome) {  // NO default: a fifth outcome is a -Wswitch error
         case AssetFieldOutcome::Picked:
@@ -572,7 +573,8 @@ void MaterialPanel::drawBody(MaterialDocument& form, const MaterialPanelLayout& 
                                                       : nullptr;
                 row = materialSlotRow(
                     slot, record != nullptr ? std::string_view(record->relativePath) : std::string_view{},
-                    record != nullptr && classifyAssetKind(leafOf(record->relativePath), false) == AssetKind::Texture,
+                    record != nullptr && classifyAssetKind(leafOf(record->relativePath), false,
+                                                           KIND_LANGUAGE_NEUTRAL) == AssetKind::Texture,
                     databasePtr != nullptr, record != nullptr);
                 changed = drawSlotRow(*section.slot, form, row, layout.thumbEdge) || changed;
             }
