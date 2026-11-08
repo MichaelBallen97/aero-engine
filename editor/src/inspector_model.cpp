@@ -1,6 +1,7 @@
 #include <aero/core/log.hpp>
 #include <aero/core/math.hpp>                   // task E.3.1: degrees/radians/eulerAngles/fromEulerAngles
 #include <aero/editor/asset_database.hpp>       // task 3.1.5: the Guid row resolves a reference to a record
+#include <aero/editor/asset_drag.hpp>           // task 4.6.1: assetReferenceKindFromToken
 #include <aero/editor/asset_view.hpp>           // classifyAssetKind, assetKindLabel
 #include <aero/editor/editor_theme.hpp>         // task E.6.1: the out-of-range axis row's neutral
 #include <aero/editor/entity_presentation.hpp>  // humanizeIdentifier, componentIconFor
@@ -311,6 +312,31 @@ FieldValue namedSelectorValue(FieldKind kind, std::size_t index) {
             break;
     }
     return FieldValue{};
+}
+
+// ---- task 4.6.1: which components Add Component offers ---------------------------------------------
+
+bool componentReferencesScriptAsset(std::string_view registrationName) {
+    const entt::meta_type metaType = resolveComponentMeta(registrationName);
+    if (!metaType) {
+        return false;
+    }
+    for (auto&& [dataId, data] : metaType.data()) {
+        (void)dataId;
+        const engine::reflect::FieldUiMeta* const uiMeta = data.custom();
+        if (uiMeta == nullptr || uiMeta->assetKind == nullptr) {
+            continue;
+        }
+        const std::optional<AssetKind> kind = assetReferenceKindFromToken(uiMeta->assetKind);
+        if (kind.has_value() && *kind == AssetKind::Script) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool addComponentOffered(std::string_view registrationName, ProjectLanguage language) {
+    return language == ProjectLanguage::Ts || !componentReferencesScriptAsset(registrationName);
 }
 
 // ---- task E.3.1: the axis row's decisions, all of them ---------------------------------------------

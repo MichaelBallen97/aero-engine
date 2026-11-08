@@ -2670,3 +2670,45 @@ TEST_CASE("inspector: the Guid row names a .ts by the project's language (task 4
     CHECK(engine::editor::guidFieldRow(*guid, &scanned->database, engine::editor::ProjectLanguage::Cpp).text ==
           "player.ts  (Text)");
 }
+
+TEST_CASE("inspector: exactly one built-in references a Script asset, found by metadata (task 4.6.1, IR25)") {
+    engine::editor::registerEditorReflection();
+    World world;
+    const std::size_t count = world.componentTypeCount();
+    REQUIRE(count > 3);  // anti-vacuity: the built-ins are registered
+
+    std::vector<std::string> scriptNames;
+    std::size_t withAssetField = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::string name(world.componentTypeName(world.componentTypeAt(i)));
+        if (engine::editor::componentReferencesScriptAsset(name)) {
+            scriptNames.push_back(name);
+        }
+        if (name == "engine::MeshRenderer" || name == "engine::AudioSource") {
+            ++withAssetField;
+            // A component with asset fields of other kinds is not a script component.
+            CHECK_FALSE(engine::editor::componentReferencesScriptAsset(name));
+        }
+    }
+    CHECK(withAssetField == 2U);
+    REQUIRE(scriptNames.size() == 1U);
+    CHECK(scriptNames.front() == "engine::ScriptComponent");
+
+    CHECK_FALSE(engine::editor::componentReferencesScriptAsset("engine::DoesNotExist"));
+    CHECK_FALSE(engine::editor::componentReferencesScriptAsset(""));
+}
+
+TEST_CASE("inspector: Add Component offers no Script-field component in a C++ project (task 4.6.1, IR26)") {
+    engine::editor::registerEditorReflection();
+    using engine::editor::addComponentOffered;
+    using engine::editor::ProjectLanguage;
+
+    CHECK(addComponentOffered("engine::ScriptComponent", ProjectLanguage::Ts));
+    CHECK_FALSE(addComponentOffered("engine::ScriptComponent", ProjectLanguage::Cpp));
+    for (const ProjectLanguage language : {ProjectLanguage::Ts, ProjectLanguage::Cpp}) {
+        CHECK(addComponentOffered("engine::MeshRenderer", language));
+        CHECK(addComponentOffered("engine::AudioSource", language));
+        CHECK(addComponentOffered("engine::Transform", language));
+        CHECK(addComponentOffered("engine::NotRegisteredAnywhere", language));
+    }
+}

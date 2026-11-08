@@ -869,13 +869,17 @@ void InspectorPanel::drawAddComponent(PanelContext& context, Entity primary) {
     if (ImGui::BeginPopup("##addComponent")) {
         bool anyAbsent = false;
         const std::size_t count = context.world.componentTypeCount();
+        const ProjectLanguage language = effectiveProjectLanguage(context.project);  // task 4.6.1 (D2)
         for (std::size_t i = 0; i < count; ++i) {
             const ComponentTypeId candidateId = context.world.componentTypeAt(i);
             if (context.world.hasRaw(candidateId, primary)) {
                 continue;
             }
-            anyAbsent = true;
             const std::string_view fullName = context.world.componentTypeName(candidateId);
+            if (!addComponentOffered(fullName, language)) {
+                continue;  // a C++ project offers no component that names a Script asset
+            }
+            anyAbsent = true;
             shortNameScratch = std::string(shortComponentName(fullName));
             // Review finding 4: keyed on the loop index -- two registered types can share a short name.
             ImGui::PushID(static_cast<int>(i));

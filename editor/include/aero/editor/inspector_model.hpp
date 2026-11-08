@@ -145,6 +145,17 @@ struct NamedSelectorRow {
 // namedSelectorRow first.
 [[nodiscard]] FieldValue namedSelectorValue(FieldKind kind, std::size_t index);
 
+// ---- task 4.6.1: which components Add Component offers ---------------------------------------------
+// A C++ project runs no script, so a component whose field names a Script asset has nothing to point at there.
+// The test is METADATA, never a name: some data member of the registered type carries an AERO_ASSET token that
+// assetReferenceKindFromToken resolves to AssetKind::Script. False for a name that resolves to no registered type.
+[[nodiscard]] bool componentReferencesScriptAsset(std::string_view registrationName);
+
+// Add Component lists `registrationName` iff this holds: every component in a TypeScript project, and in a C++
+// project every component that does not reference a Script asset. A component already on the entity is not
+// affected: the Inspector draws its card and its Remove either way.
+[[nodiscard]] bool addComponentOffered(std::string_view registrationName, ProjectLanguage language);
+
 // ---- task E.3.1: the axis row, as VALUES ----------------------------------------------------------
 // Everything the Vec3/Quat rows decide, computed OUTSIDE the draw walk so a tier-0 case asserts what
 // the panel renders -- guidFieldRow's own shape, one kind over. NOTHING here knows about a component

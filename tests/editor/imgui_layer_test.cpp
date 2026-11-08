@@ -31730,3 +31730,24 @@ TEST_CASE("editor: a Save as Prefab the write refuses warns once and scans nothi
     CHECK(app->tick() == false);
     app.reset();
 }
+
+// ---- task 4.6.1 (I387): the Add Component popup asks the gate before it lists an entry
+TEST_CASE("editor: the Add Component popup filters through addComponentOffered, by metadata (task 4.6.1, I387)") {
+    // SOURCE PIN: no tier in this tree can open a popup, so the loop's gate is pinned as text.
+    const std::vector<std::string> panel = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(panel.size() > 100);
+    const std::size_t popupAt = soleLineContaining(panel, "BeginPopup(\"##addComponent\")");
+    const std::size_t gateAt = soleLineContaining(panel, "addComponentOffered(");
+    const std::size_t absentAt = soleLineContaining(panel, "anyAbsent = true;");
+    CHECK(popupAt < gateAt);
+    CHECK(gateAt < absentAt);
+
+    // No component is named: the rule is a walk over reflection metadata.
+    const std::vector<std::string> model = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_model.cpp");
+    REQUIRE(model.size() > 100);
+    for (const std::vector<std::string>* const file : {&panel, &model}) {
+        for (const std::string& line : *file) {
+            CHECK(line.find("ScriptComponent") == std::string::npos);
+        }
+    }
+}
