@@ -57,7 +57,8 @@ struct ShellChromeRecord {
     std::string snapFormat;           // HANDED to DragFloat (the header's one stated exception)
     float snapValue = 0.0F;           // likewise
     bool playGroupDrawn = false;
-    std::array<ToolbarButtonRecord, 3> play{};  // TOOLBAR_PLAY_CONTROLS order; drawn only while playGroupDrawn
+    std::array<ToolbarButtonRecord, PLAY_CONTROL_COUNT> play{};  // TOOLBAR_PLAY_CONTROLS order
+    std::array<std::string, PLAY_CONTROL_COUNT> playTooltip{};   // the tooltip each control was given, hovered or not
     ToolbarButtonRecord undo{};
     std::string undoChip;   // the chip's text as drawn
     std::string undoLabel;  // the label as drawn; "" when none was drawn
@@ -82,6 +83,7 @@ struct ShellChromeRecord {
     std::string statusWatchInput;  // the unelided watcher text the bar was handed (StatusBarText::watch)
     std::string statusFrame;
     std::string statusBackend;
+    std::string statusPlay;  // the play segment as drawn (task 4.7.1)
     std::string statusFont;
     float statusFontSize = 0.0F;  // GetFontSize() inside the push
 };

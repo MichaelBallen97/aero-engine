@@ -10,6 +10,7 @@
 #include <aero/editor/gizmo.hpp>        // task 2.3.3 / E.6.2: TransformToolState and the operation records
 #include <aero/editor/gizmo_style.hpp>  // task E.1.5: GizmoStyle, for the read-back seam
 #include <aero/editor/panel.hpp>
+#include <aero/editor/play_session.hpp>       // task 4.7.1: GameImageRect
 #include <aero/editor/scene_bounds.hpp>       // task 3.1.5: MeshBoundsLookup, borrowed by the three consumers
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2: OverlaySegment, for the scratch member
 #include <aero/editor/view_axis_gizmo.hpp>    // task E.1.3: the corner widget's layout, poses and snap
@@ -87,6 +88,9 @@ public:
     // Unavailable: the member is default-constructed ({1.0F, AcesApprox}) and no failure path touches
     // it.
     [[nodiscard]] const render::TonemapParams& tonemapParams() const noexcept { return tonemapParamsValue; }
+    // task 4.7.1 (A3): the image's rect as the LAST drawn frame laid it out, in window points; `valid` is false when
+    // that frame drew no image. The play session's input feed reads it one frame behind (the event loop runs first).
+    [[nodiscard]] GameImageRect gameImageRect() const noexcept { return gameImageRectValue; }
 
     // Records EXACTLY what drawViewOptions' combo and slider record: a candidate value, SANITIZED on
     // store. It exists because no tier in this tree can move an ImGui slider, so the clamp would
@@ -508,6 +512,7 @@ private:
 
     // Task 3.1.5.
     const MeshBoundsLookup* meshBounds = nullptr;       // published by EditorApp, borrowed, never owned
+    GameImageRect gameImageRectValue{};                 // task 4.7.1: written every onDraw, right after the Image
     Vec2 lastImageSizePoints{};                         // the last drawn image rect's size, POINTS -- what
                                                         // pickAt needs for the screen-space disc radius
     std::optional<ViewportAssetDrop> pendingAssetDrop;  // drained by tick(), never here

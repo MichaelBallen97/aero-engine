@@ -49,12 +49,14 @@
 #include <aero/editor/asset_drag.hpp>            // task 3.1.5 -- the three drop-request structs, held by
                                                  // value in the one-shots below. PUBLIC and PURE.
 #include <aero/editor/panel_registry.hpp>
+#include <aero/editor/play_session.hpp>        // task 4.7.1 -- a VALUE member (playSessionValue); PURE
 #include <aero/editor/scene_asset_ledger.hpp>  // task 3.1.5 -- a VALUE member (sceneAssetLedger) needs
                                                // the definition, the asset_database.hpp precedent. It
                                                // is PURE: no GPU call, no disk, no ImGui.
 #include <aero/editor/scene_session.hpp>       // task 2.5.1: VALUE members SceneSession/FileFlow need the
                                                // definition, the command_stack.hpp precedent above.
 #include <aero/editor/selection.hpp>
+#include <aero/platform/event.hpp>  // task 4.7.1 -- requestGameInputEvent / pendingGameEvents
 #include <aero/rhi/types.hpp>
 #include <aero/scene/transform.hpp>  // task 3.1.5: instantiateModelDrop's root placement, by reference
 #include <aero/scene/world.hpp>
@@ -65,6 +67,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace engine::platform {
 class Window;  // task 2.5.1 (F14): a POINTER member needs only the name -- a precedent already set
@@ -819,6 +822,16 @@ public:
     void requestToolbarUndo() noexcept { pendingToolbarUndo = true; }
     // What the chrome DREW last frame (shell_chrome_record.hpp) -- the GPU tier's window onto the three strips.
     [[nodiscard]] const ShellChromeRecord& shellChromeRecord() const noexcept { return chromeRecord; }
+    // ---- task 4.7.1 -------------------------------------------------------------------------------------------
+    // The play session (play_session.hpp): the mode, the game clock and the game's own input state. READ-ONLY here;
+    // the toolbar, the chords and requestPlayControl are its only writers, through applyPlayControl.
+    [[nodiscard]] const PlaySession& playSession() const noexcept { return playSessionValue; }
+    // The toolbar's click-equivalent, the requestToolbarTool shape: applied on the NEXT tick through the control's own
+    // gate (playControlEnabled), and DROPPED, never deferred, when refused.
+    void requestPlayControl(PlayControl control) noexcept { pendingPlayControl = control; }
+    // A platform event for the GPU tier to inject as if the window had polled it: queued, and handled on the NEXT
+    // tick after the polled events, through the same handler (so the feed sees it exactly as a real one).
+    void requestGameInputEvent(const platform::Event& event) { pendingGameEvents.push_back(event); }
     // ---- task E.6.4 (D27) ------------------------------------------------------------------------------------------
     // What the Welcome window and the New Project dialog DREW last frame (project_ui_view.hpp), read from ImGui.
     [[nodiscard]] const ProjectUiRecord& projectUiRecord() const noexcept { return projectUiRecordValue; }
@@ -907,6 +920,10 @@ private:
     // task E.5.2: the ONE place a create is placed, pushed, framed and revealed. Called only from tick()'s
     // reconcile block, after the drop drain and before the context router.
     void applyCreate(CreateKind kind);
+    // task 4.7.1: one polled (or injected) platform event -- the quit, the focus pair, then the game's feed.
+    void handleEvent(const platform::Event& ev);
+    // task 4.7.1: the ONE place a control reaches the session (PlaySession::apply), plus what a transition owes.
+    void applyPlayControl(PlayControl control);
     void applyViewportDrop(const ViewportAssetDrop& drop);
     void applySlotDrop(const MaterialSlotTextureDrop& drop);
     // The import -> plan -> command sequence. `placement` is the ROOT entity's local Transform, so the
@@ -1137,6 +1154,10 @@ private:
     bool pendingToolbarSnapToggle = false;
     std::optional<float> pendingToolbarSnapStep;
     bool pendingToolbarUndo = false;
+    // ---- task 4.7.1
+    PlaySession playSessionValue;
+    std::optional<PlayControl> pendingPlayControl;
+    std::vector<platform::Event> pendingGameEvents;
     ShellChromeRecord chromeRecord;                         // shellChromeRecord()'s value, named apart from it
     ProjectUiRecord projectUiRecordValue;                   // task E.6.4: projectUiRecord()'s value
     std::optional<NewProjectInput> pendingNewProjectInput;  // task E.6.4 (D27): applied before a draw

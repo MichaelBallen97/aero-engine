@@ -42,6 +42,7 @@
 #include <aero/editor/model_import_session.hpp>  // task 3.2.1: SessionState, named directly (I52-I59)
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/picking.hpp>            // task 2.3.2
+#include <aero/editor/play_session.hpp>       // task 4.7.1 (I388-I392): PlayControl, PlayMode, the session's input
 #include <aero/editor/project.hpp>            // task 2.6.1
 #include <aero/editor/project_files.hpp>      // task E.6.3 (I326): formatFileSize, the footer's in-listing size
 #include <aero/editor/project_settings.hpp>   // task E.6.1 (I233): PROJECT_SETTINGS_PANEL_ID
@@ -59,6 +60,7 @@
 #include <aero/editor/toolbar_model.hpp>        // task E.6.2 (I306): toolbarLayout / toolbarWidths, the pure answer
 #include <aero/editor/transform_command.hpp>    // task 2.4.1
 #include <aero/editor/transform_ops.hpp>        // task 2.4.1
+#include <aero/platform/event.hpp>              // task 4.7.1 (I391): the events the game feed is handed
 #include <aero/platform/platform.hpp>
 #include <aero/reflect/material_format.hpp>  // task 3.4.2: MaterialDocument, named directly (I84)
 #include <aero/render/debug_grid.hpp>        // task E.5.2 (I254): debugGridDepthNudge
@@ -24491,7 +24493,8 @@ TEST_CASE("editor: the status bar -- ~ root, watcher, count, readout and backend
 }
 
 TEST_CASE(
-    "editor: the toolbar's mode is the layout's answer for what it measured; play is disabled (task E.6.2, I306)") {
+    "editor: the toolbar's mode is the layout's answer for what it measured, and the play group obeys the play rules "
+    "(task E.6.2, I306)") {
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
@@ -24515,12 +24518,11 @@ TEST_CASE(
         const engine::editor::ToolbarWidthPair widths = engine::editor::toolbarWidths(r.metrics);
         CHECK((r.fullWidths == widths.full));
         CHECK((r.compactWidths == widths.compact));
-        const auto total = [](const engine::editor::ToolbarWidths& w, bool play) {
-            return w.tools + w.space + w.snap + (play ? w.play : 0.0F) + w.undo;
+        const auto total = [](const engine::editor::ToolbarWidths& w) {
+            return w.tools + w.space + w.snap + w.play + w.undo;
         };
-        CHECK(total(r.fullWidths, true) > total(r.compactWidths, true));
-        CHECK(total(r.compactWidths, true) > total(r.compactWidths, false));
-        CHECK(total(r.compactWidths, false) > 0.0F);
+        CHECK(total(r.fullWidths) > total(r.compactWidths));
+        CHECK(total(r.compactWidths) > 0.0F);
         // What ImGui DREW sits where the layout put it: each group's first item one group padding in from the
         // group's x, Undo at undoX, each button exactly its measured width. Sums on both sides, in the chrome's own
         // order, never a subtraction ((a + b) - a is not b in float).
@@ -24544,23 +24546,16 @@ TEST_CASE(
         CHECK(r.tools[3].max.x <= r.space[0].min.x);
         CHECK(r.space[1].max.x <= r.snapToggle.min.x);
         CHECK(r.snapToggle.max.x <= r.snapField.min.x);
-        if (r.playGroupDrawn) {
-            CHECK(r.play[0].min.x == barX + r.layout.playX);
-            CHECK(r.snapField.max.x <= r.play[0].min.x);
-            CHECK(r.play[2].max.x <= r.undo.min.x);
-        } else {
-            CHECK(r.snapField.max.x <= r.undo.min.x);
-        }
+        // The play group is drawn in every mode (task 4.7.1, call 6) and never overlaps its neighbours.
+        CHECK(r.playGroupDrawn);
+        CHECK(r.play[0].min.x == barX + r.layout.playX);
+        CHECK(r.snapField.max.x <= r.play[0].min.x);
+        CHECK(r.play[3].max.x <= r.undo.min.x);
         if (width == 320) {
-            CHECK((r.layout.mode == engine::editor::ToolbarMode::Minimal));  // a runner only narrows
+            CHECK((r.layout.mode == engine::editor::ToolbarMode::Compact));  // a runner only narrows
         }
-        if (r.layout.playDrawn) {
-            CHECK(r.playGroupDrawn);
-            for (const engine::editor::ToolbarButtonRecord& button : r.play) {
-                CHECK_FALSE(button.enabled);  // seed S39: ImGui's own Disabled flag on each drawn button
-            }
-        } else if (width >= 900) {
-            WARN(r.layout.playDrawn);  // a runner narrower than Compact: geometry, not a defect
+        for (const engine::editor::ToolbarButtonRecord& button : r.play) {
+            CHECK_FALSE(button.enabled);  // seed S39, kept: no project is open, so ImGui's Disabled flag is on each
         }
         if (width == 1280) {
             WARN((r.layout.mode == engine::editor::ToolbarMode::Full));
@@ -24625,9 +24620,11 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
         CHECK(countLinesContaining(code, "= shellBarHeight(statusBarHeightDp(EDITOR_THEME), s)") == 1U);
         CHECK(countLinesContaining(code, "HeightDp(EDITOR_THEME) *") == 0U);
     }
-    SUBCASE("(e) the play group: one disabled pair, AllowWhenDisabled, the one tooltip (seed S40, drift)") {
-        CHECK(countLinesContaining(code, "ImGui::BeginDisabled();") == 1U);
-        CHECK(countLinesContaining(code, "SetTooltip(\"%s\", PLAY_CONTROLS_TOOLTIP") == 1U);
+    SUBCASE("(e) the play group: one BeginDisabled(!enabled), segmentButton, the tooltip from playControlTooltip") {
+        CHECK(countLinesContaining(code, "ImGui::BeginDisabled();") == 0U);
+        CHECK(countLinesContaining(code, "ImGui::BeginDisabled(!enabled);") == 1U);
+        CHECK(countLinesContaining(code, "playControlTooltip(") == 1U);
+        CHECK(countLinesContaining(code, "PLAY_CONTROLS_TOOLTIP") == 0U);
         CHECK(countLinesContaining(code, "SetItemTooltip(") == 0U);
     }
     SUBCASE("(f) the snap commit comes from the pure rule, called once with ImGui's own edge (seed S9)") {
@@ -24677,7 +24674,7 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
                 }
             }
         }
-        CHECK(calls >= 2U);  // ANTI-VACUITY: itemTooltip's and the play group's SetTooltip
+        CHECK(calls >= 1U);  // ANTI-VACUITY: itemTooltip's SetTooltip (task 4.7.1: the play group shares it)
         CHECK(countLinesContaining(code, "TextUnformatted(") >= 6U);  // every user string goes this way
     }
     SUBCASE("(j) every request is gated on its control's predicate AND no modal (seeds S21, S22)") {
@@ -24745,19 +24742,20 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
         // task E.6.3: the segmented group's reads moved to panel_chrome_ui.cpp with segmentButton and
         // segmentGroupBackground -- raised 3 -> 2, border 2 -> 1, active 3 -> 1, accent 2 -> 1, textSecondary 3 -> 1,
         // textMuted 6 -> 5 -- and textBright and onAccent left this file (asserted 0 below).
-        constexpr std::array<RoleCount, 13> COUNTS{{{"chrome", 2U},
-                                                    {"raised", 2U},
-                                                    {"border", 1U},
-                                                    {"active", 1U},
-                                                    {"hover", 1U},
-                                                    {"accent", 1U},
-                                                    {"textSecondary", 1U},
-                                                    {"textMuted", 5U},
-                                                    {"textLabel", 1U},
-                                                    {"text", 1U},
-                                                    {"textFaint", 1U},
-                                                    {"warning", 1U},
-                                                    {"divider", 2U}}};
+        constexpr std::array<RoleCount, 13> COUNTS{
+            {{"chrome", 2U},
+             {"raised", 2U},
+             {"border", 1U},
+             {"active", 1U},
+             {"hover", 1U},
+             {"accent", 1U},
+             {"textSecondary", 1U},
+             {"textMuted", 5U},
+             {"textLabel", 1U},
+             {"text", 2U},  // the body text, and (task 4.7.1) the status bar's play segment
+             {"textFaint", 1U},
+             {"warning", 1U},
+             {"divider", 2U}}};
         for (const RoleCount& row : COUNTS) {
             CAPTURE(row.role);
             CHECK(reads(row.role) == row.count);
@@ -31750,4 +31748,331 @@ TEST_CASE("editor: the Add Component popup filters through addComponentOffered, 
             CHECK(line.find("ScriptComponent") == std::string::npos);
         }
     }
+}
+
+// ---- task 4.7.1 (I388-I392): the toolbar's play controls, the game clock and the game's input feed -----------------
+namespace {
+
+// A project in `language` opened at create(): the tick that follows has an open project, with the watcher off.
+[[nodiscard]] std::optional<engine::editor::EditorApp> openPlayApp(engine::rhi::Device& device,
+                                                                   engine::platform::Window& window,
+                                                                   engine::platform::Context& ctx,
+                                                                   engine::editor::ProjectLanguage language) {
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", language);
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(device, window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .assetWatch = {.enabled = false}});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    return app;
+}
+
+// Ticks until the keyboard sits in `panelId`, bounded; the focus lands a tick or two after the request.
+void playWaitForKeyboard(engine::editor::EditorApp& app, std::string_view panelId) {
+    constexpr int MAX_TICKS = 8;
+    int ticks = 0;
+    while (ticks < MAX_TICKS && app.keyboardFocusPanelId() != panelId) {
+        REQUIRE(app.tick());
+        ++ticks;
+    }
+    REQUIRE(app.keyboardFocusPanelId() == panelId);  // the predicate ended the loop, never the bound
+}
+
+[[nodiscard]] engine::platform::Event playKeyEvent(engine::platform::EventType type, engine::platform::Key code) {
+    engine::platform::Event ev;
+    ev.type = type;
+    ev.key.code = code;
+    return ev;
+}
+
+[[nodiscard]] std::string playStatusPrefix(engine::editor::PlayMode mode) {
+    return std::string(mode == engine::editor::PlayMode::Playing ? "Playing" : "Paused") + " \xC2\xB7 frame ";
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: Play in a TypeScript project hands the Viewport the keyboard and runs the clock (task 4.7.1, I388)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i388", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+    CHECK((app->playSession().mode() == engine::editor::PlayMode::Edit));
+    CHECK(r.statusPlay.empty());
+    CHECK(r.play[0].enabled);  // an open TypeScript project: Play is available
+    CHECK_FALSE(r.play[1].enabled);
+    CHECK_FALSE(r.play[2].enabled);
+    CHECK_FALSE(r.play[3].enabled);
+
+    app->requestPlayControl(engine::editor::PlayControl::Play);
+    REQUIRE(app->tick());
+    CHECK((app->playSession().mode() == engine::editor::PlayMode::Playing));
+    REQUIRE(app->tick());  // the controls draw the new mode one tick after it is applied
+    CHECK(r.play[0].drawnActive);
+    CHECK_FALSE(r.play[0].enabled);
+    CHECK(r.play[1].enabled);
+    CHECK_FALSE(r.play[2].enabled);
+    CHECK(r.play[3].enabled);
+    playWaitForKeyboard(*app, "Viewport");  // the one focus slot handed it over (D5)
+
+    std::uint64_t previous = app->playSession().frame();
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        const std::uint64_t frame = app->playSession().frame();
+        CAPTURE(i);
+        CHECK(frame == previous + 1U);  // one game frame per editor tick
+        CHECK(r.statusPlay == playStatusPrefix(engine::editor::PlayMode::Playing) + std::to_string(frame));
+        previous = frame;
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Pause, Step, resume and Stop move the frame count as the plan says (task 4.7.1, I389)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i389", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+
+    app->requestPlayControl(PlayControl::Pause);
+    REQUIRE(app->tick());
+    CHECK((app->playSession().mode() == PlayMode::Paused));
+    REQUIRE(app->tick());
+    CHECK(r.play[1].drawnActive);
+    CHECK_FALSE(r.play[0].drawnActive);
+    CHECK(r.play[2].enabled);  // Step is live while paused
+    const std::uint64_t frozen = app->playSession().frame();
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->playSession().frame() == frozen);  // paused: N does not move
+    }
+    CHECK(r.statusPlay == playStatusPrefix(PlayMode::Paused) + std::to_string(frozen));
+
+    app->requestPlayControl(PlayControl::Step);
+    REQUIRE(app->tick());  // the request is applied: one step is queued
+    REQUIRE(app->tick());  // and the next tick runs it
+    CHECK(app->playSession().frame() == frozen + 1U);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->playSession().frame() == frozen + 1U);  // exactly one
+    }
+
+    app->requestPlayControl(PlayControl::Pause);  // resume
+    REQUIRE(app->tick());
+    CHECK((app->playSession().mode() == PlayMode::Playing));
+    const std::uint64_t resumed = app->playSession().frame();
+    e62Ticks(*app, 3);
+    CHECK(app->playSession().frame() == resumed + 3U);
+
+    // A Step request while Playing is refused by the control's own gate: nothing extra runs.
+    app->requestPlayControl(PlayControl::Step);
+    const std::uint64_t beforeStep = app->playSession().frame();
+    REQUIRE(app->tick());
+    CHECK(app->playSession().frame() == beforeStep + 1U);
+    REQUIRE(app->tick());
+    CHECK(app->playSession().frame() == beforeStep + 2U);
+    CHECK_FALSE(app->playSession().stepQueued());
+
+    app->requestPlayControl(PlayControl::Stop);
+    REQUIRE(app->tick());
+    CHECK((app->playSession().mode() == PlayMode::Edit));
+    REQUIRE(app->tick());
+    CHECK(r.statusPlay.empty());
+    CHECK(r.play[0].enabled);
+    CHECK_FALSE(r.play[0].drawnActive);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: no play control is reachable in a C++ project or with no project open (task 4.7.1, I390)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i390", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const auto refused = [](engine::editor::EditorApp& app, std::string_view reason) {
+        const engine::editor::ShellChromeRecord& r = app.shellChromeRecord();
+        for (std::size_t i = 0; i < r.play.size(); ++i) {
+            CAPTURE(i);
+            CHECK_FALSE(r.play[i].enabled);
+            CHECK(r.playTooltip[i] == reason);
+        }
+        app.requestPlayControl(engine::editor::PlayControl::Play);
+        e62Ticks(app, 3);
+        CHECK((app.playSession().mode() == engine::editor::PlayMode::Edit));  // the request was dropped
+        CHECK(app.shellChromeRecord().statusPlay.empty());
+    };
+    SUBCASE("a C++ project") {
+        std::optional<engine::editor::EditorApp> app =
+            openPlayApp(*device, *window, ctx, engine::editor::ProjectLanguage::Cpp);
+        REQUIRE(app.has_value());
+        refused(*app, "A C++ game runs as its own build");
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+    SUBCASE("no project") {
+        std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+        REQUIRE(app.has_value());
+        refused(*app, "No project is open");
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+}
+
+TEST_CASE("editor: the game's input follows the Viewport's focus, edges and image (task 4.7.1, I391)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i391", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    using engine::editor::PlayControl;
+    using engine::platform::EventType;
+    using engine::platform::Key;
+    const engine::editor::PlaySession& session = app->playSession();
+    app->requestPlayControl(PlayControl::Play);
+    REQUIRE(app->tick());
+    playWaitForKeyboard(*app, "Viewport");
+    // An injected focus event, so a runner whose window is not in front cannot decide the case.
+    engine::platform::Event gained;
+    gained.type = EventType::WindowFocusGained;
+    app->requestGameInputEvent(gained);
+    REQUIRE(app->tick());
+    REQUIRE(app->keyboardFocusPanelId() == "Viewport");
+    REQUIRE(session.gameFocused());
+
+    app->requestPlayControl(PlayControl::Pause);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestGameInputEvent(playKeyEvent(EventType::KeyDown, Key::Space));
+    REQUIRE(app->tick());
+    CHECK(session.input().keyDown(Key::Space));
+    CHECK(session.input().keyPressed(Key::Space));  // paused: nothing cleared the edge
+
+    app->requestPlayControl(PlayControl::Step);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());  // the frame ran
+    CHECK_FALSE(session.input().keyPressed(Key::Space));
+    CHECK(session.input().keyDown(Key::Space));
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    const engine::editor::GameImageRect rect = viewport->gameImageRect();
+    if (rect.valid) {
+        engine::platform::Event press;
+        press.type = EventType::MouseButtonDown;
+        press.mouseButton.button = engine::platform::MouseButton::Left;
+        press.mouseButton.x = rect.min.x + 10.0F;
+        press.mouseButton.y = rect.min.y + 20.0F;
+        press.mouseButton.clicks = 1;
+        app->requestGameInputEvent(press);
+        REQUIRE(app->tick());
+        CHECK(session.input().mouseButtonDown(engine::platform::MouseButton::Left));
+        CHECK(session.input().mousePosition().x == doctest::Approx(10.0F));  // image-relative
+        CHECK(session.input().mousePosition().y == doctest::Approx(20.0F));
+    } else {
+        MESSAGE("the Viewport drew no image on this runner: the pointer arm is not exercised");
+    }
+
+    // Another panel takes the keyboard: the game gets one released edge per held key, and nothing after.
+    app->requestPanelFocus("Hierarchy");
+    playWaitForKeyboard(*app, "Hierarchy");
+    CHECK_FALSE(session.gameFocused());
+    CHECK(session.input().keyReleased(Key::Space));
+    CHECK_FALSE(session.input().keyDown(Key::Space));
+    CHECK_FALSE(session.input().mouseButtonDown(engine::platform::MouseButton::Left));
+    app->requestGameInputEvent(playKeyEvent(EventType::KeyDown, Key::W));
+    REQUIRE(app->tick());
+    CHECK_FALSE(session.input().keyDown(Key::W));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the pads, the chords and the feed are wired once, as source text (task 4.7.1, I392)") {
+    const std::string needle = std::string("Gamepad") + "Drivers::System";
+    const std::vector<std::string> mainFile = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/main.cpp");
+    REQUIRE(mainFile.size() > 10U);
+    CHECK(countLinesContaining(mainFile, needle) == 1U);
+    // No test under tests/editor/ constructs a Context with the system drivers, and this case names none either.
+    const std::filesystem::path testsRoot =
+        std::filesystem::path(AERO_EDITOR_SRC_DIR).parent_path().parent_path() / "tests" / "editor";
+    std::size_t scanned = 0;
+    std::error_code ec;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(testsRoot, ec)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".cpp") {
+            continue;
+        }
+        ++scanned;
+        CAPTURE(entry.path().filename().string());
+        CHECK(countLinesContaining(editorSourceCodeLines(entry.path().string()), needle) == 0U);
+    }
+    CHECK_FALSE(ec);
+    CHECK(scanned > 20U);  // anti-vacuity: the walk really read the directory
+
+    const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+    for (const std::string_view chord : {"ImGuiMod_Ctrl | ImGuiKey_P, FILE_SHORTCUT_FLAGS",
+                                         "ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P, FILE_SHORTCUT_FLAGS",
+                                         "ImGuiMod_Ctrl | ImGuiMod_Alt | ImGuiKey_P, FILE_SHORTCUT_FLAGS"}) {
+        CAPTURE(chord);
+        CHECK(countLinesContaining(shell, chord) == 1U);
+    }
+    CHECK(countLinesContaining(shell, "state.playChord =") == 3U);  // the chords only record
+    CHECK(countLinesContaining(shell, "playControlPressed") == 0U);
+    CHECK(countLinesContaining(shell, "ImGui::SetWindowFocus(") == 3U);  // I159(a)'s count still holds
+
+    const std::vector<std::string> app = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+    CHECK(countLinesContaining(app, ".feed(") == 1U);
+    const std::size_t handlerAt = soleLineContaining(app, "void EditorApp::handleEvent(const platform::Event& ev) {");
+    const std::size_t feedAt = soleLineContaining(app, "playSessionValue.feed(ev,");
+    CHECK(handlerAt < feedAt);
 }

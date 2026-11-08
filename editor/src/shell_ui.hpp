@@ -8,6 +8,7 @@
 #include <aero/editor/create_menu.hpp>     // task E.5.2: CreateKind, BY VALUE below -- PUBLIC and PURE
 #include <aero/editor/gizmo.hpp>           // task E.6.2: TransformTool, GizmoSpace, TransformToolState -- PURE
 #include <aero/editor/panel_registry.hpp>
+#include <aero/editor/play_session.hpp>         // task 4.7.1: PlayMode, PlayControl, PlayChord -- PURE
 #include <aero/editor/project_ui_view.hpp>      // task E.6.4: ProjectUiRecord, NewProjectAnswer -- PURE
 #include <aero/editor/scene_session.hpp>        // task 2.5.1: FileMenuContext names FileFlow/FileDialogHost
 #include <aero/editor/shell_chrome_record.hpp>  // task E.6.2: the OUT target -- PURE
@@ -101,6 +102,19 @@ struct ShellUiState {
     const StatusBarText* statusText = nullptr;
     // OUT target: what the chrome drew (D21). Null records nothing.
     ShellChromeRecord* chromeRecord = nullptr;
+    // ---- task 4.7.1 (appended LAST: a designated initialiser follows declaration order) -------------------------
+    // IN: the session's mode and the project's availability, read by every play control's predicate this frame.
+    PlayMode playMode = PlayMode::Edit;
+    PlayAvailability playAvailability = PlayAvailability::NoProject;
+    // IN, a per-tick COPY of EditorApp's pending request (the toolbarToolRequest shape): it does what a click on the
+    // control could do THIS frame -- nothing while the control is drawn disabled or a modal is open.
+    std::optional<PlayControl> playControlRequest;
+    // OUT, one-shot: the chord the menu bar saw this frame. It only records; the toolbar resolves it through the
+    // control's own gate (playControlEnabled), so a chord can never do more than a click.
+    std::optional<PlayChord> playChord;
+    // OUT, one-shot: the control the toolbar accepted this frame (a click, a request or a chord). EditorApp applies
+    // it after drawShellUi.
+    std::optional<PlayControl> playControlPressed;
 };
 
 // task 2.5.1 (plan A14): everything the File menu needs that PanelContext deliberately does NOT

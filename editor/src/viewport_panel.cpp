@@ -629,6 +629,7 @@ void ViewportPanel::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExtent
 }
 
 void ViewportPanel::onDraw(PanelContext& context) {
+    gameImageRectValue.valid = false;  // task 4.7.1: true again only on a frame that draws the image
     // Step 1 (E1): a NaN-safe negated `>` so a degenerate/zero-area panel returns before ANYTHING —
     // no init, no resize, no Image, no request. Covers minimize, collapse and a zero-size dock node.
     const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -721,6 +722,7 @@ void ViewportPanel::onDraw(PanelContext& context) {
     const Vec2 hudImageMin{imageItemMin.x + imageBorder, imageItemMin.y + imageBorder};
     const Vec2 hudImageMax{imageItemMax.x - imageBorder, imageItemMax.y - imageBorder};
     lastImageSizePoints = Vec2{avail.x, avail.y};  // task 3.1.5: what pickAt needs, latched here
+    gameImageRectValue = GameImageRect{.min = hudImageMin, .max = hudImageMax, .valid = true};  // task 4.7.1 (A3)
 
     // --- 8b-drop (task 3.1.5). BEFORE the gesture block, so a live payload suppresses the very
     // inputs computed just below it. While ANY drag payload is live the viewport is a DROP TARGET,

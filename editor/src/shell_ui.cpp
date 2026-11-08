@@ -89,6 +89,20 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     // Ctrl+Y is DELIBERATELY NOT bound (D13): ImGuiMod_Ctrl is Cmd on macOS, so a global Ctrl+Y would
     // bind ⌘Y, which is redo on no platform. InputText keeps its own local Ctrl+Y and is unaffected.
 
+    // task 4.7.1 (D8): Play / Stop, Pause / Resume and Step. RouteGlobal and no Repeat, so a held chord acts once and
+    // a focused InputText wins it back. Each one only RECORDS: the toolbar resolves it through the control's own gate
+    // (playControlEnabled's inputFree), so these are deliberately not gated on `fileEnabled` here. The exact
+    // modifier match keeps the three from crossing, and Ctrl+Shift+P is not Ctrl+P.
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_P, FILE_SHORTCUT_FLAGS)) {
+        state.playChord = PlayChord::PlayOrStop;
+    }
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P, FILE_SHORTCUT_FLAGS)) {
+        state.playChord = PlayChord::PauseOrResume;
+    }
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Alt | ImGuiKey_P, FILE_SHORTCUT_FLAGS)) {
+        state.playChord = PlayChord::Step;
+    }
+
     // The three I/O chords additionally require sceneIoAvailable() (D18/AC-6) -- New Scene does not,
     // because it needs no serialization at all.
     const bool io = fileEnabled && sceneIoAvailable();

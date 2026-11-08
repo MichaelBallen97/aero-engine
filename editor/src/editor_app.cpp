@@ -98,6 +98,10 @@ namespace {
 // used by the id lookup and by the command's own label, so the two can never disagree.
 constexpr std::string_view MESH_RENDERER_TYPE_NAME = "engine::MeshRenderer";
 
+// ViewportPanel::id()'s frozen value (D16): the comparison that decides game focus and the request that hands the
+// Viewport the keyboard at Play both read THIS, never a second literal.
+constexpr std::string_view VIEWPORT_ID = "Viewport";
+
 // task 3.1.5: the leaf name with its LAST extension removed -- what the instantiation plan names the
 // synthetic root. A leaf with no dot, or a leading-dot name, keeps its whole leaf: a hidden file's
 // name is not an extension.
@@ -605,6 +609,58 @@ void EditorApp::persistProjectState() {
     projectStateScene = scene;
 }
 
+void EditorApp::applyPlayControl(PlayControl control) {
+    const PlayTransition transition = playSessionValue.apply(control);
+    switch (transition) {  // NO default:
+        case PlayTransition::Started:
+            // Handoffs: 4.7.3 saves and 4.7.2 snapshots the scene BEFORE apply on Edit -> Playing; 4.7.4 runs onInit
+            // after it. The one focus slot hands the Viewport the keyboard on the next tick (D5).
+            requestedPanelFocus = VIEWPORT_ID;
+            if (ctx != nullptr) {
+                playSessionValue.adoptConnectedPads(ctx->input());  // A6: a pad plugged in before Play
+            }
+            break;
+        case PlayTransition::Stopped:  // handoffs: 4.7.4's onDestroy runs here, and then 4.7.2's restore
+        case PlayTransition::None:
+        case PlayTransition::Paused:
+        case PlayTransition::Resumed:
+        case PlayTransition::StepQueued:
+            break;
+    }
+}
+
+void EditorApp::handleEvent(const platform::Event& ev) {
+    switch (ev.type) {
+        case platform::EventType::Quit:
+        case platform::EventType::WindowClose:
+            requestGuardedQuit();  // task 2.5.1, D1: route the OS quit / window [X] through the
+                                   // guard instead of quitting immediately. Observable consequence:
+                                   // closing a CLEAN editor now draws one more frame before exiting
+                                   // -- deliberate (AC-28), not a regression.
+            break;
+        case platform::EventType::WindowFocusGained:
+            windowFocused = true;
+            // task 3.1.4 (D6/AC-25): the alt-tab-back path, and the whole of it. Sweeps continue
+            // (slower) while unfocused, so a change made in another application is usually
+            // already SETTLED by the time focus returns and the first post-focus sweep fires it.
+            assetWatcher.requestImmediateSweep();
+            break;
+        case platform::EventType::WindowFocusLost:
+            windowFocused = false;
+            break;
+        default:
+            break;  // resize is the swapchain's business
+    }
+    // task 4.7.1 (D5): the last statement. A focus change re-decides game focus first (a loss releases what the game
+    // holds), then the event reaches the game's state iff the game has focus.
+    if (ev.type == platform::EventType::WindowFocusGained || ev.type == platform::EventType::WindowFocusLost) {
+        playSessionValue.setGameFocus(
+            gameHasFocus(playSessionValue.mode(), keyboardFocusPanel == VIEWPORT_ID, windowFocused));
+    }
+    playSessionValue.feed(ev, viewportPanel != nullptr ? viewportPanel->gameImageRect() : GameImageRect{},
+                          currentHostOs());
+}
+
 bool EditorApp::tick() {
     if (!running) {
         presented = false;  // nothing reached the screen this tick — keep presentedLastFrame() honest
@@ -615,27 +671,14 @@ bool EditorApp::tick() {
     ctx->newFrame();
     platform::Event ev;
     while (ctx->pollEvent(ev)) {  // ImGui sees every raw event via the D5 sink
-        switch (ev.type) {
-            case platform::EventType::Quit:
-            case platform::EventType::WindowClose:
-                requestGuardedQuit();  // task 2.5.1, D1: route the OS quit / window [X] through the
-                                       // guard instead of quitting immediately. Observable consequence:
-                                       // closing a CLEAN editor now draws one more frame before exiting
-                                       // -- deliberate (AC-28), not a regression.
-                break;
-            case platform::EventType::WindowFocusGained:
-                windowFocused = true;
-                // task 3.1.4 (D6/AC-25): the alt-tab-back path, and the whole of it. Sweeps continue
-                // (slower) while unfocused, so a change made in another application is usually
-                // already SETTLED by the time focus returns and the first post-focus sweep fires it.
-                assetWatcher.requestImmediateSweep();
-                break;
-            case platform::EventType::WindowFocusLost:
-                windowFocused = false;
-                break;
-            default:
-                break;  // resize is the swapchain's business
-        }
+        handleEvent(ev);
+    }
+    // task 4.7.1: the GPU tier's injected events, after the polled ones and through the same handler. A copy, so a
+    // handler that queues another cannot invalidate the walk.
+    const std::vector<platform::Event> injected = std::move(pendingGameEvents);
+    pendingGameEvents.clear();
+    for (const platform::Event& queued : injected) {
+        handleEvent(queued);
     }
     if (!running) {
         // Reachable only through a DIRECT requestQuit() call (D14) -- the window [X] / OS Quit path
@@ -649,6 +692,12 @@ bool EditorApp::tick() {
     // task E.6.2 (D14): the RAW delta -- a stall shown honestly, not the 0.25-s clamp -- on the statement after the
     // clock's own tick (I308 pins the adjacency).
     frameReadout.add(frameClock.rawDeltaSeconds());
+    // task 4.7.1 (D6): the game's clock, one frame per editor tick while Playing, one per Step while Paused. 4.7.4 runs
+    // ScriptSystem::update(sceneWorld, frame.deltaSeconds) HERE, before the edges clear; until then the frame is
+    // counted and its edges consumed, so an edge made while paused reaches the next frame that runs (D11).
+    if (const GameFrame frame = playSessionValue.advance(frameClock.deltaSeconds()); frame.runs) {
+        playSessionValue.endGameFrame();
+    }
 
     // Task 2.2.5 (D14): drain the sink EVERY frame, visible or not -- shell_ui.cpp:74-79 never calls
     // onDraw for a hidden or tabbed-away panel, and Console shares its dock node with Assets. Not an
@@ -1253,7 +1302,8 @@ bool EditorApp::tick() {
     const WatchState watchState = classifyWatchState(project.isOpen(), assetWatcher.status());
     const StatusBarText statusText =
         statusBarText(project.isOpen(), abbreviateHome(projectRoot, homeDirectory), projectRoot, watchState,
-                      assetWatcher.status().unreadableDirs, assetCount(), frameReadout, backendLabel);
+                      assetWatcher.status().unreadableDirs, assetCount(), frameReadout, backendLabel,
+                      playStatusText(playSessionValue.mode(), playSessionValue.frame()));
     layer.beginFrame();
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout,
                     .placeUnplacedPanels = placeUnplacedPanels,
@@ -1274,7 +1324,11 @@ bool EditorApp::tick() {
                     .toolbarUndoRequest = pendingToolbarUndo,
                     .tools = &transformTools,
                     .statusText = &statusText,
-                    .chromeRecord = &chromeRecord};
+                    .chromeRecord = &chromeRecord,
+                    // task 4.7.1: the mode, the project's availability and a COPY of the pending control.
+                    .playMode = playSessionValue.mode(),
+                    .playAvailability = playAvailability(project.isOpen(), project.manifest().language),
+                    .playControlRequest = pendingPlayControl};
     // Consumed: a request never survives the tick that carried it. Unlike applyDefaultLayout below,
     // these are NOT read back out of `ui` -- drawShellUi clears them as it applies them, and reading
     // them back would re-arm the request every frame (task 2.4.1).
@@ -1288,6 +1342,7 @@ bool EditorApp::tick() {
     pendingToolbarSnapToggle = false;
     pendingToolbarSnapStep.reset();
     pendingToolbarUndo = false;
+    pendingPlayControl.reset();
     // rebuilt per frame (D7); deltaSeconds is this frame's SPIKE-CLAMPED delta (task 2.3.1);
     // commandStack is the editor's ONE undo history (task 2.4.1 D7); rootOrder is the editor's ONE
     // display order among root entities (task 2.4.2 D10); project is the open project (task 2.6.2
@@ -1396,6 +1451,13 @@ bool EditorApp::tick() {
     // task E.3.2's keyboard fix: which window holds the keyboard after this tick's draw walk. A plain
     // string copied out of the shell state, so this file still names no ImGui symbol (I159(c)).
     keyboardFocusPanel = std::move(ui.keyboardFocusWindow);
+    // task 4.7.1: the control the toolbar accepted (a click, a request or a chord), applied once; then game focus is
+    // decided from the keyboard's new holder (the Viewport two ticks after Play, D5).
+    if (ui.playControlPressed.has_value()) {
+        applyPlayControl(*ui.playControlPressed);
+    }
+    playSessionValue.setGameFocus(
+        gameHasFocus(playSessionValue.mode(), keyboardFocusPanel == VIEWPORT_ID, windowFocused));
     // D3: the offscreen scene pass runs AFTER the draw walk (only it knows this frame's panel size,
     // which is what removes the one-frame resize lag) and BEFORE endFrame (ImGui's command buffer is
     // acquired and submitted there; ours must be submitted first -- F8's ordering guarantee, and F7

@@ -180,7 +180,8 @@ std::string frameReadoutText(const FrameTimeReadout& readout) {
 
 StatusBarText statusBarText(bool projectOpen, std::string_view rootDisplay, std::string_view rootFull,
                             WatchState watchState, std::size_t unreadableDirs, std::size_t assetCount,
-                            const FrameTimeReadout& readout, std::string_view backendLabel) {
+                            const FrameTimeReadout& readout, std::string_view backendLabel,
+                            std::string_view playSegment) {
     StatusBarText text;
     text.projectOpen = projectOpen;
     if (projectOpen) {
@@ -192,6 +193,7 @@ StatusBarText statusBarText(bool projectOpen, std::string_view rootDisplay, std:
     }
     text.frame = frameReadoutText(readout);
     text.backend = std::string(backendLabel);
+    text.play = std::string(playSegment);
     return text;
 }
 
@@ -210,9 +212,12 @@ StatusBarLayout statusBarLayout(float barWidth, const StatusBarText& text, const
     // (1) The right zone: whole, right-aligned. It never yields.
     out.frame = text.frame;
     out.backend = text.backend;
-    const float rightWidth = w(text.frame) + (text.backend.empty() ? 0.0F : gap + w(text.backend));
+    out.play = text.play;
+    const float playWidth = w(text.play) + (text.play.empty() ? 0.0F : gap);
+    const float rightWidth = playWidth + w(text.frame) + (text.backend.empty() ? 0.0F : gap + w(text.backend));
     out.rightStart = width - pad - rightWidth;
-    out.frameX = out.rightStart;
+    out.playX = out.rightStart;
+    out.frameX = out.playX + playWidth;
     out.backendX = out.frameX + w(text.frame) + (text.frame.empty() ? 0.0F : gap);
 
     const float budget = out.rightStart - gap - pad;  // what the left zone may use

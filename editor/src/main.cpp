@@ -15,7 +15,10 @@ namespace {
 // docs/04: no exceptions across a public API boundary — main() is this executable's outermost one.
 int runEditor(std::string_view rootArg) {
     using namespace engine;  // exe TU (not a header) — docs/04 forbids this only in headers
-    platform::Context ctx;
+    // task 4.7.1 (D9): the editor's pads are read through the system drivers, so a pad connected before or during Play
+    // reaches the game while it has focus. They are read only while the editor window is in front; on Windows a
+    // DirectInput start-up can stall (R38).
+    platform::Context ctx{platform::ContextConfig{.gamepads = platform::GamepadDrivers::System}};
     if (!ctx.valid()) {
         AERO_LOG_CRITICAL("editor: platform init failed");
         return 1;

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <numeric>
 
@@ -86,16 +87,17 @@ ToolbarWidthPair toolbarWidths(const ToolbarMetrics& m) noexcept {
     const float space = twoPads + m.localSegment + m.worldSegment;
     const float slot = UNDO_LABEL_SLOT_EM * m.fontSize;
     const float undoCompact = m.undoButton + m.itemSpacing + m.undoChip;
+    const float playSpacing = static_cast<float>(PLAY_CONTROL_COUNT - 1U) * m.itemSpacing;  // between 4 buttons
     return ToolbarWidthPair{
         .full = ToolbarWidths{.tools = twoPads + sum(m.toolFull),
                               .space = space,
                               .snap = twoPads + m.snapToggleFull + m.itemSpacing + m.snapField,
-                              .play = sum(m.playFull) + (2.0F * m.itemSpacing),
+                              .play = sum(m.playFull) + playSpacing,
                               .undo = undoCompact + m.itemSpacing + slot},
         .compact = ToolbarWidths{.tools = twoPads + sum(m.toolCompact),
                                  .space = space,
                                  .snap = twoPads + m.snapToggleCompact + m.itemSpacing + m.snapField,
-                                 .play = sum(m.playCompact) + (2.0F * m.itemSpacing),
+                                 .play = sum(m.playCompact) + playSpacing,
                                  .undo = undoCompact}};
 }
 
@@ -109,24 +111,17 @@ ToolbarLayout toolbarLayout(float barWidth, const ToolbarWidths& full, const Too
         return pad + w.tools + gap + w.space + gap + w.snap + gap + w.play + gap + w.undo + pad;
     };
     ToolbarLayout out;
-    if (required(full) <= width) {
-        out.mode = ToolbarMode::Full;
-    } else if (required(compact) <= width) {
-        out.mode = ToolbarMode::Compact;
-    } else {
-        out.mode = ToolbarMode::Minimal;
-    }
+    // Full when it fits, else Compact (call 6: nothing narrower exists; the window clips below Compact's width).
+    out.mode = required(full) <= width ? ToolbarMode::Full : ToolbarMode::Compact;
     const ToolbarWidths& w = out.mode == ToolbarMode::Full ? full : compact;
     out.toolsX = pad;
     out.spaceX = out.toolsX + w.tools + gap;
     out.snapX = out.spaceX + w.space + gap;
     out.leftGroupsEnd = out.snapX + w.snap;
-    out.undoX = std::max(width - pad - w.undo, out.leftGroupsEnd + gap);
-    out.playDrawn = out.mode != ToolbarMode::Minimal;
-    if (out.playDrawn) {
-        // Centred in [leftGroupsEnd + gap, undoX - gap]; the mode rule guarantees the span holds it.
-        out.playX = (((out.leftGroupsEnd + gap) + (out.undoX - gap)) * 0.5F) - (w.play * 0.5F);
-    }
+    const float playPacked = out.leftGroupsEnd + gap;
+    out.undoX = std::max(width - pad - w.undo, playPacked + w.play + gap);  // right-aligned, else packed after play
+    const float centred = (((out.leftGroupsEnd + gap) + (out.undoX - gap)) * 0.5F) - (w.play * 0.5F);
+    out.playX = std::max(centred, playPacked);  // centred in the free span; packed once the span is narrower than play
     return out;
 }
 
