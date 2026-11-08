@@ -32992,3 +32992,97 @@ TEST_CASE("editor: the game's image rect is the image's own screen rect, in Edit
     CHECK(app->tick() == false);
     app.reset();
 }
+
+// ---- task 4.7.1 (I407): Add Component draws disabled while the scene is locked (AC-11)
+// ---------------------------------
+TEST_CASE("editor: Add Component draws disabled while the game plays and as before after Stop (task 4.7.1, I407)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play add component i407", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());
+    const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    app->requestPanelFocus("Inspector");
+    // The Inspector drew `frames` fresh frames: the record is rewritten per draw, so a stale one never passes.
+    const auto drawFrames = [&](int frames) {
+        const std::uint64_t before = inspector->drawRecord().framesRecorded;
+        e62Ticks(*app, frames);
+        REQUIRE(inspector->drawRecord().framesRecorded > before);
+    };
+    drawFrames(3);
+
+    // The colours the list received, packed as ImGui packs an ImU32 (IM_COL32), at the opaque alpha Edit draws.
+    const engine::editor::ThemePanels& panels = engine::editor::EDITOR_THEME.panels;
+    const std::uint32_t editDash = engine::editor::toImU32(panels.addComponentDash);
+    const std::uint32_t editLabel =
+        engine::editor::toImU32(engine::editor::chromeRoleColor(engine::editor::ChromeRole::Accent));
+    constexpr std::uint32_t ALPHA_SHIFT = 24U;  // IM_COL32_A_SHIFT, in both of ImGui's packings
+    constexpr std::uint32_t ALPHA_MASK = 0xFFU << ALPHA_SHIFT;
+    REQUIRE((editDash >> ALPHA_SHIFT) == 255U);
+    REQUIRE((editLabel >> ALPHA_SHIFT) == 255U);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    CHECK(r.addComponentDashColour == editDash);
+    CHECK(r.addComponentLabelColour == editLabel);
+
+    // GetColorU32(col, 1) scales the alpha byte by Style.Alpha, which BeginDisabled(true) multiplies by
+    // DisabledAlpha (imgui.cpp:8898-8899), and truncates: (ImU32)(255 * DisabledAlpha) for an opaque colour.
+    float disabledAlpha = 0.0F;
+    const engine::editor::EditorStyleSnapshot liveStyle = engine::editor::snapshotLiveStyle();
+    for (const engine::editor::StyleMemberValue& member : liveStyle.members) {
+        if (member.name == "DisabledAlpha") {
+            disabledAlpha = member.x;
+        }
+    }
+    REQUIRE(disabledAlpha > 0.0F);
+    REQUIRE(disabledAlpha < 1.0F);  // ANTI-VACUITY: a dim that changes the alpha byte
+    const auto dimmed = static_cast<std::uint32_t>(255.0F * disabledAlpha);
+    REQUIRE(dimmed < 255U);
+    const auto withDimmedAlpha = [dimmed](std::uint32_t colour) {
+        return (colour & ~ALPHA_MASK) | (dimmed << ALPHA_SHIFT);
+    };
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 1);
+    REQUIRE((app->playSession().mode() == PlayMode::Playing));
+    drawFrames(2);
+    CAPTURE(r.addComponentDashColour);
+    CAPTURE(r.addComponentLabelColour);
+    CHECK(r.addComponentDashVertices > 0);
+    CHECK(r.addComponentDashColour == withDimmedAlpha(editDash));
+    CHECK(r.addComponentLabelColour == withDimmedAlpha(editLabel));
+
+    app->requestPlayControl(PlayControl::Pause);
+    e62Ticks(*app, 1);
+    REQUIRE((app->playSession().mode() == PlayMode::Paused));
+    drawFrames(2);
+    CHECK(r.addComponentDashVertices > 0);
+    CHECK(r.addComponentDashColour == withDimmedAlpha(editDash));
+    CHECK(r.addComponentLabelColour == withDimmedAlpha(editLabel));
+
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 1);
+    REQUIRE((app->playSession().mode() == PlayMode::Edit));
+    drawFrames(2);
+    CHECK(r.addComponentDashColour == editDash);
+    CHECK(r.addComponentLabelColour == editLabel);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

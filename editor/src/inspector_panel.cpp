@@ -850,10 +850,11 @@ void InspectorPanel::drawAddComponent(PanelContext& context, Entity primary) {
     const AddComponentLayout layout = addComponentLayout(start.x, ImGui::GetContentRegionAvail().x,
                                                          faceTextWidth(PanelFace::Strong, ADD_COMPONENT_LABEL), s);
     ImGui::SetCursorScreenPos(ImVec2(layout.minX, start.y));
-    // task 4.7.1 (D4): drawn disabled while a game plays; the button below cannot open the popup.
+    // task 4.7.1 (D4, AC-11): while a game plays the button's outline and label carry ImGui's disabled alpha (their
+    // colours go through GetColorU32 inside the scope, which scales the alpha byte by Style.Alpha) and the button
+    // cannot open the popup. Nothing between BeginDisabled and EndDisabled returns.
     ImGui::BeginDisabled(sceneLocked(context.play.mode()));
     const bool pressed = ImGui::InvisibleButton("##addComponentButton", ImVec2(layout.width, layout.height));
-    ImGui::EndDisabled();  // 1:1 with BeginDisabled
     const ImVec2 min = ImGui::GetItemRectMin();
     const ImVec2 max = ImGui::GetItemRectMax();
     ImDrawList* const list = ImGui::GetWindowDrawList();
@@ -866,10 +867,12 @@ void InspectorPanel::drawAddComponent(PanelContext& context, Entity primary) {
     // What the list RECEIVES across the outline, never a flag set beside the call (the code-review round's finding
     // 11): each dash is one AddRectFilled at alpha 255 with no rounding, four vertices (imgui_draw.cpp:1530-1538).
     const int dashVertices = list->VtxBuffer.Size;
-    dashedRect(list, min, max);
+    dashedRect(list, min, max, ImGui::GetColorU32(toImU32(EDITOR_THEME.panels.addComponentDash)));
     drawRecordValue.addComponentDashVertices = list->VtxBuffer.Size - dashVertices;
     // The gaps stay open (D5), read off the same vertices: PrimRect writes a, (b.x, a.y), b, (a.x, b.y)
     // (imgui_draw.cpp:776-779) and the top run draws first, so [0]-[1] spans the first dash and [4] starts the next.
+    drawRecordValue.addComponentDashColour =
+        drawRecordValue.addComponentDashVertices > 0 ? list->VtxBuffer[dashVertices].col : 0U;
     if (drawRecordValue.addComponentDashVertices >= 8) {
         const float dashFrom = list->VtxBuffer[dashVertices].pos.x;
         const float dashTo = list->VtxBuffer[dashVertices + 1].pos.x;
@@ -877,8 +880,12 @@ void InspectorPanel::drawAddComponent(PanelContext& context, Entity primary) {
         drawRecordValue.addComponentFirstDashGap = list->VtxBuffer[dashVertices + 4].pos.x - dashTo;
     }
     const float labelY = min.y + ((max.y - min.y - panelFacePoints(PanelFace::Strong)) * 0.5F);
+    const int labelVertices = list->VtxBuffer.Size;
     drawRoleText(list, PanelFace::Strong, ImVec2(min.x + (EDITOR_THEME.panels.addComponentPaddingX * s), labelY),
-                 ChromeRole::Accent, ADD_COMPONENT_LABEL);
+                 ImGui::GetColorU32(roleU32(ChromeRole::Accent)), ADD_COMPONENT_LABEL);
+    drawRecordValue.addComponentLabelColour =
+        list->VtxBuffer.Size > labelVertices ? list->VtxBuffer[labelVertices].col : 0U;
+    ImGui::EndDisabled();  // 1:1 with BeginDisabled; the fill, the outline and the label all drew inside it
     drawRecordValue.addComponentMin = Vec2{min.x, min.y};
     drawRecordValue.addComponentMax = Vec2{max.x, max.y};
     drawRecordValue.addComponentDashed = drawRecordValue.addComponentDashVertices > 0;

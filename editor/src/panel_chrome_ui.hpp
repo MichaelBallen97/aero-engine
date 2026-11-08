@@ -55,6 +55,8 @@ void mutedText(std::string_view text);                  // D11's helper: roleTex
 void mutedTextWrapped(std::string_view text);           // the same, wrapped at the content edge
 void countBadge(std::string_view text);                 // Mono small, textFaint, as an ImGui item
 void drawRoleText(ImDrawList* list, PanelFace face, ImVec2 pos, ChromeRole role, std::string_view text);
+// The same text in a colour the caller resolved (a disabled scope's ImGui::GetColorU32 of roleU32, 4.7.1).
+void drawRoleText(ImDrawList* list, PanelFace face, ImVec2 pos, ImU32 color, std::string_view text);
 
 // ---- buttons and scopes ------------------------------------------------------------------------------------
 // Around a caller's own ImGui::Button: a clear fill over `panel`, the `active` outline (D3's nearest to the mock's
@@ -130,7 +132,8 @@ struct HatchedWellDrawn {
 };
 // A `tile` fill under 45-degree hatchStripe bands, each band clipped to the fill's rounded outline as geometry.
 [[nodiscard]] HatchedWellDrawn hatchedWell(ImDrawList* list, ImVec2 min, ImVec2 max, float rounding);
-void dashedRect(ImDrawList* list, ImVec2 min, ImVec2 max);  // addComponentDash, ThemePanels dashes
+void dashedRect(ImDrawList* list, ImVec2 min, ImVec2 max);               // addComponentDash, ThemePanels dashes
+void dashedRect(ImDrawList* list, ImVec2 min, ImVec2 max, ImU32 color);  // the same dashes in the caller's colour
 void horizontalRule(ImDrawList* list, float minX, float maxX, float y, ChromeRole role);  // ruleHeight() thick
 [[nodiscard]] float ruleHeight();      // hairline(shell.ruleThickness, live scale, framebuffer scale)
 [[nodiscard]] float tileRingHeight();  // hairline(panels.tileRing, live scale, framebuffer scale)

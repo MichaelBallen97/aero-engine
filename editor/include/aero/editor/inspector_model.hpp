@@ -297,6 +297,11 @@ struct InspectorDrawRecord {
     // before the label adds any. A dash stretched over its gap keeps the count and reads a gap of 0.
     float addComponentFirstDashWidth = 0.0F;
     float addComponentFirstDashGap = 0.0F;
+    // task 4.7.1 (AC-11): the colours the list RECEIVED, as ImGui packs an ImU32 -- the `col` of the outline's first
+    // dash vertex and of the first vertex the label adds. 0 when nothing was drawn. A disabled scope shows in the
+    // alpha byte alone (GetColorU32 scales it by Style.Alpha); never a flag set beside the call.
+    std::uint32_t addComponentDashColour = 0U;
+    std::uint32_t addComponentLabelColour = 0U;
 };
 
 }  // namespace engine::editor
