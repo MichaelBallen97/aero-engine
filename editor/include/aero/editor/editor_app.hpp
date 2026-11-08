@@ -351,6 +351,10 @@ public:
     // "does not contain".
     [[nodiscard]] std::size_t assetBrowserVisibleEntryCount() const noexcept;
     [[nodiscard]] bool assetBrowserListingContains(std::string_view leafName) const noexcept;
+    // task 4.6.1: the entries the list or the grid kept after the kind filter on the last frame, classified in the
+    // open project's language (0 when no Asset Browser panel is registered, and on a frame that listed none). The
+    // whole-project search is counted by assetBrowserSearchHitCount() instead.
+    [[nodiscard]] std::size_t assetBrowserKindFilteredCount() const noexcept;
     // task E.4.4 (validation finding 2): the panel's vertical fit, read-only (0 / default-constructed when no
     // Asset Browser panel is registered). The first counts orphan rows the Issues body really submitted on
     // its last frame -- the proof the section was open and drawing; the second is the height that body child
@@ -832,6 +836,11 @@ public:
     // D4: how many requests the scene lock refused while a game played -- an undo, a redo, a create, a drop, and any
     // file action but Quit. "Refused" and "never arrived" differ by this count.
     [[nodiscard]] std::size_t playLockRefusalCount() const noexcept { return playLockRefusals; }
+    // D4/F10: whether a file or project request still holds a target path. A request the scene lock abandoned takes its
+    // path with it, so none is left for a later action to pick up.
+    [[nodiscard]] bool fileRequestPathPending() const noexcept {
+        return !fileFlow.requestedPath.empty() || !projectFlow.requestedPath.empty();
+    }
     // True while the unsaved-changes prompt is up (the guard the file flow raises on a dirty New / Open / Quit).
     [[nodiscard]] bool unsavedChangesPromptOpen() const noexcept;
     // A platform event for the GPU tier to inject as if the window had polled it: queued, and handled on the NEXT

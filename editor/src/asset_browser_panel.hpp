@@ -248,6 +248,9 @@ public:
     // prove the section was open and drawing. scrollMaxY() is the panel window's GetScrollMaxY(), read at
     // the END of the last onDraw: 0 means everything the panel drew fits inside it.
     [[nodiscard]] std::size_t issueRowsDrawn() const noexcept { return issueRowsDrawnCount; }
+    // task 4.6.1: how many entries the directory list or grid kept after the kind filter on the last frame, classified
+    // in the project's language (an EFFECT, reset at the top of every onDraw; 0 on a frame that listed none).
+    [[nodiscard]] std::size_t kindFilteredEntriesDrawn() const noexcept { return kindFilteredEntriesCount; }
     // The height the Issues body child was given on the last frame it drew (0 when it did not draw).
     [[nodiscard]] float issuesBodyHeightDrawn() const noexcept { return issuesBodyDrawnHeight; }
     // EXACTLY the metrics the last onDraw fed assetBrowserLayout -- the recorded available height, the row
@@ -517,6 +520,7 @@ private:
     float issuesContentHeight = 0.0F;
     std::optional<bool> issuesOpenRequest;          // requestIssuesOpen's, applied where a header click lands
     std::size_t issueRowsDrawnCount = 0;            // reset at the TOP of every onDraw
+    std::size_t kindFilteredEntriesCount = 0;       // reset at the TOP of every onDraw
     float issuesBodyDrawnHeight = 0.0F;             // reset at the TOP of every onDraw
     AssetBrowserLayoutMetrics layoutMetricsAtDraw;  // written by every onDraw, as assetBrowserLayout read it
     float scrollMaxYAtDraw = 0.0F;                  // written at the END of every onDraw

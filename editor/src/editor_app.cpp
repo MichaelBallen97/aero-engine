@@ -1716,6 +1716,9 @@ std::size_t EditorApp::assetBrowserVisibleEntryCount() const noexcept {
 bool EditorApp::assetBrowserListingContains(std::string_view leafName) const noexcept {
     return assetBrowserPanel != nullptr && assetBrowserPanel->cachedListingContains(leafName);
 }
+std::size_t EditorApp::assetBrowserKindFilteredCount() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->kindFilteredEntriesDrawn() : std::size_t{0};
+}
 
 // task E.3.3: re-pointed at the SHARED service. A moved-from app holds a null pointer, exactly as it
 // holds a null sceneAssetLoader, so all four are null-guarded like the drains.

@@ -816,6 +816,7 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
             // SAME "not persisted, rebuilt every frame" posture `crumbs` already has above.
             const std::vector<std::size_t> kindFiltered = filterEntriesByKind(listing->entries, filter, languageValue);
             ImGuiListClipper clipper;  // F14 -- only the visible rows are submitted (AC-12)
+            kindFilteredEntriesCount = kindFiltered.size();
             clipper.Begin(static_cast<int>(kindFiltered.size()));
             while (clipper.Step()) {
                 for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
@@ -1294,6 +1295,7 @@ void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
         // exactly "apply the kind filter alone", and costs nothing extra when filter.anyKind (default).
         const std::vector<std::size_t> kindFiltered = filterEntriesByKind(listing->entries, filter, languageValue);
         const std::vector<FileEntry>& items = listing->entries;
+        kindFilteredEntriesCount = kindFiltered.size();
         const int rows = (static_cast<int>(kindFiltered.size()) + columns - 1) / columns;
         ImGuiListClipper clipper;  // clips ROWS OF TILES, not tiles
         clipper.Begin(rows, rowHeight);
@@ -2137,6 +2139,7 @@ void AssetBrowserPanel::onDraw(PanelContext& context) {  // D18: the context is 
     assetDeleteModalDrawn = 0;
     dropTargetsAcceptedCount = 0;
     issueRowsDrawnCount = 0;
+    kindFilteredEntriesCount = 0;
     issuesBodyDrawnHeight = 0.0F;
     beginAssetChromeRecordFrame(chrome);  // task E.6.3 (D14): one recorded frame per onDraw
     // task E.6.3: requestNavigate's drain -- the crumbs' own enabled term and no modal, the gate a real click has

@@ -216,11 +216,12 @@ struct ReferenceFieldRecord {
     // shows here.
     float hintMinX = 0.0F;
     float hintMaxX = 0.0F;
-    float swatchEdge = 0.0F;     // handed to referenceFieldParts, drawn or not (0: a thumbnail row's)
-    float hintWidth = 0.0F;      // likewise (0: no hint wanted)
-    float ellipsisWidth = 0.0F;  // likewise: the one ellipsis the name keeps beside the swatch and the hint
-    bool swatchDrawn = false;    // a bound material's colour swatch
-    bool wellDrawn = false;      // the empty well
+    float swatchEdge = 0.0F;      // handed to referenceFieldParts, drawn or not (0: a thumbnail row's)
+    float hintWidth = 0.0F;       // likewise (0: no hint wanted)
+    float ellipsisWidth = 0.0F;   // likewise: the one ellipsis the name keeps beside the swatch and the hint
+    float valueTextWidth = 0.0F;  // the whole sentence in the current font, before any elision (0: none)
+    bool swatchDrawn = false;     // a bound material's colour swatch
+    bool wellDrawn = false;       // the empty well
     bool textDrawn = false;
     bool hintDrawn = false;
 };

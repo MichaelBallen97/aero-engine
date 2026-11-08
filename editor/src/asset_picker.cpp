@@ -212,6 +212,7 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, ProjectLang
     drawn.swatchEdge = swatchEdge;
     drawn.hintWidth = hintWidth;
     drawn.ellipsisWidth = ellipsisWidth;
+    drawn.valueTextWidth = in.valueText.empty() ? 0.0F : currentFontWidth(in.valueText);
     if (parts.swatch) {
         const ImVec2 swatchMin(buttonMin.x + style.FramePadding.x, buttonMin.y + style.FramePadding.y);
         const ImVec2 swatchMax(swatchMin.x + swatchEdge, swatchMin.y + swatchEdge);

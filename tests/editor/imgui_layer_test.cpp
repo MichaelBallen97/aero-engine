@@ -90,6 +90,7 @@
 #include "rhi_test_support.hpp"
 
 #include <SDL3/SDL_filesystem.h>  // task 2.3.3 I5: SDL_GetBasePath(), matching imgui_layer.cpp:38
+#include <SDL3/SDL_joystick.h>    // task 4.7.1 (I403): a virtual pad the Context's own subsystem sees
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -32547,4 +32548,447 @@ TEST_CASE("editor: every command pusher reads the lock and the menu bar's chords
     CHECK(countLinesContaining(shell, "guardedQuitRequested = true") == 2U);  // the chord and Exit
     CHECK(countLinesContaining(shell, "const bool editEnabled = fileEnabled && !sceneLocked(state.playMode);") == 1U);
     CHECK(countLinesContaining(shell, "const bool io = editEnabled && sceneIoAvailable();") == 1U);  // O, S, Shift+S
+}
+
+// ---- task 4.6.1 (I400): the directory list and grid classify with the project's language ----------------------------
+namespace {
+
+struct DirectoryKindCounts {
+    std::size_t gridAll = 0;
+    std::size_t gridScript = 0;
+    std::size_t gridText = 0;
+    std::size_t listAll = 0;
+    std::size_t listScript = 0;
+    std::size_t listText = 0;
+};
+
+// The I386 fixture (a script and a material), opened in `language`, then read through the entries the directory view
+// KEPT after its kind filter: no query is set, so the whole-project search is not the path measured.
+[[nodiscard]] DirectoryKindCounts measureDirectoryKinds(engine::platform::Context& ctx,
+                                                        engine::platform::Window& window, engine::rhi::Device& device,
+                                                        engine::editor::ProjectLanguage language) {
+    DirectoryKindCounts counts;
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    if (language == engine::editor::ProjectLanguage::Cpp) {
+        engine::editor::ProjectManifest manifest = created.manifest;
+        manifest.language = language;
+        REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/project.json",
+                                                    engine::editor::writeProjectText(manifest))
+                    .empty());
+    }
+    writeScriptProjectFile(created.root, "assets/mover.ts",
+                           "export default class Mover extends engine.Script {\n    speed = 2;\n}\n");
+    writeScriptProjectFile(created.root, "assets/shade.aeromat", MINIMAL_AEROMAT_TEXT);
+    std::optional<engine::editor::EditorApp> app = openScriptApp(device, window, ctx, created.root, AERO_TEST_ESBUILD);
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+    }
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    const auto kept = [&](engine::editor::AssetViewMode mode, std::string_view filterToken) {
+        // The panel keeps ONE pending action per frame, so the two requests travel on ticks of their own.
+        app->requestAssetBrowserViewMode(mode);
+        e62Ticks(*app, 2);
+        REQUIRE((app->assetBrowserListViewActive() == (mode == engine::editor::AssetViewMode::List)));
+        app->requestAssetBrowserKindFilter(filterToken);
+        e62Ticks(*app, 3);
+        return app->assetBrowserKindFilteredCount();
+    };
+    counts.gridAll = kept(engine::editor::AssetViewMode::Grid, "all");
+    counts.gridScript = kept(engine::editor::AssetViewMode::Grid, "6");  // AssetKind::Script
+    counts.gridText = kept(engine::editor::AssetViewMode::Grid, "4");    // AssetKind::Text
+    counts.listAll = kept(engine::editor::AssetViewMode::List, "all");
+    counts.listScript = kept(engine::editor::AssetViewMode::List, "6");
+    counts.listText = kept(engine::editor::AssetViewMode::List, "4");
+    if (language == engine::editor::ProjectLanguage::Ts) {
+        tickUntilScriptsIdle(*app);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+    return counts;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: a C++ project's .ts is Text in the grid's and the list's kind filter, a TypeScript project's a Script "
+    "(task 4.6.1, I400)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "directory kinds i400", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const DirectoryKindCounts ts = measureDirectoryKinds(ctx, *window, *device, engine::editor::ProjectLanguage::Ts);
+    const DirectoryKindCounts cpp = measureDirectoryKinds(ctx, *window, *device, engine::editor::ProjectLanguage::Cpp);
+
+    // ANTI-VACUITY: both views listed the script and the material before any kind was asked for.
+    CHECK(ts.gridAll == 2U);
+    CHECK(ts.listAll == 2U);
+    CHECK(cpp.gridAll == 2U);
+    CHECK(cpp.listAll == 2U);
+    // TypeScript: mover.ts is the one Script and no Text.
+    CHECK(ts.gridScript == 1U);
+    CHECK(ts.gridText == 0U);
+    CHECK(ts.listScript == 1U);
+    CHECK(ts.listText == 0U);
+    // C++: the same file is the one Text and no Script, in each view on its own.
+    CHECK(cpp.gridScript == 0U);
+    CHECK(cpp.gridText == 1U);
+    CHECK(cpp.listScript == 0U);
+    CHECK(cpp.listText == 1U);
+}
+
+// ---- task 4.6.1 (I401): the Inspector's reference row names a script file by the project's language ----------------
+namespace {
+
+// The width of the sentence the ScriptComponent's `script` row names a.ts by, in a project of `language`; -1 where
+// reflection is off and the row does not exist.
+[[nodiscard]] float scriptRowNameWidth(engine::platform::Context& ctx, engine::platform::Window& window,
+                                       engine::rhi::Device& device, engine::editor::ProjectLanguage language) {
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    if (language == engine::editor::ProjectLanguage::Cpp) {
+        engine::editor::ProjectManifest manifest = created.manifest;
+        manifest.language = language;
+        REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/project.json",
+                                                    engine::editor::writeProjectText(manifest))
+                    .empty());
+    }
+    writeScriptProjectFile(created.root, "assets/a.ts", "export default class A extends engine.Script {}\n");
+    std::optional<engine::editor::EditorApp> app = openScriptApp(device, window, ctx, created.root, AERO_TEST_ESBUILD);
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+    }
+    float width = -1.0F;
+    const engine::Entity cube = focusInspectorOnCube(*app);
+    const engine::ComponentTypeId scriptId = app->world().findComponentType("engine::ScriptComponent");
+    REQUIRE(scriptId.valid());
+    REQUIRE(engine::editor::addComponent(app->world(), cube, scriptId));
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("a.ts");
+    REQUIRE(guid.has_value());
+    engine::ScriptComponent* const script = app->world().get<engine::ScriptComponent>(cube);
+    REQUIRE(script != nullptr);
+    // Bound directly: a C++ project's picker offers no .ts, but a hand-edited scene can hold one.
+    script->script = *guid;
+    if (engine::editor::componentFieldsAreReflected(app->world(), scriptId)) {
+        auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+        REQUIRE(inspector != nullptr);
+        for (int i = 0; i < 4; ++i) {
+            REQUIRE(app->tick());
+        }
+        const std::vector<engine::editor::ReferenceFieldRecord>& fields = inspector->drawRecord().referenceFields;
+        REQUIRE_FALSE(fields.empty());
+        const engine::editor::ReferenceFieldRecord& row = fields.back();  // the ScriptComponent is the last component
+        width = row.valueTextWidth;  // the whole sentence, so the narrow field does not elide the label away
+    }
+    if (language == engine::editor::ProjectLanguage::Ts) {
+        tickUntilScriptsIdle(*app);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+    return width;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: the Inspector's reference row names a C++ project's .ts as Text and a TypeScript project's as a Script "
+    "(task 4.6.1, I401)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "script row i401", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const float ts = scriptRowNameWidth(ctx, *window, *device, engine::editor::ProjectLanguage::Ts);
+    const float cpp = scriptRowNameWidth(ctx, *window, *device, engine::editor::ProjectLanguage::Cpp);
+    if (ts < 0.0F || cpp < 0.0F) {
+        MESSAGE("I401: reflect tools OFF -- the ScriptComponent draws no field row");
+        return;
+    }
+    CAPTURE(ts);
+    CAPTURE(cpp);
+    // "a.ts  (Script)" against "a.ts  (Text)": the same file, the same Inspector, the same font; only the label
+    // differs, and "Script" is the longer word.
+    CHECK(cpp > 0.0F);
+    CHECK(cpp < ts);
+}
+
+// ---- task 4.7.1 (I402): a modal owns the toolbar's play controls ----------------------------------------------------
+TEST_CASE(
+    "editor: the play controls draw disabled behind a modal and enabled again once it closes (task 4.7.1, I402)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play modal i402", .width = E64_WINDOW_WIDTH, .height = E64_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+    REQUIRE(r.play[0].enabled);  // ANTI-VACUITY: an open TypeScript project in Edit, nothing in the way: Play is live
+
+    e64OpenNewProject(*app);  // the New Project modal is up
+    REQUIRE(app->tick());
+    for (std::size_t i = 0; i < r.play.size(); ++i) {
+        CAPTURE(i);
+        CHECK_FALSE(r.play[i].enabled);
+    }
+
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(r.play[0].enabled);  // the same control, the same project: only the modal was in the way
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.7.1 (I403): Play takes the pads already connected -------------------------------------------------------
+namespace {
+
+// Two virtual pads attached to the process's joystick subsystem; the Context started with VirtualOnly connects them.
+class TwoVirtualPads {
+public:
+    TwoVirtualPads() {
+        for (SDL_JoystickID& id : ids) {
+            SDL_VirtualJoystickDesc desc;
+            SDL_INIT_INTERFACE(&desc);
+            desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+            desc.nbuttons = 15;
+            desc.naxes = 6;
+            id = SDL_AttachVirtualJoystick(&desc);
+        }
+    }
+    TwoVirtualPads(const TwoVirtualPads&) = delete;
+    TwoVirtualPads& operator=(const TwoVirtualPads&) = delete;
+    TwoVirtualPads(TwoVirtualPads&&) = delete;
+    TwoVirtualPads& operator=(TwoVirtualPads&&) = delete;
+    ~TwoVirtualPads() {
+        for (const SDL_JoystickID id : ids) {
+            if (id != 0) {
+                SDL_DetachVirtualJoystick(id);
+            }
+        }
+    }
+
+    [[nodiscard]] bool attached() const noexcept { return ids[0] != 0 && ids[1] != 0; }
+
+private:
+    std::array<SDL_JoystickID, 2> ids{};
+};
+
+}  // namespace
+
+TEST_CASE("editor: Play hands the game the pads that were connected before it began (task 4.7.1, I403)") {
+    engine::platform::Context ctx{{.gamepads = engine::platform::GamepadDrivers::VirtualOnly}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play pads i403", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    const engine::editor::PlaySession& session = app->playSession();
+    TwoVirtualPads pads;
+    REQUIRE(pads.attached());
+    int ticks = 0;
+    while (ticks < 8 && !(ctx.input().gamepadConnected(0) && ctx.input().gamepadConnected(1))) {
+        REQUIRE(app->tick());
+        ++ticks;
+    }
+    // The editor's own state holds both pads; the game's, in Edit, holds none: nothing is fed to it until Play.
+    REQUIRE(ctx.input().gamepadConnected(0));
+    REQUIRE(ctx.input().gamepadConnected(1));
+    CHECK_FALSE(ctx.input().gamepadConnected(2));
+    CHECK_FALSE(session.input().gamepadConnected(0));
+    CHECK_FALSE(session.input().gamepadConnected(1));
+
+    app->requestPlayControl(engine::editor::PlayControl::Play);
+    REQUIRE(app->tick());
+    REQUIRE((session.mode() == engine::editor::PlayMode::Playing));
+    CHECK(session.input().gamepadConnected(0));
+    CHECK(session.input().gamepadConnected(1));
+    CHECK_FALSE(session.input().gamepadConnected(2));  // the slots the editor holds, no more
+
+    app->requestPlayControl(engine::editor::PlayControl::Stop);
+    REQUIRE(app->tick());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.7.1 (I404, I405): what the scene lock refuses leaves nothing behind -------------------------------------
+TEST_CASE("editor: a file request the scene lock abandons takes its target path with it (task 4.7.1, I404)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play lock i404", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    REQUIRE_FALSE(app->fileRequestPathPending());
+    app->requestPlayControl(engine::editor::PlayControl::Play);
+    REQUIRE(app->tick());
+    REQUIRE((app->playSession().mode() == engine::editor::PlayMode::Playing));
+    REQUIRE(app->tick());
+
+    const std::string target = std::string(app->projectRoot()) + "/never_written.scene.json";
+    const auto abandoned = [&](std::string_view what, const auto& request) {
+        CAPTURE(what);
+        const std::size_t refusals = app->playLockRefusalCount();
+        request();
+        REQUIRE(app->fileRequestPathPending());  // ANTI-VACUITY: the request did carry a path in
+        REQUIRE(app->tick());
+        CHECK(app->playLockRefusalCount() == refusals + 1U);
+        CHECK_FALSE(app->fileRequestPathPending());
+    };
+    abandoned("Open Scene", [&] { app->requestOpenScene(target); });
+    abandoned("Save Scene As", [&] { app->requestSaveSceneAs(target); });
+    abandoned("Open Project", [&] { app->requestOpenProject(target); });
+    CHECK_FALSE(std::filesystem::exists(target));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a prefab dropped in the Viewport while the game plays is refused and creates nothing (task 4.7.1, I405)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play drop i405", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makePrefabDropProject();
+    std::optional<engine::editor::EditorApp> app = openPrefabDropApp(ctx, *window, *device, root);
+    REQUIRE(app.has_value());
+    const std::optional<engine::Guid> prefab = app->assetGuidForPath("crate.aeroprefab");
+    REQUIRE(prefab.has_value());
+    const engine::Vec2 ndc{0.25F, -0.4F};
+
+    app->requestPlayControl(engine::editor::PlayControl::Play);
+    REQUIRE(app->tick());
+    REQUIRE((app->playSession().mode() == engine::editor::PlayMode::Playing));
+    REQUIRE(app->tick());
+    const std::size_t entities = app->world().entityCount();
+    const std::size_t entries = app->commands().count();
+    const std::size_t refusals = app->playLockRefusalCount();
+    app->requestViewportAssetDrop(*prefab, PREFAB_KIND, ndc);
+    REQUIRE(app->tick());
+    CHECK(app->playLockRefusalCount() == refusals + 1U);
+    CHECK(app->world().entityCount() == entities);
+    CHECK(app->commands().count() == entries);
+
+    // ANTI-VACUITY: the same drop, once the game has stopped, is the I370 drop and lands (where a prefab can be read).
+    app->requestPlayControl(engine::editor::PlayControl::Stop);
+    REQUIRE(app->tick());
+    REQUIRE((app->playSession().mode() == engine::editor::PlayMode::Edit));
+    REQUIRE(app->tick());
+    const std::size_t refusalsStopped = app->playLockRefusalCount();
+    app->requestViewportAssetDrop(*prefab, PREFAB_KIND, ndc);
+    REQUIRE(app->tick());
+    CHECK(app->playLockRefusalCount() == refusalsStopped);
+    if (engine::editor::sceneIoAvailable()) {
+        CHECK(app->world().entityCount() == entities + 2U);  // Crate and Lid
+        CHECK(app->commands().count() == entries + 1U);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.7.1 (I406): the game's image rect is where ImGui laid the image out -------------------------------------
+TEST_CASE("editor: the game's image rect is the image's own screen rect, in Edit and in play (task 4.7.1, I406)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play rect i406", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    e62Ticks(*app, 2);
+    const engine::editor::GameImageRect edit = viewport->gameImageRect();
+    if (!edit.valid) {
+        MESSAGE("I406: the Viewport drew no image on this runner (shader tools off)");
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        return;
+    }
+    // The HUD record is a second, separately written copy of the same rect (the HUD is drawn in Edit): the panel's
+    // own origin is not the window's, and the image's size is its available region's.
+    const engine::editor::ViewportHudRecord& hud = viewport->hudRecord();
+    REQUIRE(hud.framesRecorded > 0U);
+    CAPTURE(edit.min.x);
+    CAPTURE(edit.min.y);
+    CHECK(edit.min.x > 0.0F);  // docked right of the Hierarchy ...
+    CHECK(edit.min.y > 0.0F);  // ... and below the menu bar and toolbar
+    CHECK(edit.min.x == hud.imageMin.x);
+    CHECK(edit.min.y == hud.imageMin.y);
+    CHECK(edit.max.x == hud.imageMax.x);
+    CHECK(edit.max.y == hud.imageMax.y);
+    CHECK(edit.max.x - edit.min.x == doctest::Approx(hud.imageAvail.x));
+    CHECK(edit.max.y - edit.min.y == doctest::Approx(hud.imageAvail.y));
+
+    // In play the HUD is gone; the rect stays where it was laid out.
+    app->requestPlayControl(engine::editor::PlayControl::Play);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == engine::editor::PlayMode::Playing));
+    const engine::editor::GameImageRect playing = viewport->gameImageRect();
+    CHECK(playing.valid);
+    CHECK(playing.min.x == edit.min.x);
+    CHECK(playing.min.y == edit.min.y);
+    CHECK(playing.max.x == edit.max.x);
+    CHECK(playing.max.y == edit.max.y);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }
