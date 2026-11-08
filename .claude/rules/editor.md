@@ -103,6 +103,11 @@ that way.
   commits what the button refuses. Dismiss wins over commit in a frame carrying both. **No tier can
   press a key on a modal**, so this has no automated cover anywhere — a validation row is its only
   witness.
+- **`PanelContext` carries `const PlaySession& play` (task 4.7.1).** The second `const` reference after the project, and
+  the same bar: a panel-general need (the Inspector, the Hierarchy and the Viewport all read it), and the `const` makes a
+  panel-side mode change a compile error -- only `EditorApp::applyPlayControl` calls `PlaySession::apply`. It sits before
+  the one defaulted member, `deltaSeconds`, so every construction site (`editor_app.cpp`, `hierarchy_test.cpp`,
+  `shell_test.cpp` x3) passes a session.
 - Unimplemented menu items ship `enabled = false` with a tooltip naming the owning task —
   never a dead handler behind a stub.
 - **`<imgui_stdlib.h>` is never included at all, and this line used to say the opposite.** Every text
@@ -761,6 +766,43 @@ state.
   tool pushes all THREE button slots plus the text slot (onAccent on `hover` is 1.34:1). `I287` pins the reads.
 - **`US9`'s map** now includes `breadcrumb.hpp` (`P`), `status_bar.hpp` (`P`) and `toolbar_model.hpp` (`PP`): a new
   pure layout that consumes a dp metric takes a non-defaulted `float uiScale` and joins the map.
+- **THE PLAY GROUP IS FOUR `segmentButton`s IN THE REQUEST-SEAM SHAPE (task 4.7.1).** `TOOLBAR_PLAY_CONTROLS` holds
+  Play, Pause, Step and Stop in `PlayControl` order (`TB13`); each is drawn by `shell_chrome_ui.cpp` with
+  `playControlEnabled(control, mode, availability, fileEnabled)` as its named local and `playControlTooltip(...)` as its
+  tooltip (the tooltip knows WHY a control is off: no project, or a C++ game runs as its own build). Play and Pause draw
+  active through `playControlDrawnActive` (Accent fill, D10); Stop is `AERO_ICON_SQUARE`. The accepted control is written
+  to `ShellUiState::playControlPressed` and applied ONCE, after `drawShellUi`, by `EditorApp::applyPlayControl` -- the
+  mode's only writer is `PlaySession::apply`. A refused request (`requestPlayControl`) is dropped, as everywhere in the
+  chrome. `shell_ui.cpp` names `playControlPressed` nowhere (`I392`).
+- **`ToolbarMode` is `Full` and `Compact`; Minimal is retired (task 4.7.1, call 6).** Minimal existed only because the
+  play group had no action. The group is drawn in every mode (Compact: icons only) and centred in the free span between
+  the left groups and the undo slot, packed after them when the span is too narrow; below Compact's width the window
+  clips the bar, as it did below Minimal's.
+- **THREE PLAY CHORDS RECORD, THE TOOLBAR RESOLVES (task 4.7.1, D8).** Cmd/Ctrl+P (play, or stop), Cmd/Ctrl+Shift+P
+  (pause, or resume) and Cmd/Ctrl+Alt+P (step, while paused) are `ImGui::Shortcut(..., ImGuiInputFlags_RouteGlobal)` in
+  `drawMenuBar`'s shortcut block; each only sets `ShellUiState::playChord`. `drawToolbar` turns it into a control with
+  `playControlForChord` and runs it through the same enabled predicate as a click, so a chord can never do what the
+  button refuses. The menu bar draws before the toolbar in one `drawShellUi` call, so a chord acts on the tick it is
+  pressed. The game's feed drops a P key-down that carries the host's command modifier (`isPlayChordKey`), so the three
+  chords are never the game's. Hints come from `chordHint`; **`ChordModifiers::alt` spells Option on macOS and Alt
+  elsewhere**, in `shortcut_hint.cpp`, the one file whose literals may name a modifier (`HK4`).
+- **THE SCENE LOCK GATES EVERY PUSHER AND EVERY EDITING CONTROL (task 4.7.1, D4).** While `PlaySession::active()`
+  (`sceneLocked(mode)`) the Inspector's fields, Add Component and Remove Component, the Hierarchy's drag, drops, rename,
+  create, delete and duplicate, the Create menu, the File menu's scene and project actions, Undo and Redo all draw
+  disabled (`BeginDisabled` / `enabled = false`), and each push site is also behind the lock. Selection, inspection,
+  Save as Prefab, asset files and materials stay live. **A fifth file that calls `commands.push(` is `I399`'s set claim**:
+  it fails until the file reads the lock. The ones that drain a request instead of drawing a control count it
+  (`EditorApp::playLockRefusalCount()`): a refused undo, redo, create, drop or file action is DROPPED, never kept for
+  after Stop. A Quit while playing is the exception: the top of `tick()` applies Stop first, so the usual unsaved-changes
+  guard judges the edit-mode document. The menu bar's Quit and Exit stay on `fileEnabled` and raise
+  `ShellUiState::guardedQuitRequested` when locked, which `EditorApp` turns into `requestGuardedQuit()`.
+- **THE VIEWPORT IN PLAY IS THE GAME'S PICTURE (task 4.7.1, D7).** `onDraw` latches `drewInPlayValue` from
+  `context.play.active()`; `renderScene` reads the latch, so the first play frame is the tick AFTER the one that
+  applied Play (the tick that applied it still draws through the editor camera; `I393`). In play the render call passes
+  no camera override when the scene has a Camera (`lastRenderCamera()` is `Scene`), and the editor camera otherwise; the
+  grid, the light icons and gizmos, the selection mask and outline, the selection overlay, the transform gizmo, the
+  view-axis widget and the HUD are not drawn, and tool keys, fly keys, F, camera gestures, picking and drops are inert.
+  The first play frame resets a view snap, a pick arm and a gesture in flight. Play never moves the editor camera.
 
 ## Panel chrome (task E.6.3)
 

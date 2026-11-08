@@ -201,6 +201,37 @@ registering a panel in 2.2.x needs no layout-code edit. The three public editor 
 entry point lives in `editor/src/` (`shell_ui.cpp`, `placeholder_panel.cpp`), src-private by
 placement.
 
+### Play-in-editor (task 4.7.1)
+
+Play is a mode of the editor and not an engine loop: nothing under `/engine` or `/runtime` changed. Its spine is
+`engine::editor::PlaySession`, a plain value in `aero_editor_core` (`play_session.hpp`, no ImGui, SDL or GPU) that
+`EditorApp` owns and the panels read as `const PlaySession&` through `PanelContext`. Its mode (`Edit`, `Playing`,
+`Paused`) has one writer, `PlaySession::apply`, called from `EditorApp::applyPlayControl`; every rule around it is a
+pure function of the mode, so the button table, the chords, the tooltips and the lock are tier-0 tables. Play is
+available only in an open TypeScript project: a C++ game runs as its own build, so in a C++ project, or with no
+project open, the four controls draw disabled with a tooltip that names the reason.
+
+One editor tick runs, in order: the polled events (and the test seam's injected ones) through `handleEvent`, which
+feeds the game's own `platform::InputState` while the game has focus; the engine's `FrameClock::tick()`;
+`PlaySession::advance`, which yields one game frame per tick while Playing, none while Paused, and one frame of
+exactly 1/60 s per queued Step; the draw walk, where the toolbar and the three chords (Cmd/Ctrl+P, +Shift+P, +Alt+P)
+produce at most one control; `applyPlayControl`; and the scene render. Two rules are the runtime's too, so what the
+editor plays is what the cooked game runs:
+
+- **The game clock (D6).** A game frame's dt is `FrameClock::deltaSeconds()`, the clamped delta the engine names "the
+  dt the simulation should use", and the frame count starts at 0 on Play. The input state starts a new frame only after
+  a game frame ran, so an edge made while paused reaches the frame that Step or resume runs.
+- **The camera (D7).** A playing or paused viewport passes no camera override, so the renderer draws through the
+  scene's lowest-index Camera entity; a scene with no Camera draws through the editor camera. The editor's own visuals
+  (grid, gizmos, light icons, selection outline, view-axis widget) are not drawn, and Stop returns to the editor camera
+  exactly where it was.
+
+While the mode is not `Edit` the scene is locked: every pusher onto the undo stack, the Create menu, drops, Undo and
+Redo and the File menu's scene and project actions are off, and a Quit stops play before the usual unsaved-changes guard
+runs. The play session calls no script: `ScriptSystem::update` hangs on the game frame, `onDestroy` on Stop, and the
+scene snapshot and restore on the transitions into and out of `Playing` (tasks 4.7.4, 4.7.2 and 4.7.3). The editor's
+Context starts the gamepad drivers (`GamepadDrivers::System`) so pads feed the game while it has focus.
+
 ---
 
 ## Handles, not pointers
