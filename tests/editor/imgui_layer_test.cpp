@@ -93,7 +93,7 @@
 #include <SDL3/SDL_filesystem.h>  // task 2.3.3 I5: SDL_GetBasePath(), matching imgui_layer.cpp:38
 #include <SDL3/SDL_joystick.h>    // task 4.7.1 (I403): a virtual pad the Context's own subsystem sees
 #include <SDL3/SDL_mouse.h>       // task 4.7.1 (I409): SDL_BUTTON_LEFT
-#include <SDL3/SDL_video.h>       // task 4.7.1 (I409): the window's id, found by its title
+#include <SDL3/SDL_video.h>       // task 4.7.1 (I409, I410): the window's id, via SDL_GetWindows
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -33242,6 +33242,87 @@ TEST_CASE("editor: a press held across Play never leaves Add Component an undimm
     CHECK(r.addComponentFillColour == 0U);
     CHECK(app->commands().count() == entries);
     CHECK(app->world().entityCount() == entities);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.7.1 (I410): the fill colour reads 0 on a frame that draws no button ------------------------------------
+TEST_CASE("editor: Add Component's recorded fill reads 0 on a frame that draws no button (task 4.7.1, I410)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "add component fill i410", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+
+    // The only window this case owns is the editor's; the backend ignores any other window's events.
+    int windowCount = 0;
+    SDL_Window** const windows = SDL_GetWindows(&windowCount);
+    REQUIRE(windows != nullptr);
+    CAPTURE(windowCount);
+    const SDL_WindowID windowId = windowCount == 1 ? SDL_GetWindowID(windows[0]) : 0U;
+    SDL_free(std::bit_cast<void*>(windows));
+    REQUIRE(windowId != 0U);
+    const auto moveTo = [windowId](float x, float y) {
+        SDL_Event e{};
+        e.type = SDL_EVENT_MOUSE_MOTION;
+        e.motion.windowID = windowId;
+        e.motion.which = 1;
+        e.motion.x = x;
+        e.motion.y = y;
+        REQUIRE(SDL_PushEvent(&e));
+    };
+    const auto button = [windowId](bool down, float x, float y) {
+        SDL_Event e{};
+        e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        e.button.windowID = windowId;
+        e.button.which = 1;
+        e.button.button = SDL_BUTTON_LEFT;
+        e.button.down = down;
+        e.button.clicks = 1;
+        e.button.x = x;
+        e.button.y = y;
+        REQUIRE(SDL_PushEvent(&e));
+    };
+
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());
+    const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    app->requestPanelFocus("Inspector");
+    e62Ticks(*app, 3);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.addComponentDashVertices > 0);
+    const float centreX = (r.addComponentMin.x + r.addComponentMax.x) * 0.5F;
+    const float centreY = (r.addComponentMin.y + r.addComponentMax.y) * 0.5F;
+
+    // A press over the button draws a fill: ANTI-VACUITY, the colour the next frame must not keep.
+    moveTo(centreX, centreY);
+    button(true, centreX, centreY);
+    REQUIRE(app->tick());
+    REQUIRE(r.addComponentFillColour != 0U);
+
+    // Nothing selected: the Inspector draws one fresh frame with no button, and the record must read 0.
+    app->selection().clear();
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    REQUIRE(app->tick());
+    REQUIRE(inspector->drawRecord().framesRecorded == before + 1U);
+    CHECK(r.addComponentDashVertices == 0);
+    CHECK(r.addComponentFillColour == 0U);
+
+    button(false, centreX, centreY);
+    REQUIRE(app->tick());
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
