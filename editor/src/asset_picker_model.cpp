@@ -43,7 +43,8 @@ std::string assetPickerHeading(const AssetPickerRules& rules) {
 }
 
 void buildAssetPickerCandidates(std::span<const AssetRecord> records, const AssetPickerRules& rules,
-                                const AssetFilter& filter, std::size_t cap, AssetPickerCandidates& out) {
+                                ProjectLanguage language, const AssetFilter& filter, std::size_t cap,
+                                AssetPickerCandidates& out) {
     out.items.clear();  // CLEAR, never shrink: the RenderViewScratch rule (MP8 pins the data pointer)
     out.total = 0;
     out.truncated = false;
@@ -53,10 +54,10 @@ void buildAssetPickerCandidates(std::span<const AssetRecord> records, const Asse
             continue;  // no identity: never offerable, whatever else is true of it
         }
         const std::string_view leaf = leafOf(record.relativePath);
-        const AssetKind kind = classifyAssetKind(leaf, /*isDirectory=*/false);
+        const AssetKind kind = classifyAssetKind(leaf, /*isDirectory=*/false, language);
         // BOTH must hold, and neither is restated here: `rules` is the FIELD's law (the drop matrix)
         // and `filter` is the POPUP's combo and query (the browser's own text-and-kind predicate).
-        if (!assetPickerAccepts(rules, kind) || !matchesFilter(leaf, /*isDirectory=*/false, filter)) {
+        if (!assetPickerAccepts(rules, kind) || !matchesFilter(leaf, /*isDirectory=*/false, filter, language)) {
             continue;
         }
         ++out.total;  // counted BEFORE the cap test -- `total` is never capped (the SearchResult rule)

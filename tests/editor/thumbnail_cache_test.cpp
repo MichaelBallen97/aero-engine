@@ -973,7 +973,8 @@ TEST_CASE("TS6: thumbnailSourceForName folds ASCII case exactly as the tables it
         CAPTURE(name);
         const bool decodable = engine::editor::isThumbnailDecodable(name);
         const bool material =
-            engine::editor::classifyAssetKind(name, /*isDirectory=*/false) == engine::editor::AssetKind::Material;
+            engine::editor::classifyAssetKind(name, /*isDirectory=*/false, engine::editor::ProjectLanguage::Ts) ==
+            engine::editor::AssetKind::Material;
         const ThumbnailSource expected = decodable  ? ThumbnailSource::DecodedImage
                                          : material ? ThumbnailSource::RenderedMaterial
                                                     : ThumbnailSource::None;

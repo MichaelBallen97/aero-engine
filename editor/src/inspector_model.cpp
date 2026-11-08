@@ -221,7 +221,8 @@ void buildInspectorModel(const World& world, Entity entity, InspectorModel& out)
     out.components.resize(writeIndex);  // drop any stale tail; never shrinks capacity
 }
 
-GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database, std::string_view subtitle) {
+GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database, ProjectLanguage language,
+                          std::string_view subtitle) {
     if (!value.valid()) {
         // A NIL GUID IS "no reference", which is a legal, ordinary value -- not a broken one. Clear is
         // disabled because clearing nothing would push an undo entry that changes no byte.
@@ -236,7 +237,7 @@ GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database, std::string
         // user most wants to remove.
         return {.text = formatGuid(value).substr(0, 8) + "...  (missing)", .clearEnabled = true};
     }
-    const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
+    const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false, language);
     // task E.4.5: the file name, then -- for a material whose name is worth showing -- the separator and that
     // name, through the ONE row function. An empty subtitle leaves 3.1.5's sentence byte-identical. Built in
     // steps rather than as one `+` chain, so no line of it sits at the column limit.

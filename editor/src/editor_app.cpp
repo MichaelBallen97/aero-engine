@@ -2007,7 +2007,8 @@ void EditorApp::applyHierarchyDrop(const HierarchyAssetDrop& drop) {
         AERO_LOG_WARN("assets: the dropped asset is no longer in this project");
         return;
     }
-    const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
+    const AssetKind kind =
+        classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false, effectiveProjectLanguage(project));
     const bool hasMesh = drop.targetRow.valid() && sceneWorld.has<MeshRenderer>(drop.targetRow);
     const DropSurface surface = drop.targetRow.valid() ? DropSurface::HierarchyRow : DropSurface::HierarchyVoid;
     switch (classifyAssetDrop(kind, surface, hasMesh, /*fieldKind=*/std::nullopt)) {
@@ -2040,7 +2041,8 @@ void EditorApp::applyViewportDrop(const ViewportAssetDrop& drop) {
     if (viewportPanel == nullptr) {
         return;  // no viewport, no camera, no placement -- and no way this drop was ever offered
     }
-    const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
+    const AssetKind kind =
+        classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false, effectiveProjectLanguage(project));
     const Entity target = viewportPanel->pickAt(sceneWorld, drop.ndc);
     const bool hasMesh = target.valid() && sceneWorld.has<MeshRenderer>(target);
     switch (classifyAssetDrop(kind, DropSurface::Viewport, hasMesh, /*fieldKind=*/std::nullopt)) {

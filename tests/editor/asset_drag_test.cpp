@@ -19,6 +19,7 @@
 #include <aero/editor/asset_drag.hpp>
 #include <aero/editor/asset_picker_model.hpp>  // task E.3.3 -- AR7 states the picker's accept rule here
 #include <aero/editor/asset_view.hpp>
+#include <aero/editor/project.hpp>  // task 4.6.1: ProjectLanguage
 #include <aero/scene/entity.hpp>
 
 #include <doctest/doctest.h>
@@ -54,6 +55,10 @@ using engine::editor::dropSurfaceLabel;
 using engine::editor::HierarchyAssetDrop;
 using engine::editor::MaterialSlotTextureDrop;
 using engine::editor::ViewportAssetDrop;
+
+namespace {
+constexpr engine::editor::ProjectLanguage TS = engine::editor::ProjectLanguage::Ts;
+}  // namespace
 
 namespace {
 
@@ -822,9 +827,9 @@ TEST_CASE("asset drag: classifyAssetKind's second argument, BOTH values (DR19, t
     std::size_t draggableAsFile = 0;
     for (const Row& row : ROWS) {
         CAPTURE(row.leaf);
-        CHECK((classifyAssetKind(row.leaf, false) == row.asFile));
+        CHECK((classifyAssetKind(row.leaf, false, TS) == row.asFile));
         // isDirectory only ever FORCES Folder -- for EVERY leaf, whatever it would classify as.
-        CHECK((classifyAssetKind(row.leaf, true) == AssetKind::Folder));
+        CHECK((classifyAssetKind(row.leaf, true, TS) == AssetKind::Folder));
         if (engine::editor::assetKindIsDraggable(row.asFile)) {
             ++draggableAsFile;
         }

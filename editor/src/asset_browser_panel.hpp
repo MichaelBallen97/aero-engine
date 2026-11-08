@@ -23,6 +23,7 @@
 #include <aero/editor/asset_browser_chrome.hpp>  // task E.6.3 -- the chrome's layouts, counts and record (pure)
 #include <aero/editor/asset_view.hpp>            // task 3.1.3 -- AssetViewMode, TileSize (pure enums, ImGui-free)
 #include <aero/editor/panel.hpp>
+#include <aero/editor/project.hpp>  // task 4.6.1: ProjectLanguage (pure)
 #include <aero/editor/project_files.hpp>
 #include <aero/editor/thumbnail_cache.hpp>  // task 3.1.3 -- ThumbnailKey/ThumbnailLedger (pure, GPU-free)
 
@@ -520,7 +521,10 @@ private:
     AssetBrowserLayoutMetrics layoutMetricsAtDraw;  // written by every onDraw, as assetBrowserLayout read it
     float scrollMaxYAtDraw = 0.0F;                  // written at the END of every onDraw
     // ---- task E.6.3 ------------------------------------------------------------------------------------------
-    AssetChromeRecord chrome;                    // opened at the TOP of every onDraw
+    AssetChromeRecord chrome;  // opened at the TOP of every onDraw
+    // task 4.6.1: the open project's language, latched from the context on the first statement of every onDraw, so
+    // every kind question the panel asks (the filter, the search, a tile's kind) reads one value per frame.
+    ProjectLanguage languageValue = ProjectLanguage::Ts;
     FolderCountCache folderCounts;               // the tree's, the crumb row's and the folder tiles' ONE count
     std::optional<std::string> navigateRequest;  // requestNavigate's; "" is the root, so it is an optional
     ItemRectRecord segmentScratch;               // the Grid | List segments' rects (segmentButton's out-parameter)

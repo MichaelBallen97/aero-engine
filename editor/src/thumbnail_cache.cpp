@@ -20,7 +20,7 @@ ThumbnailSource thumbnailSourceForName(std::string_view fileName) noexcept {
     if (isThumbnailDecodable(fileName)) {
         return ThumbnailSource::DecodedImage;
     }
-    if (classifyAssetKind(fileName, /*isDirectory=*/false) == AssetKind::Material) {
+    if (classifyAssetKind(fileName, /*isDirectory=*/false, KIND_LANGUAGE_NEUTRAL) == AssetKind::Material) {
         return ThumbnailSource::RenderedMaterial;
     }
     return ThumbnailSource::None;

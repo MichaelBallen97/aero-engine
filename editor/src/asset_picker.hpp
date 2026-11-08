@@ -117,7 +117,9 @@ struct AssetFieldInputs {
 
 // Draws [button][popup] inside the CALLER's PushID scope and reports what happened. The host decides
 // what a pick MEANS -- this names no World, no CommandStack, no MaterialDocument and no Panel.
-[[nodiscard]] AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPickerState& state);
+// `language` is the open project's (task 4.6.1): it decides whether a .ts is a Script in the popup and on the tile.
+[[nodiscard]] AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, ProjectLanguage language,
+                                                       AssetPickerState& state);
 
 // The reference button's width when a trailing SmallButton shares its row -- the Inspector's `Clear`
 // and, since task E.3.4, the material slot's. ONE formula, TWO hosts: a theme or DPI change moves both

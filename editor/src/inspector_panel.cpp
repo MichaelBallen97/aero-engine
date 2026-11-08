@@ -737,6 +737,7 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             // thumbnail key on its OWN queue, and rule 4 runs against the file's CURRENT name. "" for every
             // other kind, and until the card has been read -- the sentence is then byte-identical to today's.
             // `subtitle` views the card, which is stable for this whole draw walk.
+            const ProjectLanguage language = effectiveProjectLanguage(context.project);  // task 4.6.1
             std::string_view subtitle;
             if (thumbnails != nullptr && database != nullptr) {
                 if (const AssetRecord* const record = database->findByGuid(std::get<Guid>(field.value));
@@ -747,7 +748,7 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
                     }
                 }
             }
-            const GuidFieldRow row = guidFieldRow(std::get<Guid>(field.value), database, subtitle);
+            const GuidFieldRow row = guidFieldRow(std::get<Guid>(field.value), database, language, subtitle);
             const std::optional<AssetKind> wanted = assetReferenceKindFromToken(field.assetKindToken);
             const std::string_view unknown = (!field.assetKindToken.empty() && !wanted.has_value())
                                                  ? std::string_view(field.assetKindToken)
@@ -771,7 +772,7 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
                                               .unknownToken = unknown,
                                               .database = database,
                                               .thumbnails = thumbnails};
-                picked = drawAssetReferenceField(inputs, *assetPicker);
+                picked = drawAssetReferenceField(inputs, language, *assetPicker);
                 const ReferenceFieldRecord& drew = picked.drawn;  // task E.6.3: what the field drew
                 drawRecordValue.referenceSwatchDrawn = drawRecordValue.referenceSwatchDrawn || drew.swatchDrawn;
                 drawRecordValue.referenceWellDrawn = drawRecordValue.referenceWellDrawn || drew.wellDrawn;

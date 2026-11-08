@@ -65,10 +65,10 @@ constexpr std::string_view PICK_HINT = "pick";  // task E.6.3 (D5)
 
 // Rebuilds the candidate list and records what it was built FOR, so the draw loop can tell a real
 // change from a repeat. A null database clears the list rather than leaving a stale one.
-void rebuild(AssetPickerState& state, const AssetFieldInputs& in) {
+void rebuild(AssetPickerState& state, const AssetFieldInputs& in, ProjectLanguage language) {
     state.filter.query = state.search;
     if (in.database != nullptr) {
-        buildAssetPickerCandidates(in.database->records(), in.rules, state.filter, MAX_SEARCH_RESULTS,
+        buildAssetPickerCandidates(in.database->records(), in.rules, language, state.filter, MAX_SEARCH_RESULTS,
                                    state.candidates);
         state.builtForGeneration = in.database->generation();
     } else {
@@ -84,7 +84,8 @@ void rebuild(AssetPickerState& state, const AssetFieldInputs& in) {
 
 // A fresh open: empty query, the filter at All (or at the ONE admissible kind), the candidates rebuilt,
 // the cursor on the bound asset when it is a candidate. D12: nothing is remembered between opens.
-void beginSession(AssetPickerState& state, const AssetFieldInputs& in, const std::vector<AssetKind>& options) {
+void beginSession(AssetPickerState& state, const AssetFieldInputs& in, ProjectLanguage language,
+                  const std::vector<AssetKind>& options) {
     state.search.clear();
     state.filter = AssetFilter{};
     state.filter.anyKind = options.size() > 1;
@@ -93,7 +94,7 @@ void beginSession(AssetPickerState& state, const AssetFieldInputs& in, const std
     }
     state.warnedThisOpen = false;
     state.cursorMovedByKeyboard = false;
-    rebuild(state, in);
+    rebuild(state, in, language);
     state.cursor = initialPickerCursor(in.current, state.candidates);
 }
 
@@ -106,7 +107,8 @@ float assetReferenceFieldWidth(const char* trailingButtonLabel) {
     return std::max(ImGui::GetContentRegionAvail().x - trailingWidth, ImGui::GetFrameHeight());
 }
 
-AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPickerState& state) {
+AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, ProjectLanguage language,
+                                         AssetPickerState& state) {
     AssetFieldResult result{};
     const std::vector<AssetKind> options = assetPickerFilterOptions(in.rules);
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -170,7 +172,7 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
         face.pad = 0.0F;                          // the icon is exactly tileEdge square at itemMin
         face.captionSource = std::string_view{};  // icon only
         if (record != nullptr) {
-            face.kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
+            face.kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false, language);
             face.fileName = leafOf(record->relativePath);  // iconLabelFor's input
             if (in.thumbnails != nullptr) {
                 if (const std::optional<ThumbnailKey> key = thumbnailKeyForRecord(*record); key.has_value()) {
@@ -315,7 +317,7 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
     }
     if (opening) {
         ImGui::OpenPopup(POPUP_ID);
-        beginSession(state, in, options);
+        beginSession(state, in, language, options);
         state.openHostId.assign(in.hostId);
         state.openFieldKey.assign(in.fieldKey);
     }
@@ -400,7 +402,7 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
             state.filter.anyKind ? std::nullopt : std::optional<AssetKind>{state.filter.kind};
         if (state.search != state.builtForQuery || state.filter.anyKind != state.builtForAnyKind ||
             wantedKind != state.builtForKind || generation != state.builtForGeneration) {
-            rebuild(state, in);
+            rebuild(state, in, language);
             state.cursor = std::min(state.cursor, state.candidates.items.size());
         }
 
@@ -449,7 +451,7 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
         const bool seamClose = std::exchange(state.pendingClose, false);
         if (seamSearch.has_value()) {
             state.search = *seamSearch;
-            rebuild(state, in);
+            rebuild(state, in, language);
             state.cursor = std::min(state.cursor, state.candidates.items.size());
         }
         if (seamMove.has_value()) {

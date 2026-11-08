@@ -800,7 +800,8 @@ TEST_CASE("prefab_asset: a rescan mints one sidecar for a saved prefab and class
     REQUIRE(record != nullptr);
     CHECK(record->state == engine::editor::AssetMetaState::Created);
     CHECK(record->guid.valid());
-    CHECK(engine::editor::classifyAssetKind(record->relativePath, false) == engine::editor::AssetKind::Prefab);
+    CHECK(engine::editor::classifyAssetKind(record->relativePath, false, engine::editor::ProjectLanguage::Ts) ==
+          engine::editor::AssetKind::Prefab);
 
     std::size_t sidecars = 0;
     for (const std::string& name : namesIn(assetsRoot)) {

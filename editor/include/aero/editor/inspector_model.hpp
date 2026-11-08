@@ -8,6 +8,7 @@
 #include <aero/editor/axis_palette.hpp>        // task E.3.1: the ONE spelling of the axis colours
 #include <aero/editor/component_ops.hpp>       // FieldValue, FieldKind
 #include <aero/editor/panel_chrome_model.hpp>  // task E.6.3: CardRecord, ChromeRole (InspectorDrawRecord)
+#include <aero/editor/project.hpp>             // task 4.6.1: ProjectLanguage
 #include <aero/scene/entity.hpp>
 #include <aero/scene/world.hpp>  // engine::ComponentTypeId
 
@@ -104,14 +105,15 @@ struct GuidFieldRow {
     std::string text;
     bool clearEnabled = false;  // the panel spells this BeginDisabled(!clearEnabled)
 };
-// task E.4.5: `subtitle` APPENDED AND DEFAULTED, so every existing call compiles and every existing case passes
-// UNEDITED -- the proof that this is additive, not a rewrite. It is what a material's tile SHOWS
-// (materialCardSubtitle's answer, rule 4 already applied). When non-empty, the found-record sentence is
-// composed through material_card.hpp's OWN row function, so the Inspector and the browser's list row can
+// task 4.6.1: `language` is the open project's: it names a .ts "Script" in a TypeScript project and "Text" in a C++
+// one, the same answer the Asset Browser gives. task E.4.5: `subtitle` is APPENDED AND DEFAULTED. It is what a
+// material's tile SHOWS (materialCardSubtitle's answer, rule 4 already applied). When non-empty, the found-record
+// sentence is composed through material_card.hpp's OWN row function, so the Inspector and the browser's list row can
 // never drift:   "brass.aeromat  -  Studio Brass  (Material)"
 // A nil guid and a missing record IGNORE it: a name for a reference that resolves to nothing is a name for
 // nothing.
-[[nodiscard]] GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database, std::string_view subtitle = {});
+[[nodiscard]] GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database, ProjectLanguage language,
+                                        std::string_view subtitle = {});
 
 // ---- task E.5.2: the named selector, as VALUES ----------------------------------------------------
 // The integer row's other shape: a dropdown naming each value, chosen by the field's OWN metadata and

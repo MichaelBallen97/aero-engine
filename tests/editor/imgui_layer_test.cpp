@@ -30605,6 +30605,110 @@ TEST_CASE("editor: the ScriptComponent picker offers no asset of another kind be
     app.reset();
 }
 
+// ---- task 4.6.1 (I386): the project's language reaches the Asset Browser's kind filter and the picker
+namespace {
+
+struct ScriptKindCounts {
+    std::size_t scriptFilter = 0;
+    std::size_t textFilter = 0;
+    std::size_t pickerCandidates = 0;
+    bool pickerOpened = false;
+};
+
+// The I369 fixture (a script and a material beside it), opened in `language`. The manifest of a C++ project is
+// rewritten after createProject, exactly as I363 does.
+[[nodiscard]] ScriptKindCounts measureScriptKinds(engine::platform::Context& ctx, engine::platform::Window& window,
+                                                  engine::rhi::Device& device,
+                                                  engine::editor::ProjectLanguage language) {
+    ScriptKindCounts counts;
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    if (language == engine::editor::ProjectLanguage::Cpp) {
+        engine::editor::ProjectManifest manifest = created.manifest;
+        manifest.language = language;
+        REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/project.json",
+                                                    engine::editor::writeProjectText(manifest))
+                    .empty());
+    }
+    writeScriptProjectFile(created.root, "assets/mover.ts",
+                           "export default class Mover extends engine.Script {\n    speed = 2;\n}\n");
+    writeScriptProjectFile(created.root, "assets/shade.aeromat", MINIMAL_AEROMAT_TEXT);
+    std::optional<engine::editor::EditorApp> app = openScriptApp(device, window, ctx, created.root, AERO_TEST_ESBUILD);
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+    }
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+
+    // The whole-project search composes the kind filter with the query, so "mover" leaves the script alone.
+    app->requestAssetBrowserSearch("mover");
+    REQUIRE(app->tick());
+    const auto visibleUnder = [&](std::string_view filterToken) {
+        app->requestAssetBrowserKindFilter(filterToken);
+        for (int i = 0; i < 4; ++i) {
+            REQUIRE(app->tick());
+        }
+        return app->assetBrowserSearchHitCount();
+    };
+    counts.scriptFilter = visibleUnder("6");  // AssetKind::Script
+    counts.textFilter = visibleUnder("4");    // AssetKind::Text
+    app->requestAssetBrowserKindFilter("all");
+    app->requestAssetBrowserSearch("");
+    REQUIRE(app->tick());
+
+    const engine::Entity cube = focusInspectorOnCube(*app);
+    const engine::ComponentTypeId scriptId = app->world().findComponentType("engine::ScriptComponent");
+    REQUIRE(scriptId.valid());
+    REQUIRE(engine::editor::addComponent(app->world(), cube, scriptId));
+    REQUIRE(app->tick());
+    REQUIRE(app->assetGuidForPath("shade.aeromat").has_value());
+    app->requestInspectorAssetPicker("engine::ScriptComponent", "script");
+    REQUIRE(app->tick());
+    if (engine::editor::componentFieldsAreReflected(app->world(), scriptId)) {
+        counts.pickerOpened = app->assetPickerOpen();
+        counts.pickerCandidates = app->assetPickerCandidateCount();
+    }
+    if (language == engine::editor::ProjectLanguage::Ts) {
+        tickUntilScriptsIdle(*app);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+    return counts;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: a C++ project's .ts is Text in the browser's filter and absent from the script picker "
+    "(task 4.6.1, I386)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "script kinds i386", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const ScriptKindCounts ts = measureScriptKinds(ctx, *window, *device, engine::editor::ProjectLanguage::Ts);
+    const ScriptKindCounts cpp = measureScriptKinds(ctx, *window, *device, engine::editor::ProjectLanguage::Cpp);
+
+    CHECK(ts.scriptFilter == 1U);
+    CHECK(ts.textFilter == 0U);
+    CHECK(cpp.scriptFilter == 0U);
+    CHECK(cpp.textFilter == 1U);
+    CHECK(ts.pickerOpened == cpp.pickerOpened);
+    if (ts.pickerOpened) {
+        CHECK(ts.pickerCandidates == 1U);
+        CHECK(cpp.pickerCandidates + 1U == ts.pickerCandidates);
+    }
+}
+
 // ---- task 4.4.4 (I370-I372): a prefab dropped into the scene is ONE undoable command
 namespace {
 

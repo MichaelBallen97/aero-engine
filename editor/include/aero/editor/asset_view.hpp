@@ -5,6 +5,7 @@
 // with no context of any kind -- classification, icons, the filter, the whole-project search and the
 // grid's column math all live here.
 #include <aero/editor/asset_meta.hpp>     // AssetRecord
+#include <aero/editor/project.hpp>        // task 4.6.1: ProjectLanguage (pure)
 #include <aero/editor/project_files.hpp>  // FileEntry -- code-review BLOCKING-2 (filterEntriesByKind)
 
 #include <array>
@@ -34,11 +35,19 @@ inline constexpr std::string_view PREFAB_FILE_SUFFIX = ".aeroprefab";
 //   Texture:  png jpg jpeg tga bmp gif hdr psd ktx2 dds
 //   Model:    gltf glb fbx obj blend dae ply stl
 //   Audio:    wav mp3 ogg flac
-//   Text:     json txt md hlsl glsl ts js   (a .d.ts, an upper-case .TS and a bare ".ts" stay Text)
+//   Text:     json txt md hlsl glsl ts js   (a .d.ts, an upper-case .TS and a bare ".ts" stay Text; since
+//             task 4.6.1 every .ts is Text in a C++ project)
 //   Material: aeromat
-//   Script:   a .ts that is not a .d.ts, exact case (isScriptAssetName); decided before the tables
+//   Script:   a .ts that is not a .d.ts, exact case (isScriptAssetName), and ONLY in a TypeScript project
+//             (task 4.6.1: a C++ project transpiles nothing, so its .ts falls through to Text); decided
+//             before the tables
 //   Prefab:   aeroprefab
-[[nodiscard]] AssetKind classifyAssetKind(std::string_view fileName, bool isDirectory) noexcept;
+[[nodiscard]] AssetKind classifyAssetKind(std::string_view fileName, bool isDirectory,
+                                          ProjectLanguage language) noexcept;
+
+// For a question whose kind is never Script (is this a Prefab, a Texture, a Material): AV75 proves both languages
+// give the same answer there. A question that CAN be Script passes the project's language (AV77 pins the set).
+inline constexpr ProjectLanguage KIND_LANGUAGE_NEUTRAL = ProjectLanguage::Ts;
 
 // The stb_image-readable SUBSET of Texture, and deliberately NOT the same predicate: .ktx2 and .dds
 // are textures that get an ICON, not a preview. Keeping the two tables separate is what stops a
@@ -93,7 +102,8 @@ struct AssetFilter {
 // Takes the LEAF name, not the path: "assets/wood/plank.png" must NOT match the query "wood", or
 // every asset in a well-named folder becomes a hit and the feature is useless. A directory only ever
 // matches AssetKind::Folder.
-[[nodiscard]] bool matchesFilter(std::string_view leafName, bool isDirectory, const AssetFilter& filter) noexcept;
+[[nodiscard]] bool matchesFilter(std::string_view leafName, bool isDirectory, const AssetFilter& filter,
+                                 ProjectLanguage language) noexcept;
 
 // task E.4.4: what the Asset Browser's directory listing KEEPS, decided at cache-fill time. It composes
 // the ONE roster in asset_meta.hpp; it never restates it.
@@ -119,7 +129,7 @@ struct AssetFilter {
 // satisfies matchesFilter, in `entries`' own order (never reordered). filter.anyKind == true (the
 // default) returns every index unfiltered -- the common, cheapest case.
 [[nodiscard]] std::vector<std::size_t> filterEntriesByKind(std::span<const FileEntry> entries,
-                                                           const AssetFilter& filter);
+                                                           const AssetFilter& filter, ProjectLanguage language);
 
 inline constexpr std::size_t MAX_SEARCH_RESULTS = 2000;
 
@@ -134,7 +144,7 @@ struct SearchResult {
 };
 // PURE over a span, never over the database: provable from a std::vector<AssetRecord> literal.
 [[nodiscard]] SearchResult searchAssets(std::span<const AssetRecord> records, const AssetFilter& filter,
-                                        std::size_t cap = MAX_SEARCH_RESULTS);
+                                        ProjectLanguage language, std::size_t cap = MAX_SEARCH_RESULTS);
 
 // ---- task E.4.4 (validation finding 2): the panel's vertical budget ----------------------------------
 // The panel used to reserve ONE line for the footer and give the panes everything else, so the
