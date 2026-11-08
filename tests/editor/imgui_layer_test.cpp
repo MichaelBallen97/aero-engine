@@ -32678,7 +32678,7 @@ namespace {
     REQUIRE(engine::editor::addComponent(app->world(), cube, scriptId));
     const std::optional<engine::Guid> guid = app->assetGuidForPath("a.ts");
     REQUIRE(guid.has_value());
-    engine::ScriptComponent* const script = app->world().get<engine::ScriptComponent>(cube);
+    auto* const script = app->world().get<engine::ScriptComponent>(cube);
     REQUIRE(script != nullptr);
     // Bound directly: a C++ project's picker offers no .ts, but a hand-edited scene can hold one.
     script->script = *guid;
@@ -32818,7 +32818,7 @@ TEST_CASE("editor: Play hands the game the pads that were connected before it be
     std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
     REQUIRE(app.has_value());
     const engine::editor::PlaySession& session = app->playSession();
-    TwoVirtualPads pads;
+    const TwoVirtualPads pads;
     REQUIRE(pads.attached());
     int ticks = 0;
     while (ticks < 8 && !(ctx.input().gamepadConnected(0) && ctx.input().gamepadConnected(1))) {
