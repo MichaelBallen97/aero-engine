@@ -24,6 +24,7 @@
 #include <ostream>  // MSVC: a CHECK over a std::string needs the complete std::ostream (the 0.4.1 trap)
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -308,6 +309,71 @@ TEST_CASE("parked scene: fifty cycles leave the World equal to its twin and surv
     CHECK_FALSE(parked.parked());
     checkSameScene(live, twin);
     CHECK(nextCreatesEqual(live, twin, 10));
+}
+
+// ---- RS8: park does everything that can throw before it moves anything --------------------------------------------
+namespace {
+
+// A game component whose copy throws while `armed`: World::clone copy-constructs every element, so this makes clone()
+// throw part-way through a World the game registered it on.
+struct ThrowOnCopy {
+    static inline bool armed = false;
+    int value = 0;
+
+    ThrowOnCopy() = default;
+    ThrowOnCopy(const ThrowOnCopy& other) : value(other.value) {
+        if (armed) {
+            throw std::runtime_error("copy refused");
+        }
+    }
+    ThrowOnCopy& operator=(const ThrowOnCopy&) = default;
+    ThrowOnCopy(ThrowOnCopy&&) noexcept = default;
+    ThrowOnCopy& operator=(ThrowOnCopy&&) noexcept = default;
+    ~ThrowOnCopy() = default;
+};
+
+}  // namespace
+
+TEST_CASE(
+    "parked scene: a park whose clone throws leaves the scene, its roots and the park untouched (task 4.7.2, RS8)") {
+    World live;
+    RootOrder roots;
+    const Named n = buildScene(live, roots);
+    REQUIRE(live.registerComponent<ThrowOnCopy>("ThrowOnCopy").valid());
+    ThrowOnCopy probe;
+    probe.value = 7;
+    REQUIRE(live.add<ThrowOnCopy>(n.c2, probe) != nullptr);
+
+    const std::string dumpBefore = world_test::dumpWorld(live);
+    const std::vector<Entity> rootsBefore = rootsOf(roots);
+    const std::optional<std::string> textBefore = sceneToText(live);
+    const engine::Transform* original = live.get<engine::Transform>(n.c1);
+    REQUIRE(original != nullptr);
+
+    ParkedScene parked;
+    ThrowOnCopy::armed = true;
+    bool threw = false;
+    try {
+        static_cast<void>(parked.park(live, roots));
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    ThrowOnCopy::armed = false;
+
+    CHECK(threw);
+    CHECK_FALSE(parked.parked());
+    CHECK(world_test::dumpWorld(live) == dumpBefore);
+    CHECK(live.get<engine::Transform>(n.c1) == original);  // still the same World, not a moved-from one
+    CHECK((sceneToText(live) == textBefore));
+    CHECK(rootsOf(roots) == rootsBefore);
+    Selection selection;
+    CHECK_FALSE(parked.restore(live, roots, selection));  // nothing was parked
+
+    // The refused park left it able to park once the copy works.
+    CHECK(parked.park(live, roots));
+    CHECK(parked.restore(live, roots, selection));
+    CHECK(world_test::dumpWorld(live) == dumpBefore);
+    CHECK(live.get<engine::Transform>(n.c1) == original);
 }
 
 // ---- RS7: the holder classification pin (source text) --------------------------------------------------------------
