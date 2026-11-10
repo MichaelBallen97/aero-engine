@@ -1009,9 +1009,10 @@ private:
     bool undoRequested = false;  // consumed by the next tick(); never survives it (task 2.4.1)
     bool redoRequested = false;
     World sceneWorld;
-    Selection sceneSelection;
-    CommandStack commandStack;    // F15: noexcept-movable, so EditorApp's own `noexcept = default` move
-                                  // stays valid. command_stack.hpp's two static_asserts hold that line.
+    Selection sceneSelection;   // [stop:clear]
+    CommandStack commandStack;  // F15: noexcept-movable, so EditorApp's own `noexcept = default` move
+                                // stays valid. command_stack.hpp's two static_asserts hold that line.
+    // [stop:clear]
     RootOrder rootOrder;          // task 2.4.2, D10 (accessor: roots()). entity_ops.hpp's two static_asserts
                                   // hold the same noexcept-move guarantee for this member.
     AssetDatabase assetDatabase;  // task 3.1.1 (D12) -- reconciled in tick(), never pushed. Own six
@@ -1143,7 +1144,7 @@ private:
     // TWO, not three: requestMaterialSlotTextureDrop forwards straight to the Material panel, because
     // the seam must reach that panel's own per-frame document copy and nothing held here can. §0.4
     // states that asymmetry; this is where it shows.
-    std::optional<HierarchyAssetDrop> requestedHierarchyDrop;
+    std::optional<HierarchyAssetDrop> requestedHierarchyDrop;  // [stop:clear]
     std::optional<ViewportAssetDrop> requestedViewportDrop;
     std::optional<CreateKind> pendingMenuCreate;  // task E.5.2 -- the menu bar's click and the seam's
     std::size_t createRefusals = 0;               // task E.5.2 -- member/accessor collision rule
@@ -1177,7 +1178,7 @@ private:
     // ---- task 4.7.1
     PlaySession playSessionValue;
     // task 4.7.2 (D1): the scene from before Play, parked untouched while the game runs its copy in sceneWorld.
-    ParkedScene parkedScene;
+    ParkedScene parkedScene;  // [stop:clear]
     std::optional<PlayControl> pendingPlayControl;
     std::vector<platform::Event> pendingGameEvents;
     std::size_t playLockRefusals = 0;                       // playLockRefusalCount()'s value

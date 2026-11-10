@@ -43,11 +43,11 @@ public:
 
 private:
     InstantiatePlan plan;
-    Entity parentTarget{};  // Entity{} == a scene-root drop
+    Entity parentTarget{};  // [stop:history] Entity{} == a scene-root drop
     Transform rootPlacement{};
-    Entity rootEntity{};        // filled by the FIRST redo; the identity every later cycle restores
+    Entity rootEntity{};        // [stop:history] filled by the FIRST redo; the identity every later cycle restores
     StructuralUndoState state;  // filled by undo, consumed by every later redo (the D21 shape)
-    std::vector<Entity> selectionBefore;
+    std::vector<Entity> selectionBefore;  // [stop:history]
 };
 
 inline constexpr std::string_view INSTANTIATE_PREFAB_COMMAND_LABEL = "Instantiate Prefab";
@@ -71,11 +71,11 @@ public:
 
 private:
     Prefab prefab;
-    Entity parentTarget{};  // Entity{} == a scene-root drop
+    Entity parentTarget{};  // [stop:history] Entity{} == a scene-root drop
     Transform rootPlacement{};
-    Entity rootEntity{};        // filled by the FIRST redo; the identity every later cycle restores
+    Entity rootEntity{};        // [stop:history] filled by the FIRST redo; the identity every later cycle restores
     StructuralUndoState state;  // filled by undo, consumed by every later redo
-    std::vector<Entity> selectionBefore;
+    std::vector<Entity> selectionBefore;  // [stop:history]
 };
 
 }  // namespace engine::editor

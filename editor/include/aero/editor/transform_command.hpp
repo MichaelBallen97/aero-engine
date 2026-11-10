@@ -39,7 +39,7 @@ public:
 private:
     bool write(World& world, const Transform& value);
 
-    Entity target{};
+    Entity target{};  // [stop:history]
     Transform beforeValue{};
     Transform afterValue{};
 };

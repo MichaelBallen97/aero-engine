@@ -8,6 +8,12 @@
 // The undo history is deliberately left alone. restore() returns the very World the history was recorded against,
 // with every handle identical, and nothing drives the history against the copy: the scene lock keeps every push out
 // of play, and undo and redo are refused there.
+//
+// Every editor member whose type holds an `Entity` says what Stop does with it, in a comment on its line or the line
+// above, as `stop:` and a class in square brackets: clear (Stop resets it, in `EditorApp::restoreAfterPlay`, the
+// panels' `clearRetainedEntities` or `ParkedScene::restore`), frame (rebuilt before any read within a tick), history
+// (a command's value, which the scene lock keeps free of play-time handles) or value (a field of a value type, whose
+// holder carries the class). RS7 enforces it.
 
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/selection.hpp>
@@ -35,7 +41,7 @@ public:
 
 private:
     std::optional<World> parkedWorld;  // the World from before Play, while a game plays
-    RootOrder parkedRoots;             // its root order
+    RootOrder parkedRoots;             // [stop:clear] its root order
 };
 
 // EditorApp's move is `noexcept = default`; the guarantee has to hold on the member type (the RootOrder precedent).

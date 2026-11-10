@@ -412,13 +412,13 @@ private:
     // renderScene, which takes a World& and CANNOT see the Selection. Both are cleared on EVERY
     // renderScene exit past the guard chain -- E.1.4's D12 discipline, three exits and three clears --
     // because a frame that returned early would otherwise draw last tick's selection's gizmos.
-    std::vector<Entity> selectionSnapshot;
-    Entity selectionPrimary{};
+    std::vector<Entity> selectionSnapshot;  // [stop:frame]
+    Entity selectionPrimary{};              // [stop:frame]
     // task E.2.3: withoutGeometry, minus the entities that now draw an icon (D10). Filtered through
     // the SAME viewportIconFor the emitter and the picker read, so all three agree by construction.
     // It needs no clear in renderScene: it is filled and consumed entirely inside drawSelectionOverlay
     // and is cleared at that function's own top, which is the asymmetry with the two above.
-    std::vector<Entity> markerScratch;
+    std::vector<Entity> markerScratch;  // [stop:frame]
     ViewportGizmoScratch gizmoScratch;
     // task E.1.4: io.DisplayFramebufferScale.x, captured in onDraw beside the existing toPixels
     // calls, because renderScene MUST NOT call ImGui (2.2.3 INV-3, still in force).

@@ -135,7 +135,7 @@ private:
     // At most one widget is active at a time, so ONE slot each. Keyed on (entity, type, field) so
     // reconcile can drop a cache whose target no longer resolves (E3).
     struct EditKey {
-        Entity entity{};
+        Entity entity{};  // [stop:value]
         ComponentTypeId type{};
         std::string field;
         bool active = false;
@@ -193,10 +193,10 @@ private:
                            const NamedSelectorRow& selector);
     void applyPending(PanelContext& context, Entity primary);
 
-    InspectorModel model;  // D15 scratch, rebuilt every frame
+    InspectorModel model;  // [stop:frame] D15 scratch, rebuilt every frame
     PendingAction pending{};
-    QuatEditCache quatCache;
-    StringEditCache stringCache;
+    QuatEditCache quatCache;      // [stop:clear]
+    StringEditCache stringCache;  // [stop:clear]
     std::string labelScratch;
     std::string shortNameScratch;
     const AssetDatabase* database = nullptr;  // task 3.1.5, reconciled -- see setDatabase above

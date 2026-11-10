@@ -144,8 +144,8 @@ private:
 
     struct PendingAction {
         ActionKind kind = ActionKind::None;
-        Entity target{};
-        Entity second{};
+        Entity target{};  // [stop:value]
+        Entity second{};  // [stop:value]
     };
 
     void drawTree(PanelContext& context);
@@ -162,24 +162,25 @@ private:
     // Task 2.4.2, D10: the root order (RootOrder) moved to EditorApp (accessor context.roots) so a
     // structural command can restore a deleted root to the row it occupied. This panel still
     // reconciles it, in phase 1.
-    std::vector<Entity> rows;        // this frame's visible rows, in DRAW order (the Shift-range domain)
-    std::vector<Entity> childArena;  // LIFO scratch for expanded nodes' children (D14), owned by walkForest
-    std::vector<TreeWalkEntry> stack;
-    std::vector<Entity> moveScratch;  // the drag-drop moved set, when it is a single unselected row
+    std::vector<Entity> rows;  // [stop:frame] this frame's visible rows, in DRAW order (the Shift-range domain)
+    // [stop:frame]
+    std::vector<Entity> childArena;    // LIFO scratch for expanded nodes' children (D14), owned by walkForest
+    std::vector<TreeWalkEntry> stack;  // [stop:frame]
+    std::vector<Entity> moveScratch;   // [stop:frame] the drag-drop moved set, when it is a single unselected row
     std::string labelScratch;
     std::string renameBuffer;
     // The name the rename began with, set beside renameBuffer by the BeginRename arm, its only writer: onDraw's
     // stale-field check commits a buffer that differs from it -- an edit -- and never compares with the World's
     // current name, which something else can change while the field is gone (I344).
     std::string renameOriginal;
-    Entity renaming{};
-    Entity rangeAnchor{};
+    Entity renaming{};     // [stop:clear]
+    Entity rangeAnchor{};  // [stop:clear]
     // The bugfix (multi-select drag, task 2.2.1): a plain click's REPLACE on an ALREADY-selected row is
     // deferred here at mouse-DOWN rather than applied immediately, so a drag begun from that same press
     // still reads the untouched selection (engine::editor::clickSelectionAction, selection.hpp). Set by
     // drawRow's PRESS check; consumed (and always cleared) by drawRow's RELEASE check on a LATER frame,
     // or defensively dropped in phase 1 if that release is ever missed (E24-style: see onDraw).
-    Entity deferredSelectTarget{};
+    Entity deferredSelectTarget{};  // [stop:clear]
     // Review round 2, Gap 2: the just-created/duplicated entity a collapsed ancestor must open to
     // reveal. `revealTarget` is set by applyPending (Create Child, Duplicate) or by revealEntity
     // (EditorApp's create drain) and consumed (turned into `revealPath`, the
@@ -188,21 +189,21 @@ private:
     // D12's phase order). drawTree runs only while the ##tree child is visible, and only its TREE walk takes
     // the reveal (a flat row is Leaf and drops SetNextItemOpen), so a reveal due while the child is skipped, or
     // while a query is set, waits for the first tree walk (the code-review round's finding 6, I340).
-    Entity revealTarget{};
-    std::vector<Entity> revealPath;
+    Entity revealTarget{};           // [stop:clear]
+    std::vector<Entity> revealPath;  // [stop:frame]
     // task E.5.2: the row to scroll into view on THIS walk -- copied from revealTarget at the top of drawTree
     // when the tree (never the flat list) is walked, and cleared when that row is drawn, or unconditionally at
     // the end of drawTree, so a target whose row is never drawn cannot scroll on a later frame.
-    Entity scrollTarget{};
+    Entity scrollTarget{};  // [stop:frame]
     bool renameFocusPending = false;
     // The ImGui frame the ##rename field was last submitted -- written beside its inputTextString call, and by the
     // BeginRename arm with the frame it runs in, so the field's first frame reads "the previous one" (onDraw's check).
     int renameFieldFrame = 0;
-    std::optional<Entity> pendingBeginRename;  // requestBeginRename's one-shot, drained in onDraw
-    PendingAction pending{};
-    std::optional<HierarchyAssetDrop> pendingAssetDrop;  // task 3.1.5 -- drained by tick(), never here
+    std::optional<Entity> pendingBeginRename;  // [stop:clear] requestBeginRename's one-shot, drained in onDraw
+    PendingAction pending{};                   // [stop:frame]
+    std::optional<HierarchyAssetDrop> pendingAssetDrop;  // [stop:clear] task 3.1.5 -- drained by tick(), never here
     std::optional<CreateKind> pendingCreate;             // task E.5.2 -- drained by tick(), never here
-    std::optional<Entity> pendingSavePrefab;             // task 4.4.4 -- drained by tick(), never here
+    std::optional<Entity> pendingSavePrefab;             // [stop:clear] task 4.4.4 -- drained by tick(), never here
     // task E.6.3 (D6): the search and the header row.
     std::string searchText;                         // the field's buffer; non-empty = the flat match list
     std::optional<std::string> pendingSearchQuery;  // requestSearchQuery's one-shot, drained in onDraw
@@ -212,11 +213,11 @@ private:
     bool pendingSearchFocus = false;                // requestSearchFieldFocus's one-shot, drained in onDraw
     bool searchFocusThisFrame = false;              // the drain's verdict: drawHeaderRow's SetKeyboardFocusHere
     bool flatRow = false;                           // drawRow is drawing a flat-list row (Leaf | NoTreePushOnOpen)
-    std::vector<Entity> matches;                    // this frame's flat list, in pre-order
+    std::vector<Entity> matches;                    // [stop:frame] this frame's flat list, in pre-order
     std::optional<std::size_t> lastMatchCount;      // the badge counts the PREVIOUS frame's matches (it draws first)
     std::string badgeScratch;
     std::string metaScratch;
-    HierarchyDrawRecord drawRecordValue;  // drawRecord()'s value, named apart from it
+    HierarchyDrawRecord drawRecordValue;  // [stop:frame] drawRecord()'s value, named apart from it
     // task 4.7.1 (D4): the scene lock, read once at the top of onDraw and held for the whole frame.
     bool lockedFrame = false;
 };

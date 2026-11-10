@@ -71,8 +71,8 @@ private:
     void addUncounted(Entity entity);
     void removeUncounted(Entity entity) noexcept;
 
-    std::vector<Entity> items;
-    Entity primaryEntity{};
+    std::vector<Entity> items;        // [stop:value]
+    Entity primaryEntity{};           // [stop:value]
     std::uint64_t revisionValue = 0;  // task E.3.2
 };
 

@@ -182,7 +182,7 @@ struct PickRequest {
 };
 
 struct PickResult {
-    Entity entity{};        // an INVALID handle is the miss -- never a null pointer, never a throw
+    Entity entity{};        // [stop:value] an INVALID handle is the miss -- never a null pointer, never a throw
     float distance = 0.0F;  // WORLD units from the eye. Kept even on a point hit, because
                             // per-triangle picking (Handoffs) wants this box pass as its broadphase.
     bool isPoint = false;   // true when a NON-MESH entity won its screen-space disc (D5)

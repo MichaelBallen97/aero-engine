@@ -23,7 +23,7 @@ namespace engine::editor {
 // One node of the explicit walk stack (D14): `childBegin/childNext/childEnd` index into the
 // caller-owned `childArena` passed to walkForest().
 struct TreeWalkEntry {
-    Entity entity{};
+    Entity entity{};  // [stop:value]
     std::size_t childBegin = 0;
     std::size_t childNext = 0;
     std::size_t childEnd = 0;

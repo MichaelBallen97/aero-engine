@@ -39,7 +39,7 @@ public:
 private:
     bool write(World& world, const FieldValue& value);
 
-    Entity target{};
+    Entity target{};  // [stop:history]
     ComponentTypeId typeId{};
     std::string fieldName;
     std::string labelText;
@@ -64,7 +64,7 @@ public:
     [[nodiscard]] ComponentTypeId type() const noexcept;
 
 private:
-    Entity target{};
+    Entity target{};  // [stop:history]
     ComponentTypeId typeId{};
     std::string labelText;
 };
@@ -86,7 +86,7 @@ public:
     [[nodiscard]] ComponentTypeId type() const noexcept;
 
 private:
-    Entity target{};
+    Entity target{};  // [stop:history]
     ComponentTypeId typeId{};
     std::string labelText;
     ComponentSnapshot payload;  // filled by redo, consumed by undo
