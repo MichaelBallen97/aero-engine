@@ -854,3 +854,14 @@ TEST_CASE("parked scene: every editor member that holds an entity says what Stop
         CHECK(covered.count(member.substr(0, member.find("::"))) == 1);
     }
 }
+
+TEST_CASE("parked scene: Stop calls each panel's reset of its retained entities (task 4.7.2, RS9)") {
+    // A reset function that no Stop calls clears nothing, whatever its body names (RS7 reads the bodies; this reads the
+    // caller). The Inspector's edit caches are reached by no behavioural case, so this is their only witness.
+    const std::string stopBody = functionBody(AERO_EDITOR_SRC_DIR "/editor_app.cpp", "EditorApp::restoreAfterPlay(");
+    REQUIRE_FALSE(stopBody.empty());
+    for (const char* call : {"hierarchyPanel->clearRetainedEntities(", "inspectorPanel->clearRetainedEntities("}) {
+        CAPTURE(call);
+        CHECK(stopBody.find(call) != std::string::npos);
+    }
+}
