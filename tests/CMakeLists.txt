@@ -601,7 +601,9 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/script_transpiler_test.cpp       # task 4.3.1 — the transpile driver over a real esbuild (ST)
                editor/cpp_project_template_test.cpp    # task 4.5.2 — the C++ project template's pure render (CP)
                # task 4.7.1 — the play session's rules and the game's feed (PY, GI)
-               editor/play_session_test.cpp)
+               editor/play_session_test.cpp
+               # task 4.7.2 — ParkedScene and the holder pin (RS)
+               editor/parked_scene_test.cpp)
 # task 4.3.1: aero::script joins so that script_transpiler_test.cpp's ST20-ST22 evaluate the editor's own transpiled
 # output in the engine's VM. Tests sit outside the boundary rule (the aero_tests precedent); aero_editor_core itself
 # does not link it, and the editor binary does not either.
