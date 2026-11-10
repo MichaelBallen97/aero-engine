@@ -177,6 +177,21 @@ public:
     // silent.
     void clear() noexcept;
 
+    // An identity-exact copy of this World (task 4.7.2). Every entity keeps its index AND generation, every free slot
+    // keeps the version it will be recycled at, and the next create() on the copy returns what the next create() on
+    // this World would, so a handle means the same thing in both. Copied: the entity pool, every registered component
+    // pool in packed order with each element copy-constructed, the registration table (ids, names, order), the
+    // hierarchy (each parent, each child list in attach order) and the names. A pool created through the internal seam
+    // and never bound into the registration table is not copied. This World is never modified, and the result shares
+    // nothing with it.
+    //
+    // Cost is linear in entity slots plus stored elements; the copy's first new index (past this World's slot count)
+    // walks the slot range once.
+    //
+    // A moved-from World clones to a moved-from World plus one ERROR. std::bad_alloc, and an exception from a game
+    // component's copy constructor, propagate; the partial copy is destroyed on the way out.
+    [[nodiscard]] World clone() const;
+
     // Visits every live entity exactly once, as fn(Entity). Never yields a destroyed entity. The
     // callback must not mutate this World (create/destroy an entity, add/remove a component, or
     // register a type) — the same contract each<Ts...>() states below, for the same reason: doing so

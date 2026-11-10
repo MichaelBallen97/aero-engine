@@ -75,6 +75,7 @@ add_executable(aero_tests
     scene_test.cpp        # task 1.3.1 — engine::World over EnTT: entities, components, queries, registration
     scene_prefab_test.cpp # task 4.4.4 -- engine::Prefab: capture, fromWorld, instantiate (PW1-PW30)
     scene_register_test.cpp # task 4.5.1 -- World::registerComponent<T> from public headers (RG1-RG14, RG16)
+    scene_clone_test.cpp  # task 4.7.2 -- World::clone, the identity-exact copy (WC1-WC8)
     transform_test.cpp    # task 1.3.2 — engine::Transform, the World-owned forest, world matrices
     camera_test.cpp       # task 1.3.3 — engine::Camera: defaults/layout/projection/view/registration
     light_test.cpp        # task 1.3.3 — engine::DirectionalLight + PointLight

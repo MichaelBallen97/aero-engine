@@ -19,7 +19,8 @@
 // never needs it, and neither does anyone who only *uses* components, which the public templates in
 // world.hpp already allow.
 //
-// Adding any other accessor here requires a spec-level decision — the seam stays two functions wide.
+// WorldAccess stays two functions wide; anything else here needs a spec-level decision. StorageFactory and
+// makeTypedStorage are the per-registration recipe task 4.7.2's spec decided.
 
 #include <aero/scene/world.hpp>
 
@@ -41,6 +42,15 @@ enum class SceneEntity : std::uint64_t {};
 using Registry = entt::basic_registry<SceneEntity>;
 using ErasedStorage = Registry::common_type;  // == entt::basic_sparse_set<SceneEntity>
 using Traits = entt::entt_traits<SceneEntity>;
+
+// The recipe a registration records so World::clone (task 4.7.2) can make the same pool in another registry: EnTT has
+// no run-time pool factory, so a typed pool is made by a function that names its type. It is called, never compared.
+using StorageFactory = ErasedStorage& (*)(Registry& registry);
+
+template <typename T>
+ErasedStorage& makeTypedStorage(Registry& registry) {
+    return registry.template storage<T>();
+}
 
 // Entity -> the ECS identifier. Entity{} (generation 0) maps to the null identifier. A live entt
 // version is never version_mask (basic_entt_traits::next() skips it), so generation is always >= 1
@@ -67,8 +77,9 @@ using Traits = entt::entt_traits<SceneEntity>;
 // World::Impl and EnTT are simultaneously visible — so World::Impl never leaves that file.
 struct WorldAccess {
     [[nodiscard]] static Registry* registry(World& world) noexcept;  // nullptr on a moved-from World
+    // `makeStorage` is the recipe that made `storage` (makeTypedStorage<T>); a null one is refused like a null storage.
     static ComponentTypeId bind(World& world, ComponentTypeId id, std::string_view name, ErasedStorage* storage,
-                                bool emptyType);
+                                bool emptyType, StorageFactory makeStorage);
 };
 
 // Make T a component type of THIS World: create its typed storage and record it under `name`.
@@ -87,7 +98,8 @@ ComponentTypeId registerComponent(World& world, std::string_view name) {
     if (reg == nullptr) {
         return {};
     }
-    return WorldAccess::bind(world, componentTypeId<T>(), name, &reg->template storage<T>(), std::is_empty_v<T>);
+    return WorldAccess::bind(world, componentTypeId<T>(), name, &makeTypedStorage<T>(*reg), std::is_empty_v<T>,
+                             &makeTypedStorage<T>);
 }
 
 }  // namespace engine::scene::internal
