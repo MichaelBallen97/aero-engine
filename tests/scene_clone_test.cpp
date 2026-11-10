@@ -56,6 +56,14 @@ struct LateComp {
     int late = 3;
 };
 
+// Two types bound straight through the internal seam, one with a recipe and one without.
+struct BindWithRecipe {
+    int v = 4;
+};
+struct BindNoRecipe {
+    int v = 5;
+};
+
 constexpr std::uint32_t QUIET_NAN_BITS = 0x7FC00ABCU;
 
 // Counts the WARN and ERROR records a case provokes, through the public setLogCallback seam.
@@ -529,4 +537,27 @@ TEST_CASE("scene: clone copies ten thousand entities across run-time pool pages 
     const std::vector<Entity> live = liveEntities(source);
     REQUIRE_FALSE(live.empty());
     CHECK(copy.get<CloneGameComp>(live.back())->label == source.get<CloneGameComp>(live.back())->label);
+}
+
+TEST_CASE("scene: the internal bind refuses a null recipe and registers nothing (task 4.7.2, WC9)") {
+    World w;
+    engine::scene::internal::Registry* registry = WorldAccess::registry(w);
+    REQUIRE(registry != nullptr);
+    const std::size_t before = w.componentTypeCount();
+
+    // A pool with no recipe could not be rebuilt by clone(): the refusal has to come here, before anything is recorded.
+    const ComponentTypeId refused =
+        WorldAccess::bind(w, componentTypeId<BindNoRecipe>(), "BindNoRecipe",
+                          &engine::scene::internal::makeTypedStorage<BindNoRecipe>(*registry), false, nullptr);
+    CHECK_FALSE(refused.valid());
+    CHECK(w.componentTypeCount() == before);
+    CHECK_FALSE(w.findComponentType("BindNoRecipe").valid());
+
+    // The same call with its recipe registers, so the refusal above is the recipe's alone.
+    const ComponentTypeId accepted =
+        WorldAccess::bind(w, componentTypeId<BindWithRecipe>(), "BindWithRecipe",
+                          &engine::scene::internal::makeTypedStorage<BindWithRecipe>(*registry), false,
+                          &engine::scene::internal::makeTypedStorage<BindWithRecipe>);
+    CHECK(accepted == componentTypeId<BindWithRecipe>());
+    CHECK(w.componentTypeCount() == before + 1U);
 }
