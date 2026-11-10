@@ -12,6 +12,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -432,7 +433,12 @@ bool resolvesTo(const std::set<std::string>& names, const std::string& scope, co
                 std::string& found) {
     std::string prefix = scope;
     while (true) {
-        const std::string candidate = prefix.empty() ? id : prefix + "::" + id;
+        std::string candidate = id;
+        if (!prefix.empty()) {
+            candidate = prefix;
+            candidate += "::";
+            candidate += id;
+        }
         if (names.count(candidate) != 0) {
             found = candidate;
             return true;
@@ -504,7 +510,7 @@ bool memberDecl(const std::string& code, std::string& type, std::string& name) {
         }
         line = trimmed(line.erase(open));
     }
-    std::size_t end = line.size();
+    const std::size_t end = line.size();
     std::size_t begin = end;
     while (begin > 0 && isIdentChar(line[begin - 1])) {
         --begin;
@@ -621,11 +627,11 @@ Classified classify(const Scan& scan) {
     return out;
 }
 
-const char* const STOP_MARKERS[] = {"[stop:clear]", "[stop:frame]", "[stop:history]", "[stop:value]"};
+const std::array<const char*, 4> stopMarkers = {"[stop:clear]", "[stop:frame]", "[stop:history]", "[stop:value]"};
 
 std::size_t markerTokens(const std::string& raw, std::string* which = nullptr) {
     std::size_t count = 0;
-    for (const char* marker : STOP_MARKERS) {
+    for (const char* marker : stopMarkers) {
         for (std::size_t at = raw.find(marker); at != std::string::npos; at = raw.find(marker, at + 1)) {
             ++count;
             if (which != nullptr) {
@@ -749,12 +755,12 @@ TEST_CASE("parked scene: every editor member that holds an entity says what Stop
         const char* signature;
         const char* file;
     };
-    const Reset resets[] = {
+    const std::array<Reset, 4> resets = {{
         {"EditorApp", "EditorApp::restoreAfterPlay(", AERO_EDITOR_SRC_DIR "/editor_app.cpp"},
         {"HierarchyPanel", "HierarchyPanel::clearRetainedEntities(", AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp"},
         {"InspectorPanel", "InspectorPanel::clearRetainedEntities(", AERO_EDITOR_SRC_DIR "/inspector_panel.cpp"},
         {"ParkedScene", "ParkedScene::restore(", AERO_EDITOR_SRC_DIR "/parked_scene.cpp"},
-    };
+    }};
     std::set<std::string> covered;
     for (const Reset& reset : resets) {
         CAPTURE(reset.signature);

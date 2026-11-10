@@ -93,6 +93,7 @@ std::vector<Entity> buildHistory(World& w) {
         return e;
     };
     std::vector<Entity> first;
+    first.reserve(12);
     for (int i = 0; i < 12; ++i) {
         first.push_back(make());
     }
@@ -113,6 +114,7 @@ std::vector<Entity> buildHistory(World& w) {
     }
     w.clear();
     std::vector<Entity> second;
+    second.reserve(5);
     for (int i = 0; i < 5; ++i) {
         second.push_back(make());
     }
@@ -279,6 +281,7 @@ TEST_CASE("scene: clone mints and recreates the identities the source would (tas
 TEST_CASE("scene: clone copies the eleven built-in pools in packed order (task 4.7.2, WC3)") {
     World source;
     std::vector<Entity> entities;
+    entities.reserve(60);
     for (int i = 0; i < 60; ++i) {
         entities.push_back(source.create());
     }
@@ -329,6 +332,7 @@ TEST_CASE("scene: clone copies game and seam pools, tags and non-trivial members
     REQUIRE(seamTagId.valid());
 
     std::vector<Entity> entities;
+    entities.reserve(6);
     for (int i = 0; i < 6; ++i) {
         entities.push_back(s.create());
     }
@@ -347,8 +351,7 @@ TEST_CASE("scene: clone copies game and seam pools, tags and non-trivial members
     }
 
     World copy = s.clone();
-    for (std::size_t i = 0; i < entities.size(); ++i) {
-        const Entity e = entities[i];
+    for (const Entity e : entities) {
         const CloneGameComp* from = s.get<CloneGameComp>(e);
         const CloneGameComp* to = copy.get<CloneGameComp>(e);
         REQUIRE(from != nullptr);
@@ -427,6 +430,7 @@ TEST_CASE("scene: clone copies the hierarchy and the names and shares nothing (t
     source.emplace();
     World& s = *source;
     std::vector<Entity> e;
+    e.reserve(9);
     for (int i = 0; i < 9; ++i) {
         e.push_back(s.create());
     }
@@ -456,7 +460,7 @@ TEST_CASE("scene: clone copies the hierarchy and the names and shares nothing (t
     CHECK(world_test::dumpWorld(s) == sourceBefore);
     CHECK(world_test::dumpWorld(copy) != copyBefore);
 
-    World second = s.clone();
+    const World second = s.clone();
     const std::string secondBefore = world_test::dumpWorld(second);
     CHECK(s.setParent(e[8], Entity{}));
     CHECK(s.setName(e[3], "renamed"));
