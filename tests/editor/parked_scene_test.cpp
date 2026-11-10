@@ -112,11 +112,15 @@ bool nextCreatesEqual(World& actual, World& twin, int count) {
 TEST_CASE("parked scene: park leaves an identical copy and restore brings the original back (task 4.7.2, RS1)") {
     World live;
     RootOrder roots;
-    buildScene(live, roots);
+    const Named n = buildScene(live, roots);
     World twin;
     RootOrder twinRoots;
     buildScene(twin, twinRoots);
     checkSameScene(live, twin);
+    // Which World is which: a component's address. A World's move keeps its storage, so the original's Transform stays
+    // at this address while it is parked and when it comes back; the copy's lives elsewhere.
+    const engine::Transform* original = live.get<engine::Transform>(n.c1);
+    REQUIRE(original != nullptr);
 
     ParkedScene parked;
     CHECK_FALSE(parked.parked());
@@ -124,11 +128,15 @@ TEST_CASE("parked scene: park leaves an identical copy and restore brings the or
     CHECK(parked.parked());
     checkSameScene(live, twin);  // the copy keeps every handle and every value
 
+    // The game plays the copy; the original is parked.
+    CHECK(live.get<engine::Transform>(n.c1) != original);
+
     Selection selection;
     CHECK(parked.restore(live, roots, selection));
     CHECK_FALSE(parked.parked());
     checkSameScene(live, twin);
     CHECK(rootsOf(roots) == rootsOf(twinRoots));
+    CHECK(live.get<engine::Transform>(n.c1) == original);  // the original came back, not a copy of it
 }
 
 TEST_CASE(
