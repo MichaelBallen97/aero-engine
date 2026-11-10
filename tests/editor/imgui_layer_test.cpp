@@ -33671,3 +33671,147 @@ TEST_CASE(
     CHECK(app->tick() == false);
     app.reset();
 }
+
+// ---- task 4.7.2 (I415, I416): what Stop drops of the handles the editor kept from play ------------------------------
+
+TEST_CASE("editor: Stop drops the Hierarchy's retained handles and prunes the selection (task 4.7.2, I415)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "park i415", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+
+    engine::World& world = app->world();
+    const engine::Entity entityA = engine::editor::createEntity(world, {}, "A");
+    const engine::Entity entityB = engine::editor::createEntity(world, {}, "B");
+    const engine::Entity entityD = engine::editor::createEntity(world, {}, "D");
+    e62Ticks(*app, 2);
+    app->requestPanelFocus("Hierarchy");
+    e62Ticks(*app, 2);
+    hierarchy->requestBeginRename(entityA);
+    for (int i = 0; i < 4 && hierarchy->renamingEntity() != entityA; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(hierarchy->renamingEntity() == entityA);
+    // Hidden, the panel draws nothing and so runs none of its own alive() checks: the rename is still there.
+    app->panels().setVisible("Hierarchy", false);
+    e62Ticks(*app, 1);
+    REQUIRE(hierarchy->renamingEntity() == entityA);
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == PlayMode::Playing));
+    const engine::Entity entityP = engine::editor::createEntity(app->world(), {}, "P");
+    app->world().destroy(entityB);
+    app->world().destroy(entityD);
+    const engine::Entity entityQ = engine::editor::createEntity(app->world(), {}, "Q");  // recycles D's slot
+    CHECK(entityQ != entityD);
+    const std::array<engine::Entity, 4> playSelection{entityA, entityB, entityQ, entityP};
+    app->selection().setAll(playSelection);
+    const std::uint64_t revisionInPlay = app->selection().revision();
+    hierarchy->revealEntity(entityP);
+    REQUIRE(hierarchy->retainedEntityCount() == 3U);  // the rename, the range anchor and the reveal target
+
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 1);
+    REQUIRE((app->playSession().mode() == PlayMode::Edit));
+    CHECK(parkSelectionOf(*app) == std::vector<engine::Entity>{entityA});
+    CHECK(app->selection().primary() == entityA);
+    CHECK(app->selection().revision() == revisionInPlay);
+    CHECK(app->world().alive(entityB));
+    CHECK(app->world().alive(entityD));
+    CHECK_FALSE(app->world().alive(entityP));
+    CHECK_FALSE(app->world().alive(entityQ));
+    CHECK(hierarchy->retainedEntityCount() == 0U);
+    CHECK_FALSE(hierarchy->renamingEntity().valid());
+
+    // D2's premise: the restored World mints the play-time entity's handle again, and nothing of the Hierarchy's
+    // remembers it.
+    const engine::Entity fresh = engine::editor::createEntity(app->world(), {}, "fresh");
+    CHECK(fresh == entityP);
+    CHECK(hierarchy->retainedEntityCount() == 0U);
+    app->panels().setVisible("Hierarchy", true);
+    e62Ticks(*app, 2);
+    CHECK_FALSE(app->selection().contains(fresh));
+    CHECK_FALSE(hierarchy->renamingEntity().valid());
+    CHECK(hierarchy->retainedEntityCount() == 0U);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a Quit while playing leaves no play-recorded drop or Save as Prefab to run in Edit (task 4.7.2, I416)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "park i416", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makePrefabDropProject();
+    std::optional<engine::editor::EditorApp> app = openPrefabDropApp(ctx, *window, *device, root);
+    REQUIRE(app.has_value());
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+    const std::optional<engine::Guid> prefab = app->assetGuidForPath("crate.aeroprefab");
+    REQUIRE(prefab.has_value());
+    const std::string assets = root + "/assets";
+
+    // Control, in Edit: the seam really adds entities and a command, so a leak after Stop would show.
+    app->requestHierarchyAssetDrop(*prefab, PREFAB_KIND, engine::Entity{});
+    REQUIRE(app->tick());
+    const bool dirty = engine::editor::sceneIoAvailable();
+    if (dirty) {
+        REQUIRE(app->world().entityCount() > 0U);
+        REQUIRE_FALSE(app->commands().isClean());
+    }
+    const std::size_t entitiesBefore = app->world().entityCount();
+    const std::size_t commandsBefore = app->commands().count();
+    const std::size_t prefabFilesBefore = prefabFilesIn(assets);
+    const std::size_t refusalsBefore = app->playLockRefusalCount();
+    const std::span<const engine::Entity> rootView = app->roots().entities();
+    const engine::Entity firstRoot = rootView.empty() ? engine::Entity{} : rootView.front();
+    if (dirty) {
+        REQUIRE(firstRoot.valid());
+    }
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == PlayMode::Playing));
+    hierarchy->requestAssetDrop({.guid = *prefab, .kind = PREFAB_KIND}, engine::Entity{});
+    app->requestHierarchyAssetDrop(*prefab, PREFAB_KIND, engine::Entity{});
+    app->requestHierarchySavePrefab(firstRoot);
+    app->requestGuardedQuit();
+    CHECK(app->tick() == dirty);  // a dirty document raises the prompt and keeps the editor open
+    CHECK((app->playSession().mode() == PlayMode::Edit));
+    CHECK(app->unsavedChangesPromptOpen() == dirty);
+    CHECK(app->world().entityCount() == entitiesBefore);
+    CHECK(app->commands().count() == commandsBefore);
+    CHECK(prefabFilesIn(assets) == prefabFilesBefore);
+    CHECK(app->playLockRefusalCount() == refusalsBefore);
+    CHECK(hierarchy->retainedEntityCount() == 0U);
+    if (dirty) {
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+    app.reset();
+}

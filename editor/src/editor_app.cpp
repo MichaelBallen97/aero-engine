@@ -641,6 +641,15 @@ void EditorApp::restoreAfterPlay() {
     // The World from before Play comes back (the copy is destroyed here), its root order with it, and the selection
     // keeps what still exists (D1, D3).
     parkedScene.restore(sceneWorld, rootOrder, sceneSelection);
+    // D2: every other handle the editor kept from play goes. The World after Stop can mint a play-time entity's handle
+    // again, and a request recorded in play named the play scene -- a Quit stops play before the drains run.
+    requestedHierarchyDrop.reset();
+    if (hierarchyPanel != nullptr) {
+        hierarchyPanel->clearRetainedEntities();
+    }
+    if (inspectorPanel != nullptr) {
+        inspectorPanel->clearRetainedEntities();
+    }
 }
 
 void EditorApp::handleEvent(const platform::Event& ev) {

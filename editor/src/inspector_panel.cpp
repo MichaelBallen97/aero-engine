@@ -164,6 +164,11 @@ void InspectorPanel::requestCardOpen(std::string registrationName, bool open) {
     pendingCardOpen = CardOpenRequest{.registrationName = std::move(registrationName), .open = open};
 }
 
+void InspectorPanel::clearRetainedEntities() noexcept {
+    quatCache = {};
+    stringCache = {};
+}
+
 void InspectorPanel::onDraw(PanelContext& context) {
     // task E.5.2: the seam's request is taken HERE, before any early return below, and std::exchange
     // RESETS the member (a moved-from optional stays engaged -- E.4.3). Overwriting frameNamedSelection

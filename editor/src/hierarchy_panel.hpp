@@ -115,6 +115,14 @@ public:
     void expireBeginRename() noexcept { pendingBeginRename.reset(); }
     // The entity being renamed; Entity{} while no rename is in progress.
     [[nodiscard]] Entity renamingEntity() const noexcept { return renaming; }
+    // task 4.7.2 (D2): Stop's reset, called by EditorApp::restoreAfterPlay alone. Ends a rename without a commit and
+    // drops the range anchor, the deferred select, the reveal target and the three one-shots that carry an entity (the
+    // pending rename, the asset drop, Save as Prefab): each was recorded against the play scene, and the World after
+    // Stop can mint a play-time entity's handle again.
+    void clearRetainedEntities() noexcept;
+    // How many of those seven hold a valid handle now (an engaged one-shot counts when its entity is valid; a drop
+    // counts its targetRow). The GPU tier's window onto Stop's reset.
+    [[nodiscard]] std::size_t retainedEntityCount() const noexcept;
     [[nodiscard]] const HierarchyDrawRecord& drawRecord() const noexcept { return drawRecordValue; }
 
 private:
