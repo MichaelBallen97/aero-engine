@@ -49,6 +49,7 @@
 #include <aero/editor/asset_drag.hpp>            // task 3.1.5 -- the three drop-request structs, held by
                                                  // value in the one-shots below. PUBLIC and PURE.
 #include <aero/editor/panel_registry.hpp>
+#include <aero/editor/parked_scene.hpp>        // task 4.7.2 -- a VALUE member (parkedScene); PURE
 #include <aero/editor/play_session.hpp>        // task 4.7.1 -- a VALUE member (playSessionValue); PURE
 #include <aero/editor/scene_asset_ledger.hpp>  // task 3.1.5 -- a VALUE member (sceneAssetLedger) needs
                                                // the definition, the asset_database.hpp precedent. It
@@ -247,6 +248,8 @@ public:
     [[nodiscard]] const PanelRegistry& panels() const noexcept;
     // The edited scene. EditorApp OWNS it (D6): a World is DOCUMENT state, unlike the
     // Context/Window/Device that main.cpp injects because they are process-global (2.1.3 D1).
+    // While a game plays or is paused this is the copy the game runs; the World from before Play waits parked and
+    // comes back, bit for bit, at Stop (task 4.7.2).
     [[nodiscard]] World& world() noexcept;
     [[nodiscard]] const World& world() const noexcept;
     // The shared entity selection: the hierarchy writes it, 2.2.2's inspector and 2.2.3's viewport
@@ -938,6 +941,9 @@ private:
     void handleEvent(const platform::Event& ev);
     // task 4.7.1: the ONE place a control reaches the session (PlaySession::apply), plus what a transition owes.
     void applyPlayControl(PlayControl control);
+    // task 4.7.2: the ONE Stop path's body -- every Stop (the toolbar, a chord, a request, a Quit) reaches it through
+    // applyPlayControl.
+    void restoreAfterPlay();
     void applyViewportDrop(const ViewportAssetDrop& drop);
     void applySlotDrop(const MaterialSlotTextureDrop& drop);
     // The import -> plan -> command sequence. `placement` is the ROOT entity's local Transform, so the
@@ -1170,6 +1176,8 @@ private:
     bool pendingToolbarUndo = false;
     // ---- task 4.7.1
     PlaySession playSessionValue;
+    // task 4.7.2 (D1): the scene from before Play, parked untouched while the game runs its copy in sceneWorld.
+    ParkedScene parkedScene;
     std::optional<PlayControl> pendingPlayControl;
     std::vector<platform::Event> pendingGameEvents;
     std::size_t playLockRefusals = 0;                       // playLockRefusalCount()'s value

@@ -613,20 +613,34 @@ void EditorApp::applyPlayControl(PlayControl control) {
     const PlayTransition transition = playSessionValue.apply(control);
     switch (transition) {  // NO default:
         case PlayTransition::Started:
-            // Handoffs: 4.7.3 saves and 4.7.2 snapshots the scene BEFORE apply on Edit -> Playing; 4.7.4 runs onInit
-            // after it. The one focus slot hands the Viewport the keyboard on the next tick (D5).
+            // The order at Play (task 4.7.2): 4.7.3's autosave, then this park, then 4.7.4 binds its ScriptSystem to
+            // the copy and runs onInit. The game runs a copy with every handle identical; the scene from before Play
+            // waits parked, untouched, until Stop. After apply, because only apply knows a transition happened, and
+            // before any game frame, which the next tick's advance runs.
+            parkedScene.park(sceneWorld, rootOrder);
+            // The one focus slot hands the Viewport the keyboard on the next tick (D5).
             requestedPanelFocus = VIEWPORT_ID;
             if (ctx != nullptr) {
                 playSessionValue.adoptConnectedPads(ctx->input());  // A6: a pad plugged in before Play
             }
             break;
-        case PlayTransition::Stopped:  // handoffs: 4.7.4's onDestroy runs here, and then 4.7.2's restore
+        case PlayTransition::Stopped:
+            // The order at Stop (task 4.7.2): 4.7.4's onDestroy runs and its ScriptSystem is destroyed HERE, before
+            // the restore, so no VM holds an entity of the copy across the move.
+            restoreAfterPlay();
+            break;
         case PlayTransition::None:
         case PlayTransition::Paused:
         case PlayTransition::Resumed:
         case PlayTransition::StepQueued:
             break;
     }
+}
+
+void EditorApp::restoreAfterPlay() {
+    // The World from before Play comes back (the copy is destroyed here), its root order with it, and the selection
+    // keeps what still exists (D1, D3).
+    parkedScene.restore(sceneWorld, rootOrder, sceneSelection);
 }
 
 void EditorApp::handleEvent(const platform::Event& ev) {
