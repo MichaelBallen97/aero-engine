@@ -1012,3 +1012,21 @@ state.
 - **A click-equivalent seam on a modal resolves INSIDE the modal's body**, by the click's own predicate, so it closes
   the popup the way a click does (`requestNewProjectAnswer`); a seam that sets a modal's one-shot from outside needs
   I192's drained arm instead.
+
+## Stop markers (task 4.7.2)
+
+- **Every editor member that holds an entity says what Stop does with it.** A member declared in
+  `editor/include/aero/editor/*.hpp` or `editor/src/*.hpp` whose type names `Entity`, or names a class that holds one,
+  and that is not a pointer or a reference, carries exactly one marker in a comment on its own line or on a whole-line
+  comment above it:
+  - `[stop:clear]`: retained across ticks, and Stop resets it in `EditorApp::restoreAfterPlay` or in a reset function
+    it calls (`HierarchyPanel::clearRetainedEntities`, `InspectorPanel::clearRetainedEntities`, `ParkedScene::restore`);
+  - `[stop:frame]`: rebuilt before every read within a tick;
+  - `[stop:history]`: a command's value, which the scene lock keeps clean of play-time handles;
+  - `[stop:value]`: a field of a value type, whose holder carries the class.
+- RS7 reads the headers and fails on a holder with no marker, on a `[stop:clear]` set that differs from the resets, and
+  on a reset body that misses a member. RS9 pins `restoreAfterPlay`'s two `clearRetainedEntities` calls. A new retained
+  holder is reset in its class's reset function in the same change.
+- RS7's limits: it reads headers only, so a type local to a `.cpp` (`SubtreeSnapshot::Impl`) is outside it; it reads one
+  line per declaration, so a declaration wrapped over two lines is invisible; and its name lookup is a three-step scope
+  walk, not C++'s.

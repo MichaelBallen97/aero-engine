@@ -9,11 +9,12 @@ Each rule here was earned by a defect, a green-and-wrong test or a measurement t
 
 ## Case ids
 
-**Next free ids, measured by a whole-`tests/` token sweep at `bb14048` (after 4.6.1 + 4.7.1): `I411` at the ImGui
+**Next free ids, measured by a whole-`tests/` token sweep at `2dde14a` (after 4.7.2): `I417` at the ImGui
 tier**, `AA68`, `AD77`, `AH21`, `AM29`, `AV78`, `BD8`, `BR31`, `BV10`, `CC15`, `CD15`, `CR13`, `CS17`, `DD31`, `DG26`,
 `DR30`, `EB31`, `EC5`, `EK12`, `EP19`, `FT17`, `G29`, `GI14`, `GL8`, `GR34`, `HK7`, `HY9`, `IO24`, `IR27`, `IX19`,
-`MB27`, `ML80`, `MP21`, `NP16`, `P101`, `PC15`, `PX6`, `PY11`, `RF8`, `RT31`, `SQ15`, `SS64`, `ST45`, `TB16`, `TH20`,
-`TS11`, `US13`, `VM89`, `VN5`, `VO15`, `WL7`, `X32`. The list does not name every taken prefix: `MR` (E.3.4), `PJ`
+`MB27`, `ML80`, `MP21`, `NP16`, `P101`, `PC15`, `PX6`, `PY11`, `RF8`, `RS10`, `RT31`, `SQ15`, `SS64`, `ST45`, `TB16`,
+`TH20`, `TS11`, `US13`, `VM89`, `VN5`, `VO15`, `WC10`, `WL7`, `X32`.
+The list does not name every taken prefix: `MR` (E.3.4), `PJ`
 (E.4.1), `CN` (E.4.2) and `MC` (mesh cook, which is why the card cache took `CC`) are taken too, so a NEW prefix is
 checked against a fresh sweep, never against this list. Which ids each task took is recorded in its `docs/10` entry.
 **E.6.1 DELETED `I230`** with the ProggyClean remap table it pinned — the id is retired, never reused.

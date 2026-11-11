@@ -232,6 +232,34 @@ runs. The play session calls no script: `ScriptSystem::update` hangs on the game
 scene snapshot and restore on the transitions into and out of `Playing` (tasks 4.7.4, 4.7.2 and 4.7.3). The editor's
 Context starts the gamepad drivers (`GamepadDrivers::System`) so pads feed the game while it has focus.
 
+### The park and the restore (task 4.7.2)
+
+Stop brings back the scene from before Play because the game never touches it. At Play, `EditorApp::applyPlayControl`
+calls `ParkedScene::park` (`parked_scene.hpp`, a plain value in `aero_editor_core`): the live World moves into the park,
+its copy made by `World::clone` takes its place, and the root order is copied beside it. The copy keeps every identity
+(each live handle, each free slot's stored version and the free-list order), so a handle held by the editor, its undo
+history or a script names the same entity in both Worlds. The game, the panels, the Viewport and the asset ledger all
+work on the copy, and nothing reads the parked original. Every Stop calls `ParkedScene::restore`, which prunes the
+selection against the play World, moves the original back as a whole World, puts its root order back and prunes the
+selection again; the copy is destroyed there. `sceneWorld` stays the same object throughout and only its `impl`
+changes, so every `World&` held across the transitions stays valid.
+
+- **At Play:** 4.7.3's autosave, then the park, then 4.7.4's ScriptSystem binds to the copy and runs `onInit`. The park
+  runs after `PlaySession::apply` and before any game frame.
+- **At Stop:** 4.7.4's `onDestroy` runs and its ScriptSystem is destroyed, then `restoreAfterPlay`. No VM holds an
+  entity of the copy across the move, and since the copy keeps every handle, nothing is re-handed after a bind.
+- **Every Stop path is one call:** the toolbar's Stop, the chord, `requestPlayControl(Stop)` and a Quit while playing or
+  paused, which reaches it at the top of `tick()`, before the unsaved-changes guard judges the document. None runs
+  inside the draw walk.
+
+The undo history survives because the World Stop returns is the one the history was recorded against; this park is the
+one World swap that keeps the stack (INV-6). The restored World's next new entity can still receive a handle a
+play-time entity had, since a new index always starts at version 0, so `restoreAfterPlay` also drops every entity handle
+the editor kept from play: the Hierarchy's and the Inspector's retained state (`clearRetainedEntities`) and a requested
+Hierarchy drop. Every editor member that holds an entity carries a marker saying what Stop does with it
+(`[stop:clear]`, `[stop:frame]`, `[stop:history]` or `[stop:value]`), and a source-text test keeps the set complete. The
+scene is held twice in memory while a game plays.
+
 ---
 
 ## Handles, not pointers

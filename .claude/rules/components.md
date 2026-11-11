@@ -84,3 +84,9 @@ catch-all** (`S24`), and a new `FieldUiMeta` member is appended LAST, so older c
 a component added later copies with no change there, and PW5 goes red on a hard-coded list. A type the destination World
 has not registered is skipped with one WARN per type per copy. `Prefab` needs no reflection and no EnTT, so it compiles
 in every configuration, and a public editor header may name it.
+
+**A REGISTRATION RECORDS THE RECIPE THAT MADE ITS POOL (4.7.2).** EnTT has no run-time pool factory, so `World::clone`
+makes each pool again from what its registration recorded: a typed pool through the `StorageFactory`
+(`makeTypedStorage<T>`) that `WorldAccess::bind` received, a run-time pool through its `ComponentOps`. `bind` refuses a
+null factory as it refuses a null storage (WC9). A new registration path records its recipe too, or the copy cannot
+make its pool.

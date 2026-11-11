@@ -20,6 +20,11 @@ Split out of `editor.md` so that no editor rules file is cut at the 150 000-char
   data-corruption invariant, not a cosmetic one. Never add a second path that swaps the World
   (a future New/Open flow, a project-load flow) without also clearing the stack in that same
   call.
+- **The park at Play is the one World swap that keeps the history (task 4.7.2).**
+  `ParkedScene::park` moves the scene's World aside and `restore` moves the same World back,
+  every handle identical, so the World Stop returns is the one the history was recorded
+  against and the stack is left as it is. The scene lock keeps play-time handles out of the
+  history. Any other path that replaces the World still clears the stack in the same call.
 - **Every native scene I/O call site checks `sceneIoAvailable()` first.** The engine's
   serialization bridge lives behind exactly one build gate
   (`AERO_EDITOR_REFLECTION`, confined to `scene_io.cpp`), and building the editor with

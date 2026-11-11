@@ -383,6 +383,16 @@ Subtasks:
 - Snapshot world state on Play (reuses generated serialization)
 - Restore on Stop; assert entity/resource parity
 
+**Outcome:** Play copies the scene's World with `World::clone` (`engine/scene`), which keeps every identity: each live
+handle, each free slot's version and the free-list order, every pool in packed order, the registration table, the
+hierarchy and the names. `ParkedScene` (`aero_editor_core`) holds the original untouched while the game runs on the
+copy, and every Stop (the toolbar, the chord, a request or a Quit) moves the original back as a whole World with its
+root order, so the scene after Stop is the scene before Play by construction (`docs/03`, "The park and the restore").
+The generated serialization is the tests' oracle rather than the snapshot: the text a scene saves before Play equals
+the text after Stop, beside equal handles, per-type counts, root order and the asset ledger's bindings, and fifty park
+and restore cycles run under ASan. The selection after Stop is the current one, pruned; the undo history is untouched;
+and Stop drops every entity handle the editor kept from play. No parity check runs in the product: the tests prove it.
+
 ### 4.7.3 Autosave-before-play · P0 · S · depends: 4.7.1
 **Goal:** the R11 seatbelt: a play-mode crash must never cost work.
 **Deliverable:** scene + project saved to disk automatically before entering play.

@@ -76,6 +76,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | 4.5.2 C++ project template | #136 | `8a20539` | **8 / 8**: the same page, PR and merge as 4.5.1 (rows 1–4 are this task's) |
 | 4.6.1 Language field + editor gating | #137 | `bb14048` | **7 / 7** with 4.7.1, one page for both; row 8 (a physical pad) NOT EXECUTABLE, none connected; nothing failed after the fix (macOS, Release, a signed throwaway `.app`: the first pass saw Add Component draw at full strength in play against AC-11, `d65bdfe` fixed it and rows 3 and 7 ran again at `a3bdce2`). Story 4's demo: 7 / 7 executable rows on a build of `main` (2026-11-09), two rows waiting on the TypeScript small game |
 | 4.7.1 Play/stop state machine + toolbar | #137 | `bb14048` | **7 / 7**: the same page, PR and merge as 4.6.1 (rows 1–3 are 4.6.1's, rows 4–8 this task's; row 8 NOT EXECUTABLE) |
+| 4.7.2 Scene snapshot & restore | #138 | `2dde14a` | **7 / 7**, nothing failed, none NOT EXECUTABLE (macOS, Release, a signed throwaway `.app` on two 1× displays: after Play and Stop the Hierarchy, the title's unsaved marker, the Inspector and the viewport 0 px from the captures taken before Play; Undo and Redo of an edit made before Play; a selection made in play; Pause and Step; Cmd+Q while playing, dirty with Cancel and then saved; every frame at Play and at Stop on 10 000 entities under 33 ms, measured with Tracy). Sabotage 58 / 58 RED after WC9, RS8 and RS9 closed its three HOLEs |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -22196,3 +22197,189 @@ Measured at `a3bdce2` on fresh build directories:
 - The editor's Context starts the system gamepad drivers on every OS (R38 now reaches the editor's start-up).
 - Docs: `docs/03`, `docs/09` sections 4.2 and 4.12, `docs/08` (the handoffs and the validation debt), the phase file,
   and the editor, editor-invariants, editor-projects, editor-assets and tests rule files.
+
+### 4.7.2 — Scene snapshot & restore — Play runs the game on an identity-exact copy of the scene's World and every Stop hands back the original, so the scene after Stop is the scene before Play by construction
+
+Stop brings back the scene from before Play: the same entities with the same handles, the same component values, the
+same root order and selection, and the undo history as it was. Play copies the scene's World with `World::clone`, a new
+public method in `engine/scene` that keeps every identity; `ParkedScene` holds the original untouched while the game
+runs on the copy, and every Stop moves the original back as a whole World. Nothing the game does to the copy survives
+Stop, so nothing has to be undone. Nothing can change the scene in play yet (the lock is 4.7.1's and no script runs
+before 4.7.4), so the tests prove the return, and Story 1's and Story 3's demos will prove a game's changes undone.
+Merged as PR #138 (`2dde14a`, a true merge commit): ten commits on `c6b3643`. They are the five steps (`233ebe7`,
+`8eac12f`, `1528e2e`, `25b6d7d`, `ac290f2`), a clang-tidy commit (`1cac355`), round 1's fix (`10b75ec`) and the three
+commits that closed the sabotage holes (`8980fe6`, `07b3fca`, `9a43ace`). CI: run `43034906377` at `9a43ace` was green
+on its fourth attempt. The first three failed on the Linux lane alone, in the step that installs SDL3's system packages,
+before any build: the runner could not resolve `azure.archive.ubuntu.com` (132 resolution errors each time), while
+Windows, macOS and lint were green on all three. `main`'s push run `43076754605` on the merged head was 6 / 6 green on
+its first attempt. 4.7.2 gives Story 1 the restore in its fifth line ("the scene is exactly what it was before Play";
+`onDestroy` is 4.7.4's) and Story 3 its first line's after-Stop clause. Both demos wait on 4.7.4.
+
+**What shipped.**
+- **`World::clone`** (`world.hpp`, `world.cpp`, the internal `world_access.hpp`; WC1–WC9). `[[nodiscard]] World clone()
+  const` is the one addition to the installed SDK header. It copies the entity pool identity-exactly (every live
+  identifier, every free slot's stored version, the free-list order), every pool in the registration table in packed
+  order with each element copy-constructed, the table itself (ids, names and order, replayed with no WARN even for a
+  duplicate name), the hierarchy (each parent, each child list in attach order) and the names. The source is never
+  modified, and the copy shares nothing with it. A moved-from World clones to a moved-from World plus one ERROR.
+  `std::bad_alloc` and a game component's throwing copy constructor propagate, and the partial copy is destroyed on the
+  way out. A pool made on the registry through the internal seam and never bound into the table is not copied.
+- **A recipe per registration.** EnTT has no run-time pool factory, so each registration records how its pool was made.
+  `WorldAccess::bind` takes a `StorageFactory` (`makeTypedStorage<T>`, the same function `registerComponent<T>` makes
+  the pool through) and refuses a null one as it refuses a null storage (WC9). A run-time registration keeps its
+  `ComponentOps`, and the copy remakes its `RuntimeStorage` through `World::Impl::makeRuntimePool`. Both registration
+  paths share `World::Impl::bindRegistration`.
+- **`ParkedScene`** (`parked_scene.hpp`, `parked_scene.cpp`, new in `aero_editor_core`, no ImGui, EnTT or GPU; RS1–RS6,
+  RS8). `park(live, roots)` moves the live World into the park, leaves its copy in its place and copies the root order.
+  It does everything that can throw first, so a failed copy leaves the scene, its roots and the park as they were.
+  `restore(live, roots, selection)` prunes the selection against the play World, moves the original back, puts the root
+  order back and prunes again against the restored World. `prune` never bumps the selection's revision, so `restore`
+  does not either. Each call refuses, changing nothing, when the park is already full or already empty. Two
+  `static_assert`s keep `EditorApp`'s `noexcept` move.
+- **`EditorApp`'s wiring** (`editor_app.hpp`, `editor_app.cpp`; I411–I414). `applyPlayControl`'s `Started` arm parks the
+  scene after `PlaySession::apply` and before any game frame, and its `Stopped` arm calls `restoreAfterPlay`. Every Stop
+  path reaches that one call (the toolbar, the chord, `requestPlayControl(Stop)` and a Quit at the top of `tick()`), and
+  none runs inside the draw walk. The member `sceneWorld` stays the same object and only its `impl` changes, so every
+  `World&` a panel, a command or a test holds stays valid across both transitions. The undo stack, the dirty state, the
+  editor camera and the transform tools are untouched. INV-6 holds because the World Stop returns is the one the history
+  was recorded against, with every handle identical. The asset ledger needed nothing: the service pass after Stop
+  retires what only the copy referenced, and the pass after that destroys it (I414).
+- **Stop drops the editor's handles from play** (`editor_app.cpp`, `hierarchy_panel.{hpp,cpp}`,
+  `inspector_panel.{hpp,cpp}`; I415, I416). The restored World's next new entity can be minted with a handle a play-time
+  entity had (spike Q3: a new index always starts at version 0). `restoreAfterPlay` therefore resets
+  `requestedHierarchyDrop` and calls `HierarchyPanel::clearRetainedEntities` (the rename, range anchor, deferred
+  selection, reveal target, pending rename, pending asset drop and pending Save as Prefab) and
+  `InspectorPanel::clearRetainedEntities` (its quaternion and string edit caches). A drop or a Save as Prefab recorded
+  in Stop's frame is dropped: it named the play scene.
+- **The holder markers** (seventeen headers; RS7, RS9). Each of the 69 editor members whose type holds an `Entity`
+  carries one marker: `[stop:clear]` (14), `[stop:frame]` (13), `[stop:history]` (22) or `[stop:value]` (20). The
+  vocabulary is in `parked_scene.hpp`. RS7 reads the headers' text and fails on a holder with no marker, on a
+  `[stop:clear]` set that differs from the resets, and on a reset body that misses a member. RS9 pins
+  `restoreAfterPlay`'s two `clearRetainedEntities` calls.
+- **The test oracles** (`tests/world_dump.hpp`, no case). `dumpWorld` is a text of everything the public World API
+  shows, the Transform's bits included, and `firstBuiltinDifference` compares the eleven built-ins value by value.
+  Neither reads reflection, so both run with `AERO_REFLECT_TOOLS=OFF`. The saved-text oracle (`sceneToText`) runs
+  where scene IO exists, and its arms take the `CHECK_FALSE` branch where it does not.
+
+**Code-review rounds.** Two.
+- Round 1 (`c6b3643..1cac355`): 1 gap, 0 blocking, 1 should-fix, 0 minor. No case pinned that Stop hands back the
+  parked original rather than a copy of it (AC-6). A reversed park (park a copy and play on the original) passed every
+  RS case and I411–I416, because each comparison reads values and the copy keeps every handle. `10b75ec` extends RS1: a
+  Transform's address recorded before the park differs while parked and is equal again after the restore (World's move
+  keeps the `Impl` pointer). The reversed park turns RS1 red at two lines.
+- Round 2 (`1cac355..10b75ec`): approved, the finding closed.
+- The three commits that closed the sabotage holes came after round 2 and touch tests only. No round reviewed them, and
+  each case was seen red against its seed.
+
+**The sabotage matrix.** 58 rows designed at `10b75ec`, all on `macos-debug`: 14 on `aero_tests` (WC1–WC8), 30 on the
+shell binary (RS1–RS7) and 14 on the ImGui binary (I411–I416). No row needs a window that a test cannot drive, so no
+row is a manual one.
+- The first run: RED 55, HOLE 3 (S13, S18 and S39, the three the design predicted).
+- S13 (the internal bind accepting a null recipe): WC9 (`8980fe6`) binds a null factory and expects an invalid id, an
+  unchanged table and no such name, beside a bind with a recipe that succeeds.
+- S18 (`park` cloning after the move, so a throwing copy loses the scene): RS8 (`07b3fca`) registers a component whose
+  copy constructor throws and checks the scene, its roots and the park after the failed park.
+- S39 (`restoreAfterPlay` no longer calling the Inspector's reset): RS9 (`9a43ace`), a source pin on both calls. No tier
+  can activate an Inspector field (G8), so the reset has no behavioural witness.
+- Every re-run came back RED: 58 / 58. The final full runs read `aero_tests` 2054 / 2054, the shell binary 2607 / 2607
+  and the ImGui binary 422 / 422, and the tree was clean after each seed.
+
+**Traps found, each measured.**
+- **Swapping registries inside one `World::Impl` strands its cached pool pointers on the other registry** (the spike,
+  pure EnTT 3.16). The park moves whole Worlds, never a registry.
+- **A new index always starts at version 0, in the source and in its copy** (spike Q3). A free slot's version could be
+  bumped, but a fresh index cannot be offset, so a handle minted in play can be minted again after Stop. That is why
+  Stop clears every retained handle rather than trusting a version offset.
+- **EnTT copies a pool identity-exactly only one way** (spike Q1, Q2): `generate` each packed identifier in order, then
+  `free_list(n)`; `start_from` is not needed. A `push(entity, const void*)` in packed order keeps the packed order for
+  typed pools, tags and `RuntimeStorage`, and copy-constructs each element.
+- **The asset ledger retires a play-only reference one pass after Stop and destroys its handle the pass after that**
+  (DP15's deferral). A wait for an empty ledger stopped one pass early; I414 also waits for the destroy count to pass
+  its value at Stop.
+- **A mesh GUID that resolves to nothing feeds the asset ledger**, so the scene I411–I413 build uses a `PointLight` and
+  a `ScriptComponent`, not a `MeshRenderer`.
+- **A passing case's `MESSAGE` never reaches CI's logs.** CI runs `ctest --preset` without `-V`, so WC8 prints its
+  timing on every lane and none of the three lanes' logs of PR #138's run holds it. The per-OS copy cost the plan
+  expected from CI (G9) is not recorded anywhere.
+- **A source pin that requires a text once breaks on an unrelated second occurrence.** A `pendingBeginRename.has_value()
+  &&` form put a second copy of the text I337 pins; `retainedEntityCount` reads `.value_or(Entity{}).valid()` instead.
+
+**Where the implementation departed from the plan.**
+- WC8 destroys every tenth entity together with its subtree in the 4-ary forest, so 6 238 entities stay live of
+  10 000 slots, where the plan reads "a tenth destroyed". The game pool's ten 1 024-element pages exist before the
+  destroys. Its Release median of five runs was 764 µs at `233ebe7`.
+- WC1 holds the copy as a non-const `World`, because the registry seam it inspects needs one; `clone()` stays `const`.
+- `buildPlayScene` takes `EditorApp&` rather than `World&`, so it can tick between the `setParent` moves.
+- `retainedEntityCount` counts the two optional holders as `.value_or(Entity{}).valid()` (the trap above).
+- RS7 reads a holder's own line, and the line above only when that line is a whole-line comment; otherwise two marked
+  holders in a row would each see two markers. Where a trailing marker would pass 118 columns, it is a whole-line
+  comment above the member (`rootOrder`, `childArena`).
+- `1cac355` is a commit of its own for clang-tidy's findings in the two new test files, with no behaviour change.
+- RS1 gained the identity checks (round 1), and WC9, RS8 and RS9 were added for the holes: 24 cases where the plan had
+  21, so `aero_tests` reads 2054 and the shell binary 2607, not the plan's 2053 and 2605.
+
+**What was deliberately left out, and which task holds each.**
+- `onDestroy` before the restore and the ScriptSystem's unbind: 4.7.4, against the order contract in `docs/03`. The
+  copy keeps every handle, so nothing is re-handed after a bind (the 4.2.1 handoff's 4.7.2 part, settled in `docs/08`).
+- The autosave before the park: 4.7.3, R11's other half. A `bad_alloc` inside the copy at Play leaves `tick()` by
+  exception and ends the editor (G3), and the park leaves the scene as it was before throwing.
+- A run-time parity check in the product: none (D4). Parity is proven by tests only.
+- The engine's text round trip (spike Q4's open half): not timed, since the design does not use it. The spike's
+  figures are the EnTT model's, not the engine's: a copy of 0.88 ms at 10 000 entities, 5.0 ms at 100 000 (10.9 ms with
+  all eleven pools), a move-assign under 1 µs and a destroy of 0.5 ms at 100 000. WC8's 764 µs is the engine's figure.
+- The bytes of a scene held twice while a game plays: not measured (G11, `docs/08`).
+- A seam-made create recorded in play crossing a Quit-path Stop (G10, `docs/08`): it carries no entity, and only the
+  test seam reaches it.
+- A Hierarchy row's expanded state, which ImGui keys by the entity's handle (D2's residual, `docs/08`): an entity
+  created after Stop that receives a play-time entity's handle inherits that row's state. It is cosmetic and unreachable
+  before 4.7.4.
+- RS7's limits (G4): it reads headers only, so a type local to a `.cpp` (`SubtreeSnapshot::Impl`, history) is outside
+  it; it reads one line per declaration; its name lookup is a three-step scope walk, not C++'s.
+
+**The sentences that govern new work.**
+- Play copies the scene's World with `World::clone` and parks the original; the game runs on the copy, and every Stop
+  moves the original back as a whole World. Nothing re-hands an entity: the copy keeps every handle.
+- At Play: 4.7.3's autosave, then the park, then 4.7.4's bind and `onInit`. At Stop: `onDestroy` and the ScriptSystem's
+  destruction, then `restoreAfterPlay`. Every Stop path is that one call, outside any draw walk.
+- The park at Play is the one World swap that keeps the undo history: the World Stop returns is the one the history was
+  recorded against (`editor-projects.md`, INV-6).
+- Every editor member that holds an entity carries exactly one `[stop:…]` marker, and a `[stop:clear]` member is reset
+  by its class's reset function, which `restoreAfterPlay` calls (RS7, RS9; `editor.md`).
+- A registration records the recipe that made its pool, so `World::clone` can make it again; a new registration path
+  records one (`components.md`).
+
+**Validation and sabotage status — macOS 7 / 7 (2026-11-12), Windows and Linux unrun.** The editor was a Release build
+at `9a43ace` in a signed throwaway `.app`, on two 1× displays (3440×1440, and 1080×1920 in portrait). Every row ran, and
+none was NOT EXECUTABLE.
+- Row 1: eight entities (Group with Arm, which holds Hand, and Leg; Arm collapsed), Main Camera dragged under Cube and
+  back, the Cube moved on X with the gizmo, and Cube and Leg selected. Two reference captures 3 s apart differed in
+  0 px.
+- Row 2: after Play (`Playing · frame 168`, through the Main Camera) and Stop, the Hierarchy, the title
+  (`*Untitled - Snap`) and the viewport image differed from row 1 in 0 px, apart from the HUD's live frame-time
+  readout. The dock tabs' focus lines differ because Play hands the Viewport the keyboard (4.7.1).
+- Row 3: after Stop the Edit menu read `Undo Transform`. Undo put the Cube back at 0 / 0 / 0, 0 px from the capture
+  taken before the move, and Redo moved it to X 2.068 again.
+- Row 4: Directional Light, clicked in play, was the only selection after Stop, and its Inspector was 0 px from its
+  capture before Play.
+- Row 5: paused, the status bar read `Paused · frame 142` across 1.5 s, and three Steps read 143, 144 and 145. After
+  Stop the viewport, the Hierarchy, the title, the Inspector and the status bar were 0 px from row 1.
+- Row 6: Cmd+Q while playing a dirty scene stopped play and opened `Save changes to "Untitled"?`, and Cancel left the
+  window 0 px from row 1 outside the tabs' focus lines. After Save Scene As, Cmd+Q while playing exited within 1 s with
+  no prompt.
+- Row 7: 10 000 entities (100 roots of 99 children, 5 000 MeshRenderers). The status bar's readout is a 0.5 s average,
+  so every frame was measured with Tracy instead: the park's copy took 0.801 ms, the longest frame was 24.9 ms around
+  Play and 26.1 ms around Stop, and none after start-up passed 33 ms (4 211 frames, the longest 32.06 ms). After Stop
+  the Hierarchy's first rows and the viewport were 0 px from before Play.
+- CI ran every new case in both configurations on every lane of PR #138's run: 228 / 228 on Windows, 233 / 233 on
+  Linux (its ASan/UBSan Debug run, with LSan, reported nothing for RS6's fifty cycles or WC4's destroyed source) and
+  233 / 233 on macOS, with the SDK's 6 / 6 on each.
+- The sabotage matrix ended 58 / 58 RED, and no row is witnessed by the page.
+
+**Case ids claimed:** WC1–WC9 (next free: WC10), RS1–RS9 (RS10) and I411–I416 (I417).
+
+**Build & dependency impact:** no vcpkg port and no new target.
+- `aero_scene` gains the public `World::clone` (in the installed SDK header `world.hpp`), and the internal
+  `WorldAccess::bind` gains its `StorageFactory` parameter.
+- `aero_editor_core` gains `parked_scene.cpp` and its public header. `aero_tests` gains `tests/scene_clone_test.cpp` and
+  the header-only `tests/world_dump.hpp`, and `aero_editor_shell_test` gains `tests/editor/parked_scene_test.cpp`.
+- Docs: `docs/03`, `docs/08`, the phase file, and the components, editor, editor-projects and tests rule files.
