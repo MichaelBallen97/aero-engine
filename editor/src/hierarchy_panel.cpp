@@ -676,6 +676,29 @@ void HierarchyPanel::cancelRename() noexcept {
     renameFocusPending = false;
 }
 
+void HierarchyPanel::clearRetainedEntities() noexcept {
+    renaming = {};  // cancelRename's two writes, spelled out: a rename in flight ends without a commit
+    renameFocusPending = false;
+    rangeAnchor = {};
+    deferredSelectTarget = {};
+    revealTarget = {};
+    pendingBeginRename.reset();
+    pendingAssetDrop.reset();
+    pendingSavePrefab.reset();
+}
+
+std::size_t HierarchyPanel::retainedEntityCount() const noexcept {
+    std::size_t count = 0;
+    count += renaming.valid() ? 1U : 0U;
+    count += rangeAnchor.valid() ? 1U : 0U;
+    count += deferredSelectTarget.valid() ? 1U : 0U;
+    count += revealTarget.valid() ? 1U : 0U;
+    count += pendingBeginRename.value_or(Entity{}).valid() ? 1U : 0U;
+    count += pendingAssetDrop.has_value() && pendingAssetDrop->targetRow.valid() ? 1U : 0U;
+    count += pendingSavePrefab.value_or(Entity{}).valid() ? 1U : 0U;
+    return count;
+}
+
 void HierarchyPanel::applyPending(PanelContext& context) {
     // Every mutation now flows through a Command's redo() (task 2.4.2) -- this function only ever
     // READS the World directly (alive()/name(), and reparentTargets()'s own const query).

@@ -60,11 +60,11 @@ struct HierarchyHeaderLayout {
 
 // What the Hierarchy DREW this frame (D14) -- its FIRST draw seam.
 struct HierarchyRowRole {
-    Entity entity{};
+    Entity entity{};                          // [stop:value]
     ChromeRole role = ChromeRole::TextFaint;  // the role the row's dot was handed
 };
 struct HierarchyRowMeta {
-    Entity entity{};
+    Entity entity{};   // [stop:value]
     std::string text;  // the meta drawn: the DIRECT child count
 };
 struct HierarchyDrawRecord {
@@ -72,8 +72,8 @@ struct HierarchyDrawRecord {
     std::uint32_t rowsDrawn = 0;
     std::uint32_t dotsDrawn = 0;
     std::uint32_t metasDrawn = 0;
-    std::vector<HierarchyRowRole> rowRoles;  // this frame, one per drawn row: look a role up BY HANDLE
-    std::vector<HierarchyRowMeta> rowMetas;  // this frame, one per drawn meta
+    std::vector<HierarchyRowRole> rowRoles;  // [stop:value] this frame, one per drawn row: look a role up BY HANDLE
+    std::vector<HierarchyRowMeta> rowMetas;  // [stop:value] this frame, one per drawn meta
     std::string badgeText;
     bool searchActive = false;   // the field's IsItemActive(): it is being edited
     bool searchFocused = false;  // the field's IsItemFocused(): it holds NavId, whoever gave it

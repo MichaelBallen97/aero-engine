@@ -192,6 +192,11 @@ struct World::Impl {
         ErasedStorage* storage = nullptr;  // stable: the registry owns pools through shared_ptr
         ComponentTypeId id{};
         bool emptyType = false;
+        // The recipe that made `storage`, so World::clone (task 4.7.2) can make the same pool in another registry.
+        // Invariant: makeStorage != nullptr (a typed pool, made by it), or makeStorage == nullptr and `storage` is a
+        // RuntimeStorage configured with `ops`.
+        scene::internal::StorageFactory makeStorage = nullptr;
+        scene::detail::ComponentOps ops{};
     };
 
     Registry registry;
@@ -213,6 +218,47 @@ struct World::Impl {
     [[nodiscard]] const Registration* find(ComponentTypeId id) const noexcept {
         const auto it = byId.find(id.value);
         return it == byId.end() ? nullptr : &registrations[it->second];
+    }
+
+    // A run-time pool for `ops`, under a pool id no pool holds. Built-ins sit under their type hashes, so the walk from
+    // a fixed seed ends at the first free value and depends on registration order alone. Shared by registerComponentRaw
+    // and clone().
+    RuntimeStorage& makeRuntimePool(const scene::detail::ComponentOps& poolOps) {
+        auto poolId = static_cast<entt::id_type>(0x41455230U + registrations.size());
+        while (registry.storage(poolId) != nullptr) {
+            ++poolId;
+        }
+        RuntimeStorage& storage = registry.storage<RuntimeComponent>(poolId);
+        storage.configure(poolOps);
+        return storage;
+    }
+
+    // Records a registration: idempotent (an existing id returns unchanged and never touches storage; a DIFFERING name
+    // WARNs and keeps the first -- the id is the identity, the name is a label), a duplicate NAME on a NEW id WARNs
+    // (findComponentType keeps resolving to the first registrant), then the append. Shared by both registration paths.
+    ComponentTypeId bindRegistration(ComponentTypeId id, std::string_view name, ErasedStorage* storage, bool emptyType,
+                                     scene::internal::StorageFactory makeStorage,
+                                     const scene::detail::ComponentOps& poolOps) {
+        if (const auto it = byId.find(id.value); it != byId.end()) {
+            const Registration& existing = registrations[it->second];
+            if (existing.name != name) {
+                AERO_LOG_WARN("scene: component type re-registered under a different name; keeping '{}'",
+                              existing.name);
+            }
+            return existing.id;
+        }
+        for (const Registration& reg : registrations) {
+            if (reg.name == name) {
+                AERO_LOG_WARN(
+                    "scene: component type name '{}' is already registered to a different type; "
+                    "findComponentType will resolve to the first",
+                    name);
+                break;
+            }
+        }
+        registrations.push_back(Registration{std::string{name}, storage, id, emptyType, makeStorage, poolOps});
+        byId.emplace(id.value, registrations.size() - 1U);
+        return id;
     }
 
     [[nodiscard]] bool aliveInternal(Entity entity) const noexcept {
@@ -746,6 +792,62 @@ bool World::advanceQuery(QueryCursor& cursor, void** slots) const noexcept {
     return false;
 }
 
+// ---- clone (task 4.7.2) -------------------------------------------------------------------------
+
+namespace {
+
+// Every element of `from`, in packed order, copy-constructed into the empty pool `to` (pushing in packed order
+// reproduces the packed array, so each/view order matches). A tag pool stores no value, so value() is never called on
+// one -- copyComponent's rule.
+void copyPool(const ErasedStorage& from, ErasedStorage& to, bool emptyType) {
+    for (std::size_t i = 0; i < from.size(); ++i) {
+        const SceneEntity entity = from.data()[i];
+        to.push(entity, emptyType ? nullptr : from.value(entity));
+    }
+}
+
+}  // namespace
+
+World World::clone() const {
+    AERO_PROFILE_ZONE;
+    World copy;  // a live World, whose Impl is replaced below so the source's table is replayed in its own order
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("scene: {} on a moved-from World", "clone");
+        copy.impl.reset();  // a moved-from World clones to a moved-from World
+        return copy;
+    }
+    copy.impl = std::make_unique<Impl>();
+    Impl& dst = *copy.impl;
+
+    // 1. The entity pool. Every packed entry -- live identifiers and each free slot's stored version alike -- in packed
+    //    order, then the live count. A fresh pool keeps everything live while it is replayed, so each entry lands at
+    //    the back and the packed order is the source's. No start_from: the first new index is found by the pool's own
+    //    walk, which needs no assumption about holes.
+    auto& sourceEntities = impl->registry.storage<SceneEntity>();
+    auto& copyEntities = dst.registry.storage<SceneEntity>();
+    copyEntities.reserve(sourceEntities.size());
+    for (std::size_t i = 0; i < sourceEntities.size(); ++i) {
+        copyEntities.generate(sourceEntities.data()[i]);
+    }
+    copyEntities.free_list(sourceEntities.free_list());
+
+    // 2. The registration table, in order: each pool made by the recipe that made the source's, filled in packed
+    //    order. Appended directly, never through bindRegistration, so a table with a shared name replays silently.
+    for (const Impl::Registration& reg : impl->registrations) {
+        ErasedStorage* const pool =
+            reg.makeStorage != nullptr ? &reg.makeStorage(dst.registry) : &dst.makeRuntimePool(reg.ops);
+        dst.registrations.push_back(
+            Impl::Registration{reg.name, pool, reg.id, reg.emptyType, reg.makeStorage, reg.ops});
+        dst.byId.emplace(reg.id.value, dst.registrations.size() - 1U);
+        copyPool(*reg.storage, *pool, reg.emptyType);
+    }
+
+    // 3. The hierarchy and the names: never registered, already made by Impl's own initialisers.
+    copyPool(*impl->hierarchy, *dst.hierarchy, false);
+    copyPool(*impl->names, *dst.names, false);
+    return copy;
+}
+
 // ---- the component-type registry -------------------------------------------------------------
 
 ComponentTypeId World::registerComponentRaw(ComponentTypeId id, std::string_view name,
@@ -753,19 +855,13 @@ ComponentTypeId World::registerComponentRaw(ComponentTypeId id, std::string_view
     if (impl == nullptr || !id.valid()) {
         return {};
     }
-    // Registered already: bind keeps its idempotence and its WARN, and no second pool is made.
+    // Registered already: bindRegistration keeps its idempotence and its WARN, and no second pool is made.
     if (const Impl::Registration* existing = impl->find(id); existing != nullptr) {
-        return scene::internal::WorldAccess::bind(*this, id, name, existing->storage, existing->emptyType);
+        return impl->bindRegistration(id, name, existing->storage, existing->emptyType, existing->makeStorage,
+                                      existing->ops);
     }
-    // A pool id no pool holds. Built-ins sit under their type hashes, so the walk from a fixed seed ends at the first
-    // free value and depends on registration order alone.
-    auto poolId = static_cast<entt::id_type>(0x41455230U + impl->registrations.size());
-    while (impl->registry.storage(poolId) != nullptr) {
-        ++poolId;
-    }
-    RuntimeStorage& storage = impl->registry.storage<RuntimeComponent>(poolId);
-    storage.configure(ops);
-    return scene::internal::WorldAccess::bind(*this, id, name, &storage, ops.size == 0);
+    RuntimeStorage& storage = impl->makeRuntimePool(ops);
+    return impl->bindRegistration(id, name, &storage, ops.size == 0, nullptr, ops);
 }
 
 bool World::registered(ComponentTypeId id) const noexcept { return impl != nullptr && impl->find(id) != nullptr; }
@@ -811,33 +907,11 @@ Registry* WorldAccess::registry(World& world) noexcept {
 }
 
 ComponentTypeId WorldAccess::bind(World& world, ComponentTypeId id, std::string_view name, ErasedStorage* storage,
-                                  bool emptyType) {
-    if (world.impl == nullptr || !id.valid() || storage == nullptr) {
+                                  bool emptyType, StorageFactory makeStorage) {
+    if (world.impl == nullptr || !id.valid() || storage == nullptr || makeStorage == nullptr) {
         return {};
     }
-    World::Impl& impl = *world.impl;
-    // Idempotent: an existing id returns unchanged and never touches storage. A DIFFERING name WARNs
-    // and keeps the first — the id is the identity, the name is a label.
-    if (const auto it = impl.byId.find(id.value); it != impl.byId.end()) {
-        const World::Impl::Registration& existing = impl.registrations[it->second];
-        if (existing.name != name) {
-            AERO_LOG_WARN("scene: component type re-registered under a different name; keeping '{}'", existing.name);
-        }
-        return existing.id;
-    }
-    // A duplicate NAME on a NEW id WARNs; findComponentType keeps resolving to the first registrant.
-    for (const World::Impl::Registration& reg : impl.registrations) {
-        if (reg.name == name) {
-            AERO_LOG_WARN(
-                "scene: component type name '{}' is already registered to a different type; "
-                "findComponentType will resolve to the first",
-                name);
-            break;
-        }
-    }
-    impl.registrations.push_back(World::Impl::Registration{std::string{name}, storage, id, emptyType});
-    impl.byId.emplace(id.value, impl.registrations.size() - 1U);
-    return id;
+    return world.impl->bindRegistration(id, name, storage, emptyType, makeStorage, scene::detail::ComponentOps{});
 }
 
 }  // namespace scene::internal

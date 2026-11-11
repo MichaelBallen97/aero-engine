@@ -132,9 +132,9 @@ public:
     void insert(Entity entity, std::size_t index);
 
 private:
-    std::vector<Entity> order;
+    std::vector<Entity> order;         // [stop:value]
     std::vector<std::uint32_t> stamp;  // Entity::index -> generation of the entry in `order`, else 0
-    std::vector<Entity> scratch;
+    std::vector<Entity> scratch;       // [stop:value]
 };
 
 // EditorApp's move is `noexcept = default` (editor_app.hpp). Under P1286R2 a defaulted move with a

@@ -56,12 +56,12 @@ struct ViewportGizmoTints {
 };
 
 struct ViewportGizmoParams {
-    std::span<const Entity> selected{};  // SELECTION ORDER, the buildSelectionMaskSet convention
-    Entity primary{};
+    std::span<const Entity> selected{};  // [stop:value] SELECTION ORDER, the buildSelectionMaskSet convention
+    Entity primary{};                    // [stop:value]
     // The winner of scene_render::activeDirectionalLight, resolved ONCE by the caller. An INVALID
     // handle means "the scene has no directional light", under which NOTHING is muted -- never
     // "everything is muted", which is what a defaulted-invalid mistake would produce (VG7).
-    Entity activeDirectional{};
+    Entity activeDirectional{};                        // [stop:value]
     float iconSizePixels = VIEWPORT_ICON_SIZE_POINTS;  // points * framebufferScale, resolved by the caller
     std::uint32_t entityCap = static_cast<std::uint32_t>(MAX_HIGHLIGHTED_ENTITIES);
     ViewportGizmoTints tints{};

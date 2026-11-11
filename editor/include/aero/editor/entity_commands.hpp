@@ -83,16 +83,16 @@ public:
     [[nodiscard]] Entity created() const noexcept;  // Entity{} until the first redo
 
 private:
-    Entity parentTarget{};  // Entity{} == a root
+    Entity parentTarget{};  // [stop:history] Entity{} == a root
     std::string createName;
     // task E.5.2: the seed. labelText "" == CREATE_ENTITY_COMMAND_LABEL; seedTransform is engaged iff the
     // command was seeded; seedComponent is monostate when unseeded, or seeded with no component.
     std::string labelText;
     std::optional<Transform> seedTransform;
     SeedComponent seedComponent;
-    Entity createdEntity{};     // filled by the FIRST redo; the identity every later cycle restores
+    Entity createdEntity{};     // [stop:history] filled by the FIRST redo; the identity every later cycle restores
     StructuralUndoState state;  // filled by undo, consumed by every later redo (D21)
-    std::vector<Entity> selectionBefore;
+    std::vector<Entity> selectionBefore;  // [stop:history]
 };
 
 class DeleteEntitiesCommand final : public Command {
@@ -103,9 +103,9 @@ public:
     [[nodiscard]] std::string_view label() const noexcept override;
 
 private:
-    std::vector<Entity> targets;
+    std::vector<Entity> targets;  // [stop:history]
     StructuralUndoState state;
-    std::vector<Entity> selectionBefore;
+    std::vector<Entity> selectionBefore;  // [stop:history]
 };
 
 class DuplicateEntitiesCommand final : public Command {
@@ -117,10 +117,10 @@ public:
     [[nodiscard]] std::string_view label() const noexcept override;
 
 private:
-    std::vector<Entity> sources;
-    std::vector<Entity> createdEntities;  // filled by the FIRST redo
+    std::vector<Entity> sources;          // [stop:history]
+    std::vector<Entity> createdEntities;  // [stop:history] filled by the FIRST redo
     StructuralUndoState state;
-    std::vector<Entity> selectionBefore;
+    std::vector<Entity> selectionBefore;  // [stop:history]
 };
 
 class ReparentCommand final : public Command {
@@ -133,15 +133,15 @@ public:
     [[nodiscard]] std::string_view label() const noexcept override;
 
     struct Move {
-        Entity entity{};
-        Entity oldParent{};                  // Entity{} == it was a world root
+        Entity entity{};                     // [stop:value]
+        Entity oldParent{};                  // [stop:value] Entity{} == it was a world root
         std::size_t oldSlot = NO_ROOT_SLOT;  // among oldParent's children, or among the roots
     };
 
 private:
-    std::vector<Entity> targets;
-    Entity newParentTarget{};
-    std::vector<Move> captured;  // filled by redo, consumed by undo
+    std::vector<Entity> targets;  // [stop:history]
+    Entity newParentTarget{};     // [stop:history]
+    std::vector<Move> captured;   // [stop:history] filled by redo, consumed by undo
 };
 
 class RenameEntityCommand final : public Command {
@@ -154,7 +154,7 @@ public:
     [[nodiscard]] std::string_view label() const noexcept override;
 
 private:
-    Entity target{};
+    Entity target{};  // [stop:history]
     std::string beforeName;
     std::string afterName;
 };

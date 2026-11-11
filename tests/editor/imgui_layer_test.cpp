@@ -87,6 +87,7 @@
 #include "../../editor/src/viewport_panel.hpp"  // task 3.6.3: ViewportPanel's three test seams --
                                                 // postProcess(), tonemapParams(), requestTonemapParams().
                                                 // The scene_asset_loader.hpp precedent, one file over.
+#include "../world_dump.hpp"                    // task 4.7.2 (I411-I414): dumpWorld, firstBuiltinDifference
 #include "rhi_test_support.hpp"
 
 #include <SDL3/SDL_events.h>      // task 4.7.1 (I409): the mouse events the ImGui backend reads
@@ -33325,5 +33326,492 @@ TEST_CASE("editor: Add Component's recorded fill reads 0 on a frame that draws n
     REQUIRE(app->tick());
     app->requestQuit();
     CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.7.2 (I411-I414): the scene parked at Play and restored at Stop ------------------------------------------
+namespace {
+
+struct ParkNamed {
+    engine::Entity r1;
+    engine::Entity c1;
+    engine::Entity c2;
+    engine::Entity g;
+    engine::Entity r2;
+    engine::Entity r3;
+};
+
+// The RS cases' scene, written through the app's own World. The root order is reordered with setParent and a tick
+// between each move, so the Hierarchy reconciles each: [..., R2, R3, R1] cannot come from one reconcile of the end.
+[[nodiscard]] ParkNamed buildPlayScene(engine::editor::EditorApp& app) {
+    engine::World& world = app.world();
+    ParkNamed n;
+    n.r1 = engine::editor::createEntity(world, {}, "R1");
+    n.c1 = engine::editor::createEntity(world, n.r1, "C1");
+    n.c2 = engine::editor::createEntity(world, n.r1, "C2");
+    n.g = engine::editor::createEntity(world, n.c2, "G");
+    n.r2 = engine::editor::createEntity(world, {}, "R2");
+    n.r3 = engine::editor::createEntity(world, {}, "R3");
+    const engine::Entity tmp = engine::editor::createEntity(world, {}, "Tmp");
+    world.destroy(tmp);  // a free slot
+    world.add<engine::PointLight>(n.c1, engine::PointLight{});
+    world.add<engine::PointLight>(n.r2, engine::PointLight{});
+    world.add<engine::ScriptComponent>(n.g, engine::ScriptComponent{engine::Guid{21ULL, 22ULL}});
+    e62Ticks(app, 2);
+    world.setParent(n.r1, n.r2);
+    e62Ticks(app, 2);
+    world.setParent(n.r1, engine::Entity{});
+    e62Ticks(app, 2);
+    return n;
+}
+
+// A game's worth of change, made through the seam a ScriptSystem will use (world()).
+void changeEverything(engine::World& world, const ParkNamed& n) {
+    world.get<engine::Transform>(n.c1)->position = engine::Vec3{9.0F, 8.0F, 7.0F};
+    world.setName(n.r1, "Renamed");
+    world.setParent(n.c1, n.r2);
+    world.add<engine::PointLight>(n.g, engine::PointLight{});
+    world.remove<engine::PointLight>(n.c1);
+    const engine::Entity s1 = engine::editor::createEntity(world, {}, "S1");
+    engine::editor::createEntity(world, s1, "S2");
+    world.destroy(n.r1);
+    world.destroy(n.r2);
+    engine::editor::createEntity(world, {}, "Recycled");
+}
+
+[[nodiscard]] std::string parkTextOf(const engine::World& world) {
+    return engine::editor::sceneToText(world).value_or("");
+}
+
+[[nodiscard]] std::vector<engine::Entity> parkRootsOf(const engine::editor::EditorApp& app) {
+    const std::span<const engine::Entity> view = app.roots().entities();
+    return {view.begin(), view.end()};
+}
+
+[[nodiscard]] std::vector<engine::Entity> parkSelectionOf(const engine::editor::EditorApp& app) {
+    const std::span<const engine::Entity> view = app.selection().entities();
+    return {view.begin(), view.end()};
+}
+
+void parkDestroyEveryRoot(engine::World& world) {
+    std::vector<engine::Entity> roots;
+    world.eachEntity([&](engine::Entity entity) {
+        if (!world.parent(entity).valid()) {
+            roots.push_back(entity);
+        }
+    });
+    for (const engine::Entity root : roots) {
+        world.destroy(root);
+    }
+}
+
+}  // namespace
+
+TEST_CASE("editor: Stop brings back the scene from before Play, its order, selection and history (task 4.7.2, I411)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "park i411", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+
+    const ParkNamed n = buildPlayScene(*app);
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    e62Ticks(*app, 2);
+    const engine::Entity cube = app->selection().primary();
+    REQUIRE(cube.valid());
+    app->selection().add(n.r3);
+    const std::string dumpBefore = world_test::dumpWorld(app->world());
+    const std::string textBefore = parkTextOf(app->world());
+    const std::vector<engine::Entity> rootsBefore = parkRootsOf(*app);
+    const std::vector<engine::Entity> selectionBefore = parkSelectionOf(*app);
+    const std::size_t appliedBefore = app->commands().appliedCount();
+    const bool cleanBefore = app->commands().isClean();
+    REQUIRE_FALSE(cleanBefore);
+    engine::World twin = app->world().clone();
+    REQUIRE(app->commands().canUndo());
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == PlayMode::Playing));
+    changeEverything(app->world(), n);
+    const engine::Entity playOnly = engine::editor::createEntity(app->world(), {}, "PlayOnly");
+    app->selection().add(playOnly);
+    e62Ticks(*app, 3);
+    CHECK(world_test::dumpWorld(app->world()) != dumpBefore);  // anti-vacuity: the game really changed the scene
+    CHECK(parkRootsOf(*app) != rootsBefore);
+
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == PlayMode::Edit));
+    CHECK(world_test::dumpWorld(app->world()) == dumpBefore);
+    CHECK(world_test::firstBuiltinDifference(app->world(), twin).empty());
+    CHECK(world_test::firstBuiltinDifference(twin, app->world()).empty());
+    if (engine::editor::sceneIoAvailable()) {
+        CHECK(parkTextOf(app->world()) == textBefore);
+    } else {
+        CHECK_FALSE(engine::editor::sceneToText(app->world()).has_value());
+    }
+    CHECK(parkRootsOf(*app) == rootsBefore);
+    CHECK(parkSelectionOf(*app) == selectionBefore);
+    CHECK(app->commands().appliedCount() == appliedBefore);
+    CHECK(app->commands().isClean() == cleanBefore);
+    const engine::Entity next = app->world().create();
+    CHECK(next == twin.create());
+    app->world().destroy(next);
+
+    app->requestUndo();
+    e62Ticks(*app, 2);
+    CHECK_FALSE(app->world().alive(cube));
+    app->requestRedo();
+    e62Ticks(*app, 2);
+    CHECK(app->world().alive(cube));  // the same handle: the history was recorded against this very World
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a Stop from Paused restores, and a second Play and Stop restores again (task 4.7.2, I412)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "park i412", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+
+    const ParkNamed n = buildPlayScene(*app);
+    const std::string dumpBefore = world_test::dumpWorld(app->world());
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+    engine::editor::createEntity(app->world(), {}, "Spawn");
+    app->requestPlayControl(PlayControl::Pause);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == PlayMode::Paused));
+    app->world().destroy(n.r3);
+    const std::uint64_t frozen = app->playSession().frame();
+    app->requestPlayControl(PlayControl::Step);
+    e62Ticks(*app, 2);
+    CHECK(app->playSession().frame() == frozen + 1U);
+    CHECK(world_test::dumpWorld(app->world()) != dumpBefore);
+
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == PlayMode::Edit));
+    CHECK(world_test::dumpWorld(app->world()) == dumpBefore);
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == PlayMode::Playing));
+    changeEverything(app->world(), n);
+    e62Ticks(*app, 2);
+    CHECK(world_test::dumpWorld(app->world()) != dumpBefore);
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == PlayMode::Edit));
+    CHECK(world_test::dumpWorld(app->world()) == dumpBefore);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a Quit while playing restores the scene before it judges the document (task 4.7.2, I413)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "park i413", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    SUBCASE("(a) a clean scene: the quit goes through over the restored World") {
+        std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+        REQUIRE(app.has_value());
+        static_cast<void>(buildPlayScene(*app));
+        REQUIRE(app->commands().isClean());
+        const std::string dumpBefore = world_test::dumpWorld(app->world());
+        app->requestPlayControl(PlayControl::Play);
+        e62Ticks(*app, 2);
+        REQUIRE((app->playSession().mode() == PlayMode::Playing));
+        parkDestroyEveryRoot(app->world());
+        CHECK(world_test::dumpWorld(app->world()) != dumpBefore);
+        app->requestGuardedQuit();
+        CHECK(app->tick() == false);
+        CHECK((app->playSession().mode() == PlayMode::Edit));
+        CHECK(world_test::dumpWorld(app->world()) == dumpBefore);
+        app.reset();
+    }
+    SUBCASE("(b) a dirty scene: the prompt opens over the restored World") {
+        std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+        REQUIRE(app.has_value());
+        static_cast<void>(buildPlayScene(*app));
+        app->requestCreateEntity(engine::editor::CreateKind::Cube);
+        e62Ticks(*app, 2);
+        REQUIRE_FALSE(app->commands().isClean());
+        const std::string dumpBefore = world_test::dumpWorld(app->world());
+        const std::string textBefore = parkTextOf(app->world());
+        app->requestPlayControl(PlayControl::Play);
+        e62Ticks(*app, 2);
+        REQUIRE((app->playSession().mode() == PlayMode::Playing));
+        parkDestroyEveryRoot(app->world());
+        CHECK(world_test::dumpWorld(app->world()) != dumpBefore);
+        app->requestGuardedQuit();
+        CHECK(app->tick());
+        CHECK((app->playSession().mode() == PlayMode::Edit));
+        CHECK(app->unsavedChangesPromptOpen());
+        CHECK(world_test::dumpWorld(app->world()) == dumpBefore);
+        CHECK(parkTextOf(app->world()) == textBefore);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    }
+}
+
+TEST_CASE(
+    "editor: an asset loaded only for an entity spawned in play leaves the ledger after Stop (task 4.7.2, I414)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "park i414", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const engine::Guid meshGuid = engine::GuidGenerator(0x472ULL).next();
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/one.gltf", E41_ONE_MESH_GLTF_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/one.gltf.meta",
+                                                engine::editor::writeMetaText(meshGuid))
+                .empty());
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .assetWatch = {.enabled = false}});
+    REQUIRE(app.has_value());
+    e62Ticks(*app, 3);
+    using engine::editor::PlayControl;
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    const bool shaders = viewport->debugDraw() != nullptr;
+    CHECK(app->sceneAssetEntryCount() == 0U);
+    CHECK(app->sceneAssetMeshBindingCount() == 0U);
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+    const engine::Entity spawned = engine::editor::createEntity(app->world(), {}, "Model");
+    REQUIRE(spawned.valid());
+    REQUIRE(app->world().add<engine::MeshRenderer>(spawned, engine::MeshRenderer{.mesh = meshGuid}) != nullptr);
+    constexpr int MAX_SETTLE_TICKS = 32;
+    int ticks = 0;
+    while (ticks < MAX_SETTLE_TICKS && app->sceneAssetReadyCount() == 0U && app->sceneAssetFailedCount() == 0U) {
+        REQUIRE(app->tick());
+        ++ticks;
+    }
+    if (shaders) {
+        INFO("settled after " << ticks << " ticks; ledger message: " << app->sceneAssetMessage(meshGuid));
+        REQUIRE(ticks < MAX_SETTLE_TICKS);  // the predicate ended the loop, never the bound
+        CHECK(app->sceneAssetFailedCount() == 0U);
+        CHECK(app->sceneAssetMeshBindingCount() > 0U);  // anti-vacuity: the play entity's mesh really was bound
+    } else {
+        MESSAGE("no cooked shaders: only the ledger's entry count is asserted");
+    }
+    const std::size_t destroyedAtStop = app->sceneAssetDestroyCount();
+
+    app->requestPlayControl(PlayControl::Stop);
+    ticks = 0;
+    // The ledger retires the copy's references on the first service pass after Stop and destroys their handles on the
+    // next (the deferral), so the loop waits for both.
+    const auto settled = [&] {
+        return !app->playSession().active() && app->sceneAssetEntryCount() == 0U &&
+               (!shaders || app->sceneAssetDestroyCount() > destroyedAtStop);
+    };
+    while (ticks < MAX_SETTLE_TICKS && !settled()) {
+        REQUIRE(app->tick());
+        ++ticks;
+    }
+    REQUIRE(ticks < MAX_SETTLE_TICKS);
+    CHECK(app->sceneAssetEntryCount() == 0U);
+    if (shaders) {
+        CHECK(app->sceneAssetMeshBindingCount() == 0U);
+        CHECK(app->sceneAssetDestroyCount() > destroyedAtStop);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 4.7.2 (I415, I416): what Stop drops of the handles the editor kept from play ------------------------------
+
+TEST_CASE("editor: Stop drops the Hierarchy's retained handles and prunes the selection (task 4.7.2, I415)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "park i415", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+
+    engine::World& world = app->world();
+    const engine::Entity entityA = engine::editor::createEntity(world, {}, "A");
+    const engine::Entity entityB = engine::editor::createEntity(world, {}, "B");
+    const engine::Entity entityD = engine::editor::createEntity(world, {}, "D");
+    e62Ticks(*app, 2);
+    app->requestPanelFocus("Hierarchy");
+    e62Ticks(*app, 2);
+    hierarchy->requestBeginRename(entityA);
+    for (int i = 0; i < 4 && hierarchy->renamingEntity() != entityA; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(hierarchy->renamingEntity() == entityA);
+    // Hidden, the panel draws nothing and so runs none of its own alive() checks: the rename is still there.
+    app->panels().setVisible("Hierarchy", false);
+    e62Ticks(*app, 1);
+    REQUIRE(hierarchy->renamingEntity() == entityA);
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == PlayMode::Playing));
+    const engine::Entity entityP = engine::editor::createEntity(app->world(), {}, "P");
+    app->world().destroy(entityB);
+    app->world().destroy(entityD);
+    const engine::Entity entityQ = engine::editor::createEntity(app->world(), {}, "Q");  // recycles D's slot
+    CHECK(entityQ != entityD);
+    const std::array<engine::Entity, 4> playSelection{entityA, entityB, entityQ, entityP};
+    app->selection().setAll(playSelection);
+    const std::uint64_t revisionInPlay = app->selection().revision();
+    hierarchy->revealEntity(entityP);
+    REQUIRE(hierarchy->retainedEntityCount() == 3U);  // the rename, the range anchor and the reveal target
+
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 1);
+    REQUIRE((app->playSession().mode() == PlayMode::Edit));
+    CHECK(parkSelectionOf(*app) == std::vector<engine::Entity>{entityA});
+    CHECK(app->selection().primary() == entityA);
+    CHECK(app->selection().revision() == revisionInPlay);
+    CHECK(app->world().alive(entityB));
+    CHECK(app->world().alive(entityD));
+    CHECK_FALSE(app->world().alive(entityP));
+    CHECK_FALSE(app->world().alive(entityQ));
+    CHECK(hierarchy->retainedEntityCount() == 0U);
+    CHECK_FALSE(hierarchy->renamingEntity().valid());
+
+    // D2's premise: the restored World mints the play-time entity's handle again, and nothing of the Hierarchy's
+    // remembers it.
+    const engine::Entity fresh = engine::editor::createEntity(app->world(), {}, "fresh");
+    CHECK(fresh == entityP);
+    CHECK(hierarchy->retainedEntityCount() == 0U);
+    app->panels().setVisible("Hierarchy", true);
+    e62Ticks(*app, 2);
+    CHECK_FALSE(app->selection().contains(fresh));
+    CHECK_FALSE(hierarchy->renamingEntity().valid());
+    CHECK(hierarchy->retainedEntityCount() == 0U);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a Quit while playing leaves no play-recorded drop or Save as Prefab to run in Edit (task 4.7.2, I416)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "park i416", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makePrefabDropProject();
+    std::optional<engine::editor::EditorApp> app = openPrefabDropApp(ctx, *window, *device, root);
+    REQUIRE(app.has_value());
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+    const std::optional<engine::Guid> prefab = app->assetGuidForPath("crate.aeroprefab");
+    REQUIRE(prefab.has_value());
+    const std::string assets = root + "/assets";
+
+    // Control, in Edit: the seam really adds entities and a command, so a leak after Stop would show.
+    app->requestHierarchyAssetDrop(*prefab, PREFAB_KIND, engine::Entity{});
+    REQUIRE(app->tick());
+    const bool dirty = engine::editor::sceneIoAvailable();
+    if (dirty) {
+        REQUIRE(app->world().entityCount() > 0U);
+        REQUIRE_FALSE(app->commands().isClean());
+    }
+    const std::size_t entitiesBefore = app->world().entityCount();
+    const std::size_t commandsBefore = app->commands().count();
+    const std::size_t prefabFilesBefore = prefabFilesIn(assets);
+    const std::size_t refusalsBefore = app->playLockRefusalCount();
+    const std::span<const engine::Entity> rootView = app->roots().entities();
+    const engine::Entity firstRoot = rootView.empty() ? engine::Entity{} : rootView.front();
+    if (dirty) {
+        REQUIRE(firstRoot.valid());
+    }
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == PlayMode::Playing));
+    hierarchy->requestAssetDrop({.guid = *prefab, .kind = PREFAB_KIND}, engine::Entity{});
+    app->requestHierarchyAssetDrop(*prefab, PREFAB_KIND, engine::Entity{});
+    app->requestHierarchySavePrefab(firstRoot);
+    app->requestGuardedQuit();
+    CHECK(app->tick() == dirty);  // a dirty document raises the prompt and keeps the editor open
+    CHECK((app->playSession().mode() == PlayMode::Edit));
+    CHECK(app->unsavedChangesPromptOpen() == dirty);
+    CHECK(app->world().entityCount() == entitiesBefore);
+    CHECK(app->commands().count() == commandsBefore);
+    CHECK(prefabFilesIn(assets) == prefabFilesBefore);
+    CHECK(app->playLockRefusalCount() == refusalsBefore);
+    CHECK(hierarchy->retainedEntityCount() == 0U);
+    if (dirty) {
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
     app.reset();
 }

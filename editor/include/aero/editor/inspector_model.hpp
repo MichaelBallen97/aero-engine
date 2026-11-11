@@ -62,7 +62,7 @@ struct ComponentEntry {
 };
 
 struct InspectorModel {
-    Entity entity{};
+    Entity entity{};  // [stop:value]
     std::vector<ComponentEntry> components;
 };
 

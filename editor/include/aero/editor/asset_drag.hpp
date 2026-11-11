@@ -195,7 +195,7 @@ enum class DropAction : std::uint8_t {
 
 struct HierarchyAssetDrop {
     AssetDragPayload payload;
-    Entity targetRow{};  // Entity{} == the void target (drop at scene root)
+    Entity targetRow{};  // [stop:value] Entity{} == the void target (drop at scene root)
 };
 
 struct ViewportAssetDrop {
