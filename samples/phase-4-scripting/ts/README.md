@@ -29,7 +29,8 @@ scene, choose File > Open Scene and pick it.
 
 ## Story 2, edit while playing (about two minutes)
 
-1. Change a value in the scene (move the camera), then press Play: the change is on disk before the first frame.
+1. Select `Main Camera` and change its Transform position in the Inspector (orbiting the viewport records no edit),
+   then press Play: the change is on disk before the first frame.
 2. While the cubes move, change `speed` in `mover.ts` and save. The cubes follow the new speed from where they are,
    with no jump, because `time` and `originX` keep their values across the reload.
 3. Add `throw new Error("boom");` to `onUpdate` and save. The Console names `assets/scripts/mover.ts` and its line.

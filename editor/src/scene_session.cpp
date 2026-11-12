@@ -709,10 +709,6 @@ void performAction(FileAction action, CommandContext& context, CommandStack& com
 
 namespace {
 
-// task E.6.4 (D11/D12): step 0e's body. Inputs that moved since the last answer make the answer -- and a failed
-// Create's message -- describe a pair the form no longer holds, so the message is dropped; unless a Create ran in
-// THIS call, when the message is about exactly these inputs (the AC-12 case). A Create that ran forces a re-probe:
-// it failed (success already reset the form), and the disk may have changed under it.
 // task 4.7.3: Recover. The copy is parsed first and the World is swapped only when it parsed (openSceneText's rule), so
 // every failure below leaves the World, the Selection, the root order, the history and the path as they were.
 void recoverPlayCopy(CommandContext& context, CommandStack& commands, SceneSession& session, const std::string& root,
@@ -757,6 +753,10 @@ void answerPlayRecovery(const std::string& root, const std::string& scene) {
     }
 }
 
+// task E.6.4 (D11/D12): step 0e's body. Inputs that moved since the last answer make the answer -- and a failed
+// Create's message -- describe a pair the form no longer holds, so the message is dropped; unless a Create ran in
+// THIS call, when the message is about exactly these inputs (the AC-12 case). A Create that ran forces a re-probe:
+// it failed (success already reset the form), and the disk may have changed under it.
 void refreshNewProjectProbe(NewProjectForm& form, bool createRan) {
     const bool inputsMoved = form.probe.location != form.location || form.probe.name != form.name;
     if (inputsMoved && !createRan) {

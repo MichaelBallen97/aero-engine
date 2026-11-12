@@ -16,7 +16,8 @@
 # bare `::copy` (covers `std::filesystem::copy` and an `fs::copy` alias alike) may appear as CODE in
 # editor/src/project.cpp, editor/src/project_file.cpp, editor/src/project_ui.cpp,
 # editor/src/asset_meta.cpp, editor/src/asset_database.cpp, editor/src/asset_cache.cpp,
-# editor/src/project_state.cpp or editor/src/script_transpiler.cpp -- the ten
+# editor/src/project_state.cpp, editor/src/script_transpiler.cpp,
+# editor/src/cpp_project_template.cpp or editor/src/play_recovery.cpp -- the ten
 # files that own every filesystem-writing line in the project flow (D7), the asset flow (task 3.1.1's
 # D7 "an invalid .meta is never overwritten" / D8 "an orphan is never deleted"), the import cache
 # (task 3.1.2's D18), the per-project editor state (task E.4.1's D9) and the transpile driver's
