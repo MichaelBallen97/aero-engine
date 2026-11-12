@@ -313,6 +313,18 @@ struct NewProjectForm {
     NewProjectTargetFacts probe;
     std::uint32_t probeAge = 0;
 };
+// ---- task 4.7.3: the recovery offer ----------------------------------------------------------------------------
+// The NewProjectForm / ContainmentOffer shape: STATE written by openProjectPath's last statement, `open` read by the
+// modal, and two IN one-shots written only inside the modal's body and drained OUTSIDE the draw walk, at step 0f of
+// applyFileRequests (0a's reason: step 2's modalInputActive refusal reads `open`, so a later drain would let the modal
+// swallow the request it answers). The strings only; the offer holds no entity and no editor type.
+struct PlayRecoveryOffer {
+    bool open = false;              // the modal is up -> modalInputActive() includes it
+    std::string projectRoot;        // the root the offer was raised for; an answer for another root is dropped
+    std::string scene;              // the record's project-relative scene ("" = untitled)
+    bool recoverRequested = false;  // IN one-shots, written only inside the modal's body
+    bool discardRequested = false;
+};
 struct ProjectFlow {
     NewProjectForm form;
     std::string requestedPath;  // the Open Recent / argv / test seam -- mirrors flow.requestedPath's
@@ -342,6 +354,9 @@ struct ProjectFlow {
     // the same fact, and an arm no seed could distinguish from this one.
     std::string outgoingStateRoot;
     std::string outgoingStateScene;
+    // task 4.7.3: APPENDED, never inserted. The recovery offer a project open raises when the last Play in that project
+    // never reached a Stop and left a recovery copy (play_recovery.hpp).
+    PlayRecoveryOffer recoveryOffer;
 };
 // Everything the project half of the flow needs, built fresh each frame in tick() -- the
 // PanelContext / FileMenuContext shape, and for the same reason (D7).
@@ -386,7 +401,8 @@ struct FileFlow {
 };
 
 // Is some MODAL surface currently the owner of input? True while a native dialog is in flight, the
-// unsaved-changes modal is up, the New Project modal is up, or the scene-containment modal is up.
+// unsaved-changes modal is up, the New Project modal is up, the scene-containment modal is up, or the play-recovery
+// modal is up (task 4.7.3).
 //
 // THE single definition (Phase 2 audit). It used to be written out by hand at each site, and
 // shell_ui.cpp's banner already named what a disagreement costs -- 2.5.1's BLOCKING-2, where a chord

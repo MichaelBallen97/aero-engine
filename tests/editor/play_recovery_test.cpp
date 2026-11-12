@@ -1,22 +1,34 @@
 // Aero Engine — the play record (<projectRoot>/Library/play-recovery.json and its scene copy), its two pure
-// deciders and its four disk functions (task 4.7.3, RV1-RV8). Tier 0: aero_editor_shell_test, no ImGui, no
-// GPU, no window, and UNGATED -- every case here must be PRESENT and PASSING in all three configurations.
-// Do NOT define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN; shell_test.cpp supplies main().
+// deciders and its four disk functions (task 4.7.3, RV1-RV8), and the project flow's offer (RV10-RV16). Tier 0:
+// aero_editor_shell_test, no ImGui, no GPU, no window, and UNGATED -- every case here must be PRESENT and PASSING in
+// all three configurations. Do NOT define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN; shell_test.cpp supplies main().
+#include <aero/core/log.hpp>
 #include <aero/editor/asset_cache.hpp>  // LIBRARY_GITIGNORE_TEXT / ASSET_CACHE_GITIGNORE_NAME -- the SHIPPED constants
+#include <aero/editor/command_stack.hpp>
+#include <aero/editor/console_model.hpp>
+#include <aero/editor/entity_commands.hpp>
+#include <aero/editor/entity_ops.hpp>
 #include <aero/editor/play_recovery.hpp>
+#include <aero/editor/project.hpp>
 #include <aero/editor/project_state.hpp>  // MAX_PROJECT_STATE_SCENE_BYTES
+#include <aero/editor/scene_session.hpp>
+#include <aero/editor/selection.hpp>
 #include <aero/editor/text_file.hpp>
+#include <aero/scene/world.hpp>
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <ostream>  // the 0.4.1 MSVC trap: this TU CHECKs std::string_view
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 using engine::editor::parsePlayRecoveryState;
 using engine::editor::planPlayAutosave;
@@ -276,4 +288,352 @@ TEST_CASE("play_recovery: reading separates no record, a damaged record and a go
 
     CHECK_FALSE(readPlayRecoveryState("").state.has_value());
     CHECK_FALSE(readPlayRecoveryState("").corrupt);
+}
+
+// ---- task 4.7.3 (RV10-RV16): the recovery offer in the project flow ------------------------------------------------
+// Every case that needs a copy branches on sceneIoAvailable() at run time (this TU has no #if of any kind) and
+// asserts the no-offer arm where it is false: the offer's decision requires scene I/O, the record's answer does not.
+namespace {
+
+using engine::editor::applyFileRequests;
+using engine::editor::CommandContext;
+using engine::editor::CommandStack;
+using engine::editor::createProject;
+using engine::editor::FileAction;
+using engine::editor::FileDialogHost;
+using engine::editor::FileFlow;
+using engine::editor::modalInputActive;
+using engine::editor::openProjectPath;
+using engine::editor::PlayRecoveryOffer;
+using engine::editor::ProjectContext;
+using engine::editor::ProjectFlow;
+using engine::editor::ProjectSession;
+using engine::editor::RecentProjects;
+using engine::editor::RootOrder;
+using engine::editor::SceneSession;
+using engine::editor::sceneToText;
+using engine::editor::Selection;
+
+constexpr std::string_view RECORDED_SCENE = "scenes/a.scene.json";
+constexpr std::string_view EMPTY_SCENE_TEXT = "{\n  \"version\": 1,\n  \"entities\": []\n}\n";
+
+struct LogFixture {
+    LogFixture() { engine::initLogging(engine::LogConfig{.level = engine::LogLevel::Trace, .console = false}); }
+    ~LogFixture() { engine::shutdownLogging(); }
+    LogFixture(const LogFixture&) = delete;
+    LogFixture& operator=(const LogFixture&) = delete;
+    LogFixture(LogFixture&&) = delete;
+    LogFixture& operator=(LogFixture&&) = delete;
+};
+
+// How many records at `level` carry `needle`.
+[[nodiscard]] std::size_t countLogged(const std::vector<engine::editor::LogEntry>& records, engine::LogLevel level,
+                                      std::string_view needle) {
+    return static_cast<std::size_t>(
+        std::count_if(records.begin(), records.end(), [level, needle](const engine::editor::LogEntry& e) {
+            return e.level == level && e.message.find(needle) != std::string::npos;
+        }));
+}
+[[nodiscard]] std::size_t countAt(const std::vector<engine::editor::LogEntry>& records, engine::LogLevel level) {
+    return countLogged(records, level, "");
+}
+
+// The recovery copy: a one-entity scene when scene I/O exists, the empty scene's exact bytes otherwise.
+[[nodiscard]] std::string recoveryCopyText() {
+    engine::World world;
+    const engine::Entity e = engine::editor::createEntity(world, {}, "Recovered");
+    REQUIRE(e.valid());
+    const std::optional<std::string> text = sceneToText(world);
+    return text.has_value() ? *text : std::string(EMPTY_SCENE_TEXT);
+}
+
+// A project with a loadable recorded scene, the editor-state naming it, a record and a copy: the whole of what
+// openProjectPath reads, built over a TempDir.
+struct OfferRig {
+    TempDir dir;
+    std::string root;
+    std::string copyText;
+    engine::World world;
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    FileFlow flow;
+    const FileDialogHost host{};
+    ProjectSession projectSession;
+    ProjectFlow projectFlow;
+    RecentProjects recents;
+    ProjectContext project{projectSession, projectFlow, recents, ""};
+    SceneSession session;
+
+    OfferRig() {
+        const engine::editor::ProjectCreateOutcome created =
+            createProject(dir.utf8(), "MyGame", "0.1.0", engine::editor::ProjectLanguage::Ts);
+        REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+        root = created.root;
+        REQUIRE(engine::editor::writeTextFileAtomic(root + "/scenes/a.scene.json", EMPTY_SCENE_TEXT).empty());
+        REQUIRE(engine::editor::writeProjectState(root,
+                                                  {.lastScene = std::string(RECORDED_SCENE), .lastSceneRecorded = true})
+                    .empty());
+        copyText = recoveryCopyText();
+        writeCopy(copyText);
+        writeRecord({.playing = true, .scene = std::string(RECORDED_SCENE), .copyWritten = true});
+    }
+    void writeCopy(std::string_view text) const { REQUIRE(writePlayRecoveryCopy(root, text).empty()); }
+    void writeRecord(const PlayRecoveryState& state) const { REQUIRE(writePlayRecoveryState(root, state).empty()); }
+    [[nodiscard]] bool open() { return openProjectPath(ctx, commands, session, project, root); }
+    void apply() { applyFileRequests(ctx, commands, session, flow, host, project); }
+    [[nodiscard]] std::optional<PlayRecoveryState> record() const { return readPlayRecoveryState(root).state; }
+    // The offer a real open raises when scene I/O exists; set by hand where it does not, so the answer arms still run.
+    void ensureOffer() {
+        REQUIRE(open());
+        if (!projectFlow.recoveryOffer.open) {
+            REQUIRE_FALSE(engine::editor::sceneIoAvailable());
+            projectFlow.recoveryOffer =
+                PlayRecoveryOffer{.open = true, .projectRoot = root, .scene = std::string(RECORDED_SCENE)};
+        }
+    }
+    // One command on the history, so "the history is unchanged" is never about an empty stack.
+    void makeDirty() {
+        const engine::Entity a = world.create();
+        REQUIRE(commands.push(ctx, std::make_unique<engine::editor::DeleteEntitiesCommand>(
+                                       std::vector<engine::Entity>{a}, std::vector<engine::Entity>{})));
+    }
+};
+
+[[nodiscard]] std::string textOrEmpty(const engine::World& world) {
+    const std::optional<std::string> text = sceneToText(world);
+    return text.value_or(std::string{});
+}
+
+}  // namespace
+
+TEST_CASE("play_recovery: a project open raises the offer after the restore, and only on the one row (RV10)") {
+    const LogFixture fixture;
+    const bool io = engine::editor::sceneIoAvailable();
+    OfferRig rig;
+
+    REQUIRE(rig.open());
+    // The restore ran first: the session is on the recorded scene.
+    CHECK((rig.session.path() == engine::editor::absoluteScenePath(rig.root, RECORDED_SCENE)) == io);
+    CHECK(rig.projectFlow.recoveryOffer.open == io);
+    if (io) {
+        CHECK(rig.projectFlow.recoveryOffer.projectRoot == rig.root);
+        CHECK(rig.projectFlow.recoveryOffer.scene == RECORDED_SCENE);
+        CHECK_FALSE(rig.projectFlow.recoveryOffer.recoverRequested);
+        CHECK_FALSE(rig.projectFlow.recoveryOffer.discardRequested);
+    } else {
+        CHECK(rig.projectFlow.recoveryOffer.projectRoot.empty());
+    }
+
+    // Each single-fact flip opens with no offer, and a reopen clears the previous one.
+    std::error_code ec;
+    std::filesystem::remove(playRecoveryScenePath(rig.root), ec);  // no copy file
+    REQUIRE(rig.open());
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
+    CHECK(rig.projectFlow.recoveryOffer.projectRoot.empty());
+    rig.writeCopy(rig.copyText);
+    rig.writeRecord({.playing = false, .scene = std::string(RECORDED_SCENE), .copyWritten = true});
+    REQUIRE(rig.open());
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
+    rig.writeRecord({.playing = true, .scene = std::string(RECORDED_SCENE), .copyWritten = false});
+    REQUIRE(rig.open());
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
+    // The full row again raises it (the flips were not a broken fixture), and a record-less reopen clears it.
+    rig.writeRecord({.playing = true, .scene = std::string(RECORDED_SCENE), .copyWritten = true});
+    REQUIRE(rig.open());
+    CHECK(rig.projectFlow.recoveryOffer.open == io);
+    std::filesystem::remove(playRecoveryStatePath(rig.root), ec);
+    REQUIRE(rig.open());
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
+    CHECK(rig.projectFlow.recoveryOffer.projectRoot.empty());
+
+    // createAndOpenProject never offers: a new project has no record.
+    const TempDir other;
+    REQUIRE(engine::editor::createAndOpenProject(rig.ctx, rig.commands, rig.session, rig.project, other.utf8(), "Fresh",
+                                                 engine::editor::ProjectLanguage::Ts));
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
+}
+
+TEST_CASE("play_recovery: an unparseable record opens the project with one WARN and no offer (RV11)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    OfferRig rig;
+    rig.writeRecord({.playing = true, .scene = std::string(RECORDED_SCENE), .copyWritten = true});
+    REQUIRE(engine::editor::writeTextFileAtomic(playRecoveryStatePath(rig.root), "{\"version\": 1}").empty());
+    scope.sink()->take(records);
+    records.clear();
+
+    CHECK(rig.open());
+    scope.sink()->take(records);
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
+    CHECK(countAt(records, engine::LogLevel::Warn) == 1U);
+    CHECK(countLogged(records, engine::LogLevel::Warn, "play-recovery.json") == 1U);
+    CHECK(countAt(records, engine::LogLevel::Error) == 0U);
+}
+
+TEST_CASE("play_recovery: the open offer owns input, and a request behind it writes nothing (RV12)") {
+    const TempDir dir;
+    CHECK_FALSE(modalInputActive(FileFlow{}, ProjectFlow{}));
+    ProjectFlow open;
+    open.recoveryOffer.open = true;
+    CHECK(modalInputActive(FileFlow{}, open));
+
+    OfferRig rig;
+    REQUIRE(rig.open());
+    rig.projectFlow.recoveryOffer.open = true;  // by hand: the refusal is the same with or without scene I/O
+    const std::string target = dir.join("behind.scene.json");
+    rig.flow.requested = FileAction::SaveSceneAs;
+    rig.flow.requestedPath = target;
+    rig.apply();
+    CHECK_FALSE(engine::editor::fileExists(target));
+    CHECK(rig.flow.requested == FileAction::None);
+    CHECK(rig.flow.requestedPath.empty());
+    CHECK(rig.projectFlow.recoveryOffer.open);  // nothing answered it
+}
+
+TEST_CASE("play_recovery: Recover swaps in the copy, binds the path and leaves the document dirty (RV13)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    const bool io = engine::editor::sceneIoAvailable();
+    OfferRig rig;
+    rig.ensureOffer();
+    if (!io) {
+        // Without scene I/O the swap cannot happen: the World stays and the record is still answered.
+        const std::size_t entitiesBefore = rig.world.entityCount();
+        rig.projectFlow.recoveryOffer.recoverRequested = true;
+        rig.apply();
+        CHECK(rig.world.entityCount() == entitiesBefore);
+        const std::optional<PlayRecoveryState> answered = rig.record();
+        REQUIRE(answered.has_value());
+        CHECK_FALSE(answered->playing);
+        return;
+    }
+    scope.sink()->take(records);
+    records.clear();
+    rig.projectFlow.recoveryOffer.recoverRequested = true;
+    rig.apply();
+    scope.sink()->take(records);
+
+    CHECK(textOrEmpty(rig.world) == rig.copyText);
+    CHECK(rig.world.entityCount() == 1U);
+    CHECK(rig.session.path() == engine::editor::absoluteScenePath(rig.root, RECORDED_SCENE));
+    CHECK(rig.commands.count() == 0U);
+    CHECK_FALSE(rig.commands.isClean());
+    const std::optional<PlayRecoveryState> after = rig.record();
+    REQUIRE(after.has_value());
+    CHECK((*after == PlayRecoveryState{.playing = false, .scene = std::string(RECORDED_SCENE), .copyWritten = true}));
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
+    CHECK(rig.projectFlow.recoveryOffer.projectRoot.empty());
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.recoverRequested);
+    CHECK(countLogged(records, engine::LogLevel::Info, "recovered the scene") == 1U);
+    CHECK(countAt(records, engine::LogLevel::Error) == 0U);
+
+    // The untitled arm: a record with no scene clears the path instead of binding one.
+    OfferRig untitled;
+    untitled.writeRecord({.playing = true, .scene = "", .copyWritten = true});
+    untitled.ensureOffer();
+    CHECK(untitled.projectFlow.recoveryOffer.scene.empty());
+    untitled.projectFlow.recoveryOffer.recoverRequested = true;
+    untitled.apply();
+    CHECK(untitled.session.path().empty());
+    CHECK(untitled.world.entityCount() == 1U);
+    CHECK_FALSE(untitled.commands.isClean());
+}
+
+TEST_CASE("play_recovery: Discard keeps the document and the copy and only finishes the record (RV14)") {
+    OfferRig rig;
+    rig.ensureOffer();
+    rig.makeDirty();
+    const std::string worldBefore = textOrEmpty(rig.world);
+    const std::string pathBefore(rig.session.path());
+    const std::size_t entitiesBefore = rig.world.entityCount();
+    const std::size_t countBefore = rig.commands.count();
+    const bool cleanBefore = rig.commands.isClean();
+    const std::optional<std::string> copyBefore = engine::editor::readTextFile(playRecoveryScenePath(rig.root)).text;
+
+    rig.projectFlow.recoveryOffer.discardRequested = true;
+    rig.apply();
+
+    CHECK(textOrEmpty(rig.world) == worldBefore);
+    CHECK(rig.world.entityCount() == entitiesBefore);
+    CHECK(rig.session.path() == pathBefore);
+    CHECK(rig.commands.count() == countBefore);
+    CHECK(rig.commands.isClean() == cleanBefore);
+    const std::optional<std::string> copyAfter = engine::editor::readTextFile(playRecoveryScenePath(rig.root)).text;
+    REQUIRE(copyAfter.has_value());
+    CHECK(copyAfter == copyBefore);
+    const std::optional<PlayRecoveryState> after = rig.record();
+    REQUIRE(after.has_value());
+    CHECK_FALSE(after->playing);
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
+
+    // Answered once: opening the same project again offers nothing.
+    REQUIRE(rig.open());
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
+}
+
+TEST_CASE("play_recovery: a Recover on a damaged copy logs one ERROR, swaps nothing and answers the record (RV15)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    OfferRig rig;
+    rig.writeCopy(R"({"version": 1, "entities": [)");
+    rig.ensureOffer();
+    rig.makeDirty();
+    const std::string worldBefore = textOrEmpty(rig.world);
+    const std::size_t entitiesBefore = rig.world.entityCount();
+    const std::string pathBefore(rig.session.path());
+    const std::size_t countBefore = rig.commands.count();
+    scope.sink()->take(records);
+    records.clear();
+
+    rig.projectFlow.recoveryOffer.recoverRequested = true;
+    rig.apply();
+    scope.sink()->take(records);
+
+    CHECK(countAt(records, engine::LogLevel::Error) == 1U);
+    CHECK(countLogged(records, engine::LogLevel::Error, "play-recovery.scene.json") == 1U);
+    CHECK(textOrEmpty(rig.world) == worldBefore);
+    CHECK(rig.world.entityCount() == entitiesBefore);
+    CHECK(rig.session.path() == pathBefore);
+    CHECK(rig.commands.count() == countBefore);
+    const std::optional<PlayRecoveryState> after = rig.record();
+    REQUIRE(after.has_value());
+    CHECK_FALSE(after->playing);
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
+}
+
+TEST_CASE("play_recovery: Discard wins a frame with both answers, and another project's answer is dropped (RV16)") {
+    OfferRig rig;
+    rig.ensureOffer();
+    const std::string worldBefore = textOrEmpty(rig.world);
+    const std::size_t entitiesBefore = rig.world.entityCount();
+
+    rig.projectFlow.recoveryOffer.recoverRequested = true;
+    rig.projectFlow.recoveryOffer.discardRequested = true;
+    rig.apply();
+    CHECK(textOrEmpty(rig.world) == worldBefore);
+    CHECK(rig.world.entityCount() == entitiesBefore);
+    const std::optional<PlayRecoveryState> answered = rig.record();
+    REQUIRE(answered.has_value());
+    CHECK_FALSE(answered->playing);
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
+
+    // An offer raised for a different directory, answered Recover: neither World nor either record moves.
+    const TempDir other;
+    rig.writeRecord({.playing = true, .scene = std::string(RECORDED_SCENE), .copyWritten = true});
+    rig.projectFlow.recoveryOffer = PlayRecoveryOffer{
+        .open = true, .projectRoot = other.utf8(), .scene = std::string(RECORDED_SCENE), .recoverRequested = true};
+    rig.apply();
+    CHECK(textOrEmpty(rig.world) == worldBefore);
+    CHECK(rig.world.entityCount() == entitiesBefore);
+    const std::optional<PlayRecoveryState> kept = rig.record();
+    REQUIRE(kept.has_value());
+    CHECK(kept->playing);  // this project's record was not touched
+    CHECK_FALSE(engine::editor::fileExists(playRecoveryStatePath(other.utf8())));
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.recoverRequested);
 }
