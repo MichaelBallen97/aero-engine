@@ -633,6 +633,33 @@ TEST_CASE("play_recovery: a Recover on a damaged copy logs one ERROR, swaps noth
     CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
 }
 
+TEST_CASE("play_recovery: a Recover that fails on a clean document logs no recovery and leaves it clean (RV20)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    OfferRig rig;
+    rig.writeCopy(R"({"version": 1, "entities": [)");
+    rig.ensureOffer();
+    REQUIRE(rig.commands.isClean());  // NOT dirtied: a failure that falls through into forgetClean would show here
+    const std::string worldBefore = textOrEmpty(rig.world);
+    const std::string pathBefore(rig.session.path());
+    const std::size_t countBefore = rig.commands.count();
+    scope.sink()->take(records);
+    records.clear();
+
+    rig.projectFlow.recoveryOffer.recoverRequested = true;
+    rig.apply();
+    scope.sink()->take(records);
+
+    CHECK(countLogged(records, engine::LogLevel::Error, "play-recovery.scene.json") == 1U);
+    CHECK(countLogged(records, engine::LogLevel::Info, "recovered the scene") == 0U);
+    CHECK(rig.commands.isClean());
+    CHECK(textOrEmpty(rig.world) == worldBefore);
+    CHECK(rig.session.path() == pathBefore);
+    CHECK(rig.commands.count() == countBefore);
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
+}
+
 TEST_CASE("play_recovery: Discard wins a frame with both answers, and another project's answer is dropped (RV16)") {
     OfferRig rig;
     rig.ensureOffer();
