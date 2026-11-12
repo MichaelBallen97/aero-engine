@@ -34602,6 +34602,60 @@ TEST_CASE("editor: Play is refused in the tick that opens a project and raises t
     app.reset();
 }
 
+TEST_CASE("editor: an answer given to one offer never answers the next project's offer (task 4.7.3, I434)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "recover i434", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    if (!engine::editor::sceneIoAvailable()) {
+        return;  // no copy is written without scene I/O, so no offer is raised: I421's tools-OFF arm holds that line
+    }
+    // Two projects, each left with a crashed Play's record and copy.
+    const CrashedPlay first = crashAPlayingEditor(*device, *window, ctx);
+    const CrashedPlay second = crashAPlayingEditor(*device, *window, ctx);
+    REQUIRE(first.root != second.root);
+    const std::string secondRecord = recoveryFileText(engine::editor::playRecoveryStatePath(second.root));
+    const std::string secondCopy = recoveryFileText(engine::editor::playRecoveryScenePath(second.root));
+
+    std::optional<engine::editor::EditorApp> app = reopenRecoveryApp(*device, *window, ctx, first.root);
+    REQUIRE(app->tick());
+    REQUIRE(app->playRecoveryOfferOpen());
+    app->requestPlayRecoveryAnswer(engine::editor::PlayRecoveryAnswer::Discard);
+    REQUIRE(app->tick());  // the tick that carries the answer
+
+    // The very next tick opens the second project and raises ITS offer, drawn in that same tick.
+    app->requestOpenProject(second.root);
+    REQUIRE(app->tick());
+    REQUIRE(app->projectRoot() == second.root);
+    REQUIRE(app->playRecoveryOfferOpen());
+    const engine::editor::PlayRecoveryDialogRecord& dialog = app->projectUiRecord().recovery;
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CAPTURE(i);
+        CHECK(app->playRecoveryOfferOpen());  // nobody has answered it
+        CHECK(dialog.drawnThisFrame);
+    }
+    CHECK(recordSaysPlaying(second.root));
+    CHECK(recoveryFileText(engine::editor::playRecoveryStatePath(second.root)) == secondRecord);
+    CHECK(recoveryFileText(engine::editor::playRecoveryScenePath(second.root)) == secondCopy);
+    CHECK_FALSE(recordSaysPlaying(first.root));  // the first offer's own answer did land
+
+    // It still answers when someone does.
+    app->requestPlayRecoveryAnswer(engine::editor::PlayRecoveryAnswer::Discard);
+    e62Ticks(*app, 2);
+    CHECK_FALSE(app->playRecoveryOfferOpen());
+    CHECK_FALSE(recordSaysPlaying(second.root));
+    app->requestQuit();
+    app.reset();
+}
+
 // ---- task 4.7.4 (I424-I430): scripts live and die with the mode ----------------------------------------------------
 namespace {
 
