@@ -6,11 +6,13 @@
 #include <aero/editor/asset_cache.hpp>  // LIBRARY_GITIGNORE_TEXT / ASSET_CACHE_GITIGNORE_NAME -- the SHIPPED constants
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/console_model.hpp>
+#include <aero/editor/editor_theme.hpp>
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/play_recovery.hpp>
 #include <aero/editor/project.hpp>
-#include <aero/editor/project_state.hpp>  // MAX_PROJECT_STATE_SCENE_BYTES
+#include <aero/editor/project_state.hpp>    // MAX_PROJECT_STATE_SCENE_BYTES
+#include <aero/editor/project_ui_view.hpp>  // task 4.7.3 (RV17, RV18): the recovery dialog's layout and label
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/editor/text_file.hpp>
@@ -20,6 +22,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
@@ -636,4 +639,67 @@ TEST_CASE("play_recovery: Discard wins a frame with both answers, and another pr
     CHECK_FALSE(engine::editor::fileExists(playRecoveryStatePath(other.utf8())));
     CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
     CHECK_FALSE(rig.projectFlow.recoveryOffer.recoverRequested);
+}
+
+// ---- task 4.7.3 (RV17, RV18): the recovery dialog's pure model ------------------------------------------------------
+
+TEST_CASE("play_recovery: the dialog layout is the Welcome's width, clamped, and every length scales (RV17)") {
+    using engine::editor::playRecoveryDialogLayout;
+    using engine::editor::PlayRecoveryDialogLayout;
+    using engine::editor::playRecoveryFooterLayout;
+    using engine::editor::PlayRecoveryFooterLayout;
+    const engine::editor::ThemeDialogs& d = engine::editor::EDITOR_THEME.dialogs;
+
+    const PlayRecoveryDialogLayout wide = playRecoveryDialogLayout(1600.0F, 1.0F);
+    CHECK(wide.width == 560.0F);
+    CHECK(wide.width == std::floor(d.welcomeWidth));
+    CHECK(wide.paddingX == d.paddingX);
+    CHECK(wide.contentWidth == wide.width - (2.0F * wide.paddingX));
+    CHECK(wide.buttonPadding.x == d.buttonPaddingX);
+    CHECK(wide.buttonPadding.y > 0.0F);
+    CHECK(wide.buttonPadding.y < wide.buttonHeight * 0.5F);
+
+    // A narrow work area: the work width less the margin on each side, never below the floor.
+    const PlayRecoveryDialogLayout narrow = playRecoveryDialogLayout(300.0F, 1.0F);
+    CHECK(narrow.width == std::floor(std::max(d.minWidth, 300.0F - (2.0F * d.screenMargin))));
+    CHECK(narrow.width < wide.width);
+    const PlayRecoveryDialogLayout floored = playRecoveryDialogLayout(100.0F, 1.0F);
+    CHECK(floored.width == std::floor(d.minWidth));
+
+    // Scale 2 doubles every length (the theme's dp are whole numbers, and 2 is exact in binary).
+    const PlayRecoveryDialogLayout twice = playRecoveryDialogLayout(1600.0F, 2.0F);
+    CHECK(twice.width == 2.0F * wide.width);
+    CHECK(twice.paddingX == 2.0F * wide.paddingX);
+    CHECK(twice.contentWidth == 2.0F * wide.contentWidth);
+    CHECK(twice.headerHeight == 2.0F * wide.headerHeight);
+    CHECK(twice.footerHeight == 2.0F * wide.footerHeight);
+    CHECK(twice.windowRounding == 2.0F * wide.windowRounding);
+    CHECK(twice.controlRounding == 2.0F * wide.controlRounding);
+    CHECK(twice.buttonHeight == 2.0F * wide.buttonHeight);
+    CHECK(twice.buttonPadding.x == 2.0F * wide.buttonPadding.x);
+    CHECK(twice.bodyTop == 2.0F * wide.bodyTop);
+    CHECK(twice.lineGap == 2.0F * wide.lineGap);
+    CHECK(twice.footerButtonGap == 2.0F * wide.footerButtonGap);
+    CHECK_FALSE(wide == twice);
+    // A scale that is not a positive finite number lays out as 1.
+    CHECK(playRecoveryDialogLayout(1600.0F, 0.0F) == wide);
+    CHECK(playRecoveryDialogLayout(1600.0F, -3.0F) == wide);
+
+    // The footer: Recover's right edge on the padding, Discard a gap to its left, both centred in the band.
+    constexpr float DISCARD_WIDTH = 80.0F;
+    constexpr float RECOVER_WIDTH = 100.0F;
+    const PlayRecoveryFooterLayout footer = playRecoveryFooterLayout(wide, DISCARD_WIDTH, RECOVER_WIDTH);
+    CHECK(footer.recoverX + RECOVER_WIDTH == wide.width - wide.paddingX);
+    CHECK(footer.discardX + DISCARD_WIDTH == footer.recoverX - wide.footerButtonGap);
+    CHECK(footer.buttonY == (wide.footerHeight - wide.buttonHeight) / 2.0F);
+    CHECK(footer.discardX > 0.0F);
+}
+
+TEST_CASE("play_recovery: the scene label is the leaf, or Untitled (RV18)") {
+    using engine::editor::playRecoverySceneLabel;
+    CHECK(playRecoverySceneLabel("") == "Untitled");
+    CHECK(playRecoverySceneLabel("scenes/a.scene.json") == "a.scene.json");
+    CHECK(playRecoverySceneLabel("a.scene.json") == "a.scene.json");
+    CHECK(playRecoverySceneLabel("x/y/100%s.scene.json") == "100%s.scene.json");
+    CHECK(playRecoverySceneLabel("scenes/") == "Untitled");
 }

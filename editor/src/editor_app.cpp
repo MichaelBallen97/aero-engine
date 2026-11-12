@@ -1481,9 +1481,11 @@ bool EditorApp::tick() {
                              homeDirectory,
                              &projectUiRecordValue,
                              pendingNewProjectAnswer,
-                             newProjectInputApplied};
+                             newProjectInputApplied,
+                             pendingPlayRecoveryAnswer};
     pendingNewProjectAnswer = NewProjectAnswer::None;  // task E.6.4 (D27): a request dies with the tick that carried it
-    drawShellUi(registry, panelContext, ui, fileMenu);  // menu bar -> dockspace -> panels
+    pendingPlayRecoveryAnswer = PlayRecoveryAnswer::None;  // task 4.7.3: the same
+    drawShellUi(registry, panelContext, ui, fileMenu);     // menu bar -> dockspace -> panels
     // task 4.7.1 (D4): a Quit pressed while a game plays. The request is raised now and the NEXT tick's top stops the
     // game before applyFileRequests sees it.
     if (ui.guardedQuitRequested) {
