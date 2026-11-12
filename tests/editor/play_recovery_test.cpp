@@ -264,6 +264,30 @@ TEST_CASE("play_recovery: a FILE named Library makes both writes return a reason
     CHECK_FALSE(engine::editor::fileExists(dir.join("Library/play-recovery.scene.json")));
 }
 
+TEST_CASE("play_recovery: a record or copy path that cannot be replaced makes its write return a reason (RV19)") {
+    // Library/ is fine; the record's path and the copy's path are each a non-empty DIRECTORY, so only the atomic
+    // write's own rename can fail -- the library is prepared, and the temp file is written before the rename refuses.
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.path() / "Library" / "play-recovery.json", ec);
+    std::filesystem::create_directories(dir.path() / "Library" / "play-recovery.scene.json", ec);
+    REQUIRE(
+        engine::editor::writeTextFileAtomic(dir.join("Library/play-recovery.json/keep.txt"), "record side").empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(dir.join("Library/play-recovery.scene.json/keep.txt"), "copy side")
+                .empty());
+
+    const std::string copyReason = writePlayRecoveryCopy(dir.utf8(), "x");
+    const std::string stateReason = writePlayRecoveryState(dir.utf8(), PlayRecoveryState{.playing = true});
+    CHECK_FALSE(copyReason.empty());
+    CHECK_FALSE(stateReason.empty());
+
+    // Each occupant is untouched and no temp file is left beside it.
+    CHECK(readBytes(dir.join("Library/play-recovery.json/keep.txt")) == "record side");
+    CHECK(readBytes(dir.join("Library/play-recovery.scene.json/keep.txt")) == "copy side");
+    CHECK_FALSE(engine::editor::entryExists(dir.join("Library/play-recovery.json.aero-tmp")));
+    CHECK_FALSE(engine::editor::entryExists(dir.join("Library/play-recovery.scene.json.aero-tmp")));
+}
+
 TEST_CASE("play_recovery: reading separates no record, a damaged record and a good one (RV8)") {
     const TempDir dir;
     const PlayRecoveryRead none = readPlayRecoveryState(dir.utf8());
