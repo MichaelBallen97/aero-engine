@@ -34157,6 +34157,74 @@ TEST_CASE("editor: every Stop path finishes the record (task 4.7.3, I420)") {
     }
 }
 
+// I419's Library-as-a-file fails the copy first, so it never reaches the record's own refusal: here the copy writes
+// and only the record cannot, because its path is a directory.
+TEST_CASE("editor: a dirty scene's Play is refused when only its play record cannot be written (task 4.7.3, I432)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i432", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    if (!engine::editor::sceneIoAvailable()) {
+        return;  // no copy and no refusal without scene I/O: I419's tools-OFF arm holds that line
+    }
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    const std::string root(app->projectRoot());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+    // The record's path is a DIRECTORY (with a file in it): the atomic write cannot replace it.
+    const std::string recordPath = engine::editor::playRecoveryStatePath(root);
+    REQUIRE(engine::editor::ensureDirectory(recordPath).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(recordPath + "/keep.txt", "keep").empty());
+    const std::string copyPath = engine::editor::playRecoveryScenePath(root);
+    REQUIRE_FALSE(engine::editor::fileExists(copyPath));
+
+    const RecoveryLogCapture log;
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    e62Ticks(*app, 2);
+    REQUIRE_FALSE(app->commands().isClean());
+    const std::optional<std::string> before = engine::editor::sceneToText(app->world());
+    REQUIRE(before.has_value());
+    const std::string dumpBefore = world_test::dumpWorld(app->world());
+    const std::vector<engine::Entity> rootsBefore(app->roots().entities().begin(), app->roots().entities().end());
+    const std::size_t appliedBefore = app->commands().appliedCount();
+    REQUIRE(app->playAutosaveRefusalCount() == 0U);
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+    CHECK((app->playSession().mode() == PlayMode::Edit));
+    CHECK(app->playSession().frame() == 0U);
+    CHECK(app->playAutosaveRefusalCount() == 1U);
+    CHECK(app->playModalRefusalCount() == 0U);
+    CHECK(log.count(engine::LogLevel::Error, "Play refused") == 1U);
+    CHECK(log.count(engine::LogLevel::Error, "play-recovery.json") == 1U);
+    CHECK(log.count(engine::LogLevel::Warn, "play-recovery.json") == 0U);  // the clean scene's arm, not this one
+    // The copy was written first, and holds the scene's text.
+    REQUIRE(engine::editor::fileExists(copyPath));
+    CHECK(recoveryFileText(copyPath) == *before);
+    CHECK(recoveryFileText(recordPath + "/keep.txt") == "keep");
+    // Nothing parked, no game: the scene, its roots, its history and the viewport's camera are the editor's.
+    CHECK_FALSE(app->playScriptStats().live);
+    CHECK(world_test::dumpWorld(app->world()) == dumpBefore);
+    const std::vector<engine::Entity> rootsNow(app->roots().entities().begin(), app->roots().entities().end());
+    CHECK(rootsNow == rootsBefore);
+    CHECK(app->commands().appliedCount() == appliedBefore);
+    CHECK_FALSE(app->commands().isClean());
+    CHECK((viewport->lastRenderCamera() == engine::editor::ViewportRenderCamera::Editor));
+    app->requestQuit();
+    app.reset();
+}
+
 // ---- task 4.7.3 (I421-I423): the recovery modal ---------------------------------------------------------------------
 namespace {
 
