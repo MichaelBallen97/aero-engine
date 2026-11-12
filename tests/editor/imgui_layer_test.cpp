@@ -34412,3 +34412,319 @@ TEST_CASE("editor: the recovery modal binds Escape, Enter and its drained arm by
         CHECK(recovery < drain);
     }
 }
+
+// ---- task 4.7.4 (I424-I430): scripts live and die with the mode ----------------------------------------------------
+namespace {
+
+// Writes `source` as the published module of `script` under `root`, the file 4.3.1's transpiler writes.
+void publishPlayScript(const std::string& root, engine::Guid script, std::string_view source) {
+    const std::string dir = root + "/Library/Scripts";
+    REQUIRE(engine::editor::ensureDirectory(dir).empty());
+    const std::string path = std::format("{}/{}.js", dir, engine::formatGuid(script));
+    REQUIRE(engine::editor::writeTextFileAtomic(path, source).empty());
+}
+
+// A script in esbuild 0.28.2's measured shape: an optional module prelude, the class, the default export.
+[[nodiscard]] std::string playScriptSource(std::string_view members, std::string_view prelude = {}) {
+    return std::format("{}var S = class extends engine.Script {{\n{}\n}};\nexport {{\n  S as default\n}};\n", prelude,
+                       members);
+}
+
+// tag/i<inits>/f<frames>/u<dt in microseconds>: the entity's name is the script's one observable.
+constexpr std::string_view PLAY_COUNTING_MEMBERS =
+    "  tag = this.entity.name; i = 0; f = 0; u = 0;\n"
+    "  note() { this.entity.name = this.tag + '/i' + this.i + '/f' + this.f + '/u' + this.u; }\n"
+    "  onInit() { this.i += 1; this.note(); }\n"
+    "  onUpdate(dt) { this.f += 1; this.u = Math.round(dt * 1e6); this.note(); }\n";
+
+// Two root entities, A and B, running `script`, written through the app's own World in Edit and reconciled.
+struct PlayPair {
+    engine::Entity a;
+    engine::Entity b;
+};
+
+[[nodiscard]] PlayPair addScriptedPair(engine::editor::EditorApp& app, engine::Guid script) {
+    engine::World& world = app.world();
+    PlayPair pair;
+    pair.a = engine::editor::createEntity(world, {}, "A");
+    pair.b = engine::editor::createEntity(world, {}, "B");
+    world.add<engine::ScriptComponent>(pair.a, engine::ScriptComponent{script});
+    world.add<engine::ScriptComponent>(pair.b, engine::ScriptComponent{script});
+    e62Ticks(app, 2);
+    return pair;
+}
+
+[[nodiscard]] std::string playNameOf(const engine::editor::EditorApp& app, engine::Entity entity) {
+    return std::string(app.world().name(entity));
+}
+
+}  // namespace
+
+TEST_CASE("editor: onInit runs on the first game frame, never in the tick that applied Play (task 4.7.4, I424)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i424", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    const engine::Guid script{0ULL, 424ULL};
+    publishPlayScript(std::string(app->projectRoot()), script, playScriptSource(PLAY_COUNTING_MEMBERS));
+    const PlayPair pair = addScriptedPair(*app, script);
+    CHECK_FALSE(app->playScriptStats().live);
+    CHECK(app->playScriptStats().updates == 0U);
+
+    app->requestPlayControl(engine::editor::PlayControl::Play);
+    REQUIRE(app->tick());  // the tick that applies Play: the park and the bind, and no frame
+    REQUIRE((app->playSession().mode() == engine::editor::PlayMode::Playing));
+    CHECK(playNameOf(*app, pair.a) == "A");
+    CHECK(playNameOf(*app, pair.b) == "B");
+    CHECK(app->playScriptStats().live);
+    CHECK(app->playScriptStats().updates == 0U);
+
+    REQUIRE(app->tick());  // the first game frame: onInit, then onUpdate
+    CHECK(playNameOf(*app, pair.a).starts_with("A/i1/f1/"));
+    CHECK(playNameOf(*app, pair.b).starts_with("B/i1/f1/"));
+    e62Ticks(*app, 3);
+    CHECK(playNameOf(*app, pair.a).starts_with("A/i1/f4/"));
+    CHECK(playNameOf(*app, pair.b).starts_with("B/i1/f4/"));
+    const engine::editor::PlayScriptStats stats = app->playScriptStats();
+    CHECK(stats.updates == 4U);
+    CHECK(stats.running == 2U);
+    CHECK(stats.live);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a paused game runs no script, and a Step runs exactly one frame at 1/60 s (task 4.7.4, I425)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i425", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    using engine::editor::PlayControl;
+    const engine::Guid script{0ULL, 425ULL};
+    publishPlayScript(std::string(app->projectRoot()), script, playScriptSource(PLAY_COUNTING_MEMBERS));
+    const PlayPair pair = addScriptedPair(*app, script);
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 4);
+    REQUIRE(app->playScriptStats().updates >= 2U);
+
+    app->requestPlayControl(PlayControl::Pause);
+    e62Ticks(*app, 2);
+    REQUIRE((app->playSession().mode() == engine::editor::PlayMode::Paused));
+    const std::uint64_t frozen = app->playScriptStats().updates;
+    const std::string frozenName = playNameOf(*app, pair.a);
+    e62Ticks(*app, 5);
+    CHECK(app->playScriptStats().updates == frozen);  // paused: no update call at all
+    CHECK(playNameOf(*app, pair.a) == frozenName);
+
+    app->requestPlayControl(PlayControl::Step);
+    e62Ticks(*app, 2);  // the request is applied, and the next tick runs the one frame
+    CHECK(app->playScriptStats().updates == frozen + 1U);
+    CHECK(playNameOf(*app, pair.a).starts_with(std::format("A/i1/f{}/u16667", frozen + 1U)));
+    CHECK(playNameOf(*app, pair.b).starts_with(std::format("B/i1/f{}/u16667", frozen + 1U)));
+    e62Ticks(*app, 2);
+    CHECK(app->playScriptStats().updates == frozen + 1U);  // exactly one
+
+    app->requestPlayControl(PlayControl::Pause);  // resume
+    e62Ticks(*app, 1);
+    REQUIRE((app->playSession().mode() == engine::editor::PlayMode::Playing));
+    const std::uint64_t resumed = app->playScriptStats().updates;
+    e62Ticks(*app, 3);
+    CHECK(app->playScriptStats().updates == resumed + 3U);  // one per tick again
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: onDestroy runs on the copy before the restore, and every Play gets a new VM (task 4.7.4, I426)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i426", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    const engine::Guid script{0ULL, 426ULL};
+    // The module counter names constructions: a VM kept across Plays would count on, a new one counts from 1 again.
+    publishPlayScript(std::string(app->projectRoot()), script,
+                      playScriptSource("  id = ++made;\n"
+                                       "  onInit() { this.entity.name = 'm' + this.id; }\n"
+                                       "  onDestroy() { this.entity.name = 'destroyed'; }\n",
+                                       "var made = 0;\n"));
+    const PlayPair pair = addScriptedPair(*app, script);
+    const std::string dumpBefore = world_test::dumpWorld(app->world());
+    const auto constructionNamesAreOneAndTwo = [&app, &pair]() {
+        const std::string a = playNameOf(*app, pair.a);
+        const std::string b = playNameOf(*app, pair.b);
+        return (a == "m1" && b == "m2") || (a == "m2" && b == "m1");
+    };
+
+    // (a) Stop from Playing.
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == PlayMode::Playing));
+    CHECK(constructionNamesAreOneAndTwo());
+    CHECK(world_test::dumpWorld(app->world()) != dumpBefore);  // anti-vacuity: the game changed the scene
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 2);
+    REQUIRE((app->playSession().mode() == PlayMode::Edit));
+    CHECK(world_test::dumpWorld(app->world()) == dumpBefore);  // onDestroy ran on the copy, never on the original
+    CHECK(app->playScriptStats().detachedAtStop == 2U);
+    CHECK_FALSE(app->playScriptStats().live);
+
+    // (b) a second Play: a new VM names m1 and m2 again.
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+    CHECK(constructionNamesAreOneAndTwo());
+
+    // (c) Pause, then Stop.
+    app->requestPlayControl(PlayControl::Pause);
+    e62Ticks(*app, 2);
+    REQUIRE((app->playSession().mode() == PlayMode::Paused));
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 2);
+    REQUIRE((app->playSession().mode() == PlayMode::Edit));
+    CHECK(world_test::dumpWorld(app->world()) == dumpBefore);
+    CHECK(app->playScriptStats().detachedAtStop == 2U);
+    CHECK_FALSE(app->playScriptStats().live);
+
+    // (d) Play, then a Quit of a clean scene: the Quit path stops play, teardown included.
+    REQUIRE(app->commands().isClean());
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+    REQUIRE((app->playSession().mode() == PlayMode::Playing));
+    CHECK(constructionNamesAreOneAndTwo());
+    app->requestGuardedQuit();
+    CHECK(app->tick() == false);
+    CHECK(world_test::dumpWorld(app->world()) == dumpBefore);
+    CHECK(app->playScriptStats().detachedAtStop == 2U);
+    CHECK_FALSE(app->playScriptStats().live);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a script reads the game's keys, edges reach it once, and Stop unbinds the input (task 4.7.4, I427)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i427", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    using engine::editor::PlayControl;
+    using engine::platform::EventType;
+    using engine::platform::Key;
+    const engine::Guid script{0ULL, 427ULL};
+    publishPlayScript(std::string(app->projectRoot()), script,
+                      playScriptSource("  onUpdate() {\n"
+                                       "    const down = engine.input.keyDown('W');\n"
+                                       "    const edge = engine.input.keyPressed('W');\n"
+                                       "    this.entity.name = (down ? 'W' : '-') + '/' + (edge ? 'p' : '-');\n"
+                                       "  }\n"));
+    const PlayPair pair = addScriptedPair(*app, script);
+    app->requestPlayControl(PlayControl::Play);
+    REQUIRE(app->tick());
+    playWaitForKeyboard(*app, "Viewport");
+    engine::platform::Event gained;
+    gained.type = EventType::WindowFocusGained;  // injected, so a runner whose window is not in front cannot decide
+    app->requestGameInputEvent(gained);
+    REQUIRE(app->tick());
+    REQUIRE(app->playSession().gameFocused());
+    CHECK(playNameOf(*app, pair.a) == "-/-");
+
+    app->requestGameInputEvent(playKeyEvent(EventType::KeyDown, Key::W));
+    REQUIRE(app->tick());
+    CHECK(playNameOf(*app, pair.a) == "W/p");  // the frame that runs sees the press edge
+    REQUIRE(app->tick());
+    CHECK(playNameOf(*app, pair.a) == "W/-");  // and the edge was consumed after it
+    app->requestGameInputEvent(playKeyEvent(EventType::KeyUp, Key::W));
+    REQUIRE(app->tick());
+    CHECK(playNameOf(*app, pair.a) == "-/-");
+
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 2);
+    CHECK_FALSE(app->playScriptStats().live);
+    CHECK(playNameOf(*app, pair.a) == "A");
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the autosave, the bind, the teardown and the restore keep their order, as source text (I428)") {
+    // UNGATED source text, I192's shape: the two orders no behaviour can see. A record finished after the restore, or
+    // a destructor that releases the scene's assets while a script can still run, passes every other case.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+    REQUIRE(code.size() > 100U);
+    const auto firstAfter = [&code](std::string_view needle, std::size_t from) {
+        for (std::size_t i = from; i < code.size(); ++i) {
+            if (code[i].find(needle) != std::string::npos) {
+                return i;
+            }
+        }
+        return code.size();
+    };
+
+    SUBCASE("(a) applyPlayControl: autosave, apply, park, bind; then teardown, record, restore") {
+        const std::size_t autosaveAt = soleLineContaining(code, "!autosaveBeforePlay()");
+        const std::size_t applyAt = soleLineContaining(code, "playSessionValue.apply(control)");
+        const std::size_t parkAt = soleLineContaining(code, "parkedScene.park(");
+        const std::size_t bindAt = soleLineContaining(code, "std::make_unique<PlayScripts>(");
+        const std::size_t stopAt = soleLineContaining(code, "playScripts->stop().detached");
+        const std::size_t recordAt = soleLineContaining(code, "finishPlayRecord();");
+        const std::size_t restoreAt = soleLineContaining(code, "restoreAfterPlay();");
+        CHECK(autosaveAt < applyAt);
+        CHECK(applyAt < parkAt);
+        CHECK(parkAt < bindAt);
+        CHECK(bindAt < stopAt);
+        CHECK(stopAt < recordAt);
+        CHECK(recordAt < restoreAt);
+    }
+    SUBCASE("(b) tick: the clock advances, the scripts update, then the edges clear") {
+        const std::size_t advanceAt = soleLineContaining(code, "playSessionValue.advance(");
+        const std::size_t updateAt = soleLineContaining(code, "playScripts->update(");
+        const std::size_t endAt = soleLineContaining(code, "playSessionValue.endGameFrame();");
+        CHECK(advanceAt < updateAt);
+        CHECK(updateAt < endAt);
+    }
+    SUBCASE("(c) ~EditorApp: a running game is torn down before the scene's assets are released") {
+        const std::size_t destructorAt = soleLineContaining(code, "EditorApp::~EditorApp() {");
+        const std::size_t stopAt = soleLineContaining(code, "static_cast<void>(playScripts->stop());");
+        const std::size_t releaseAt = firstAfter("releaseSceneAssets();", destructorAt);
+        REQUIRE(releaseAt < code.size());
+        CHECK(destructorAt < stopAt);
+        CHECK(stopAt < releaseAt);
+    }
+}

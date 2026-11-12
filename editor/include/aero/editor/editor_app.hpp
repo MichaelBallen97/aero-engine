@@ -114,6 +114,8 @@ class ThumbnailService;    // task E.3.3: src-private (editor/src/thumbnail_serv
                            // editor_app.hpp is a PUBLIC header that exposes engine + std types only.
 class ScriptTranspiler;    // task 4.3.1: src-private (editor/src/script_transpiler.hpp), held through a
                            // unique_ptr, the thumbnails posture.
+class PlayScripts;         // task 4.7.4: src-private (editor/src/play_scripts.hpp), held through a unique_ptr,
+                           // the ScriptTranspiler posture: no public editor header names a script type.
 class SceneAssetLoader;    // task 3.1.5: src-private (editor/src/scene_asset_loader.hpp). Held through
                            // a unique_ptr, which is legal with an INCOMPLETE type here because
                            // ~EditorApp is defined OUT OF LINE in editor_app.cpp, where the definition
@@ -217,6 +219,16 @@ inline constexpr std::uint32_t MINIMIZED_SLEEP_MS = 4;
 // The finiteness test comes FIRST (a NaN fails both range comparisons, so the range test alone would pass it), and a
 // refused value falls back to the shipping layout rather than clamping, so a typo can never build a degenerate dock.
 [[nodiscard]] float resolveBottomDockFraction(float requested) noexcept;
+
+// task 4.7.4: what the GPU tier reads of the play scripts; all zero before the first Play.
+struct PlayScriptStats {
+    bool live = false;               // a PlayScripts exists (playing or paused) and its system is bound
+    std::size_t running = 0;         // instances Running after the last update
+    std::uint64_t updates = 0;       // update calls this Play
+    std::uint64_t reloads = 0;       // reload calls this Play (one per reported GUID)
+    std::uint64_t reloadsOk = 0;     // of them, answered Ok
+    std::size_t detachedAtStop = 0;  // the last Stop's report.detached (kept after Stop)
+};
 
 class EditorApp {
 public:
@@ -843,6 +855,8 @@ public:
     // task 4.7.3 (D6): how many Plays the autosave refused -- a dirty scene whose recovery copy or play record could
     // not be written. "Refused" and "never pressed" differ by this count.
     [[nodiscard]] std::size_t playAutosaveRefusalCount() const noexcept { return playAutosaveRefusals; }
+    // task 4.7.4: what the GPU tier reads of the play scripts (PlayScriptStats).
+    [[nodiscard]] PlayScriptStats playScriptStats() const noexcept;
     // D4/F10: whether a file or project request still holds a target path. A request the scene lock abandoned takes its
     // path with it, so none is left for a later action to pick up.
     [[nodiscard]] bool fileRequestPathPending() const noexcept {
@@ -1192,6 +1206,10 @@ private:
     PlaySession playSessionValue;
     // task 4.7.2 (D1): the scene from before Play, parked untouched while the game runs its copy in sceneWorld.
     ParkedScene parkedScene;  // [stop:clear]
+    // task 4.7.4: made at every Started, torn down at every Stopped and by ~EditorApp. It borrows sceneWorld and
+    // playSessionValue's input, so an EditorApp is never moved while a game is active.
+    std::unique_ptr<PlayScripts> playScripts;
+    PlayScriptStats playScriptCounts;  // playScriptStats()'s base, named apart from it
     // task 4.7.3: what this Play's record says; finishPlayRecord rewrites it with `playing: false`. No handle.
     PlayRecoveryState playRecord;
     std::size_t playAutosaveRefusals = 0;  // playAutosaveRefusalCount()'s value
