@@ -42,6 +42,7 @@
 #include <aero/editor/model_import_session.hpp>  // task 3.2.1: SessionState, named directly (I52-I59)
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/picking.hpp>            // task 2.3.2
+#include <aero/editor/play_recovery.hpp>      // task 4.7.3 (I417-I420): the record and the copy Play writes
 #include <aero/editor/play_session.hpp>       // task 4.7.1 (I388-I392): PlayControl, PlayMode, the session's input
 #include <aero/editor/project.hpp>            // task 2.6.1
 #include <aero/editor/project_files.hpp>      // task E.6.3 (I326): formatFileSize, the footer's in-listing size
@@ -33814,4 +33815,339 @@ TEST_CASE(
         CHECK(app->tick() == false);
     }
     app.reset();
+}
+
+// ---- task 4.7.3 (I417-I420): the autosave at Play and the record at every Stop --------------------------------------
+namespace {
+
+struct RecoveryLine {
+    engine::LogLevel level = engine::LogLevel::Info;
+    std::string text;
+};
+
+// Every record, from any thread, copied under a lock. Installed AFTER the app is created: create() installs the
+// Console's own sink, and this one replaces it for the case's duration.
+class RecoveryLogCapture {
+public:
+    RecoveryLogCapture() {
+        engine::setLogCallback([this](const engine::LogRecord& record) {
+            const std::lock_guard<std::mutex> lock{mutex};
+            lines.push_back(RecoveryLine{record.level, std::string{record.message}});
+        });
+    }
+    RecoveryLogCapture(const RecoveryLogCapture&) = delete;
+    RecoveryLogCapture& operator=(const RecoveryLogCapture&) = delete;
+    RecoveryLogCapture(RecoveryLogCapture&&) = delete;
+    RecoveryLogCapture& operator=(RecoveryLogCapture&&) = delete;
+    ~RecoveryLogCapture() { engine::setLogCallback({}); }
+
+    // How many records at `level` contain `needle`.
+    [[nodiscard]] std::size_t count(engine::LogLevel level, std::string_view needle) const {
+        const std::lock_guard<std::mutex> lock{mutex};
+        std::size_t n = 0;
+        for (const RecoveryLine& line : lines) {
+            n += (line.level == level && line.text.find(needle) != std::string::npos) ? 1U : 0U;
+        }
+        return n;
+    }
+
+private:
+    mutable std::mutex mutex;
+    std::vector<RecoveryLine> lines;
+};
+
+[[nodiscard]] std::string recoveryFileText(const std::string& path) {
+    const engine::editor::FileReadResult read = engine::editor::readTextFile(path);
+    REQUIRE(read.text.has_value());
+    return *read.text;
+}
+
+}  // namespace
+
+TEST_CASE("editor: Play writes the recovery copy and the record first; Stop finishes the record (task 4.7.3, I417)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i417", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    using engine::editor::PlayRecoveryState;
+    const bool sceneIo = engine::editor::sceneIoAvailable();
+
+    SUBCASE("(a) an untitled scene, dirtied") {
+        std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+        REQUIRE(app.has_value());
+        const std::string root(app->projectRoot());
+        RecoveryLogCapture log;
+        app->requestCreateEntity(engine::editor::CreateKind::Cube);
+        e62Ticks(*app, 2);
+        REQUIRE_FALSE(app->commands().isClean());
+        const std::size_t appliedBefore = app->commands().appliedCount();
+        const std::size_t countBefore = app->commands().count();
+        const std::optional<std::string> before = engine::editor::sceneToText(app->world());
+        CHECK(before.has_value() == sceneIo);
+
+        app->requestPlayControl(PlayControl::Play);
+        REQUIRE(app->tick());  // the tick that applied Play
+        REQUIRE((app->playSession().mode() == PlayMode::Playing));
+        CHECK(app->playSession().frame() == 0U);
+        CHECK_FALSE(app->commands().isClean());
+        CHECK(app->scenePath().empty());
+        const engine::editor::PlayRecoveryRead during = engine::editor::readPlayRecoveryState(root);
+        CHECK_FALSE(during.corrupt);
+        REQUIRE(during.state.has_value());
+        CHECK((*during.state == PlayRecoveryState{.playing = true, .scene = "", .copyWritten = sceneIo}));
+        const std::string copyPath = engine::editor::playRecoveryScenePath(root);
+        CHECK(engine::editor::fileExists(copyPath) == sceneIo);
+        if (sceneIo) {
+            CHECK(recoveryFileText(copyPath) == *before);
+        } else {
+            CHECK(log.count(engine::LogLevel::Warn, "writes no recovery copy") == 1U);
+        }
+
+        app->requestPlayControl(PlayControl::Stop);
+        e62Ticks(*app, 2);
+        REQUIRE((app->playSession().mode() == PlayMode::Edit));
+        const engine::editor::PlayRecoveryRead after = engine::editor::readPlayRecoveryState(root);
+        REQUIRE(after.state.has_value());
+        CHECK((*after.state == PlayRecoveryState{.playing = false, .scene = "", .copyWritten = sceneIo}));
+        CHECK(engine::editor::fileExists(copyPath) == sceneIo);
+        if (sceneIo) {
+            CHECK(recoveryFileText(copyPath) == *before);
+        }
+        CHECK(app->commands().appliedCount() == appliedBefore);
+        CHECK(app->commands().count() == countBefore);
+        CHECK_FALSE(app->commands().isClean());
+        app->requestQuit();
+        app.reset();
+    }
+    SUBCASE("(b) a titled scene: the copy is its text, its own file is untouched") {
+        if (!sceneIo) {
+            return;  // Save Scene As is the scene I/O this arm needs
+        }
+        std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+        REQUIRE(app.has_value());
+        const std::string root(app->projectRoot());
+        const std::string scenePath = root + "/scenes/t.scene.json";
+        REQUIRE(engine::editor::ensureDirectory(root + "/scenes").empty());
+        app->requestSaveSceneAs(scenePath);
+        e62Ticks(*app, 2);
+        REQUIRE(app->scenePath() == scenePath);
+        REQUIRE(app->commands().isClean());
+        const std::string sceneBytes = recoveryFileText(scenePath);
+        app->requestCreateEntity(engine::editor::CreateKind::Cube);
+        e62Ticks(*app, 2);
+        REQUIRE_FALSE(app->commands().isClean());
+        const std::optional<std::string> before = engine::editor::sceneToText(app->world());
+        REQUIRE(before.has_value());
+        CHECK(*before != sceneBytes);
+
+        app->requestPlayControl(PlayControl::Play);
+        e62Ticks(*app, 2);
+        REQUIRE((app->playSession().mode() == PlayMode::Playing));
+        const engine::editor::PlayRecoveryRead during = engine::editor::readPlayRecoveryState(root);
+        REQUIRE(during.state.has_value());
+        CHECK(
+            (*during.state == PlayRecoveryState{.playing = true, .scene = "scenes/t.scene.json", .copyWritten = true}));
+        CHECK(recoveryFileText(engine::editor::playRecoveryScenePath(root)) == *before);
+        CHECK(recoveryFileText(scenePath) == sceneBytes);
+
+        app->requestPlayControl(PlayControl::Stop);
+        e62Ticks(*app, 2);
+        CHECK(recoveryFileText(scenePath) == sceneBytes);
+        CHECK(app->scenePath() == scenePath);
+        app->requestQuit();
+        app.reset();
+    }
+}
+
+TEST_CASE("editor: a clean scene writes no recovery copy and leaves an existing one alone (task 4.7.3, I418)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i418", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    using engine::editor::PlayRecoveryState;
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    const std::string root(app->projectRoot());
+    std::string scenePath;
+    std::string relative;
+    if (engine::editor::sceneIoAvailable()) {
+        scenePath = root + "/scenes/t.scene.json";
+        relative = "scenes/t.scene.json";
+        REQUIRE(engine::editor::ensureDirectory(root + "/scenes").empty());
+        app->requestSaveSceneAs(scenePath);
+        e62Ticks(*app, 2);
+        REQUIRE(app->scenePath() == scenePath);
+    }
+    REQUIRE(app->commands().isClean());
+    REQUIRE(engine::editor::ensureDirectory(root + "/Library").empty());
+    const std::string copyPath = engine::editor::playRecoveryScenePath(root);
+    REQUIRE(engine::editor::writeTextFileAtomic(copyPath, "sentinel").empty());
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 2);
+    REQUIRE((app->playSession().mode() == PlayMode::Playing));
+    CHECK(recoveryFileText(copyPath) == "sentinel");
+    const engine::editor::PlayRecoveryRead during = engine::editor::readPlayRecoveryState(root);
+    REQUIRE(during.state.has_value());
+    CHECK((*during.state == PlayRecoveryState{.playing = true, .scene = relative, .copyWritten = false}));
+
+    app->requestPlayControl(PlayControl::Stop);
+    e62Ticks(*app, 2);
+    CHECK(recoveryFileText(copyPath) == "sentinel");
+    app->requestQuit();
+    app.reset();
+}
+
+TEST_CASE("editor: an unwritable copy or record refuses Play of a dirty scene, never a clean one (task 4.7.3, I419)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i419", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    const bool sceneIo = engine::editor::sceneIoAvailable();
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    const std::string root(app->projectRoot());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+    // Library replaced by a FILE: nothing can be written under it.
+    std::error_code ec;
+    std::filesystem::remove_all(scriptFsPath(root + "/Library"), ec);
+    REQUIRE_FALSE(ec);
+    REQUIRE(engine::editor::writeTextFileAtomic(root + "/Library", "not a directory").empty());
+
+    RecoveryLogCapture log;
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    e62Ticks(*app, 2);
+    REQUIRE_FALSE(app->commands().isClean());
+    const std::string dumpBefore = world_test::dumpWorld(app->world());
+    const std::vector<engine::Entity> rootsBefore(app->roots().entities().begin(), app->roots().entities().end());
+    REQUIRE(app->playAutosaveRefusalCount() == 0U);
+
+    app->requestPlayControl(PlayControl::Play);
+    e62Ticks(*app, 3);
+    if (sceneIo) {
+        CHECK((app->playSession().mode() == PlayMode::Edit));
+        CHECK(app->playAutosaveRefusalCount() == 1U);
+        CHECK(log.count(engine::LogLevel::Error, "play-recovery.scene.json") == 1U);
+        CHECK(world_test::dumpWorld(app->world()) == dumpBefore);
+        const std::vector<engine::Entity> rootsNow(app->roots().entities().begin(), app->roots().entities().end());
+        CHECK(rootsNow == rootsBefore);
+        CHECK((viewport->lastRenderCamera() == engine::editor::ViewportRenderCamera::Editor));
+
+        // A clean scene: the record that cannot be written is one WARN and the game starts.
+        const std::string scenePath = root + "/scenes/t.scene.json";
+        REQUIRE(engine::editor::ensureDirectory(root + "/scenes").empty());
+        app->requestSaveSceneAs(scenePath);
+        e62Ticks(*app, 2);
+        REQUIRE(app->commands().isClean());
+        app->requestPlayControl(PlayControl::Play);
+        e62Ticks(*app, 2);
+        CHECK((app->playSession().mode() == PlayMode::Playing));
+        CHECK(app->playAutosaveRefusalCount() == 1U);
+        CHECK(log.count(engine::LogLevel::Warn, "play-recovery.json") >= 1U);
+    } else {
+        // No scene I/O: the dirty Play starts with the no-copy WARN and the record WARN.
+        CHECK((app->playSession().mode() == PlayMode::Playing));
+        CHECK(app->playAutosaveRefusalCount() == 0U);
+        CHECK(log.count(engine::LogLevel::Warn, "writes no recovery copy") == 1U);
+        CHECK(log.count(engine::LogLevel::Warn, "play-recovery.json") >= 1U);
+    }
+    app->requestQuit();
+    app.reset();
+}
+
+TEST_CASE("editor: every Stop path finishes the record (task 4.7.3, I420)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i420", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    const auto playingFlag = [](std::string_view root) {
+        const engine::editor::PlayRecoveryRead read = engine::editor::readPlayRecoveryState(root);
+        REQUIRE(read.state.has_value());
+        return read.state->playing;
+    };
+    SUBCASE("(a) Stop from Playing") {
+        std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+        REQUIRE(app.has_value());
+        const std::string root(app->projectRoot());
+        app->requestPlayControl(PlayControl::Play);
+        e62Ticks(*app, 2);
+        REQUIRE((app->playSession().mode() == PlayMode::Playing));
+        CHECK(playingFlag(root));
+        app->requestPlayControl(PlayControl::Stop);
+        e62Ticks(*app, 2);
+        CHECK((app->playSession().mode() == PlayMode::Edit));
+        CHECK_FALSE(playingFlag(root));
+        app->requestQuit();
+        app.reset();
+    }
+    SUBCASE("(b) Pause, then Stop") {
+        std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+        REQUIRE(app.has_value());
+        const std::string root(app->projectRoot());
+        app->requestPlayControl(PlayControl::Play);
+        e62Ticks(*app, 2);
+        app->requestPlayControl(PlayControl::Pause);
+        e62Ticks(*app, 2);
+        REQUIRE((app->playSession().mode() == PlayMode::Paused));
+        CHECK(playingFlag(root));
+        app->requestPlayControl(PlayControl::Stop);
+        e62Ticks(*app, 2);
+        CHECK((app->playSession().mode() == PlayMode::Edit));
+        CHECK_FALSE(playingFlag(root));
+        app->requestQuit();
+        app.reset();
+    }
+    SUBCASE("(c) a guarded Quit while playing stops the game on the way out") {
+        std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+        REQUIRE(app.has_value());
+        const std::string root(app->projectRoot());
+        REQUIRE(app->commands().isClean());
+        app->requestPlayControl(PlayControl::Play);
+        e62Ticks(*app, 2);
+        REQUIRE((app->playSession().mode() == PlayMode::Playing));
+        CHECK(playingFlag(root));
+        app->requestGuardedQuit();
+        CHECK(app->tick() == false);
+        CHECK((app->playSession().mode() == PlayMode::Edit));
+        CHECK_FALSE(playingFlag(root));
+        app.reset();
+    }
 }

@@ -609,14 +609,69 @@ void EditorApp::persistProjectState() {
     projectStateScene = scene;
 }
 
+bool EditorApp::autosaveBeforePlay() {
+    // NAMED LOCALS, FIRST: ProjectSession::root() and SceneSession::path() return views into live members.
+    const std::string root(project.root());
+    if (root.empty()) {
+        return true;  // Play needs an open project, so this is only a guard
+    }
+    const PlayAutosavePlan plan = planPlayAutosave(!commandStack.isClean(), sceneIoAvailable());
+    if (plan.warnNoSceneIo) {
+        AERO_LOG_WARN("editor: this build has no scene I/O, so Play writes no recovery copy");
+    }
+    if (plan.writeCopy) {
+        const std::optional<std::string> text = sceneToText(sceneWorld);
+        const std::string reason =
+            text.has_value() ? writePlayRecoveryCopy(root, *text) : "the scene did not serialize";
+        if (!reason.empty()) {
+            AERO_LOG_ERROR("editor: Play refused: could not write the recovery copy '{}' -- {}",
+                           playRecoveryScenePath(root), reason);
+            ++playAutosaveRefusals;
+            return false;
+        }
+    }
+    playRecord = PlayRecoveryState{
+        .playing = true, .scene = projectRelativeScenePath(root, session.path()), .copyWritten = plan.writeCopy};
+    const std::string reason = writePlayRecoveryState(root, playRecord);
+    if (!reason.empty()) {
+        if (plan.refuseOnFailure) {
+            AERO_LOG_ERROR("editor: Play refused: could not write the play record '{}' -- {}",
+                           playRecoveryStatePath(root), reason);
+            ++playAutosaveRefusals;
+            return false;
+        }
+        AERO_LOG_WARN("editor: could not write the play record '{}' -- {}; Play starts without it",
+                      playRecoveryStatePath(root), reason);
+    }
+    return true;
+}
+
+void EditorApp::finishPlayRecord() {
+    const std::string root(project.root());
+    if (root.empty()) {
+        return;
+    }
+    playRecord.playing = false;
+    const std::string reason = writePlayRecoveryState(root, playRecord);
+    if (!reason.empty()) {
+        AERO_LOG_WARN("editor: could not write the play record '{}' -- {}", playRecoveryStatePath(root), reason);
+    }
+}
+
 void EditorApp::applyPlayControl(PlayControl control) {
+    // task 4.7.3: Play from Edit writes the recovery copy and the play record BEFORE the session moves, so a refused
+    // autosave leaves the mode in Edit with nothing parked (D6). Only a control that starts play reaches it.
+    if (playSessionValue.mode() == PlayMode::Edit && nextPlayMode(PlayMode::Edit, control) == PlayMode::Playing &&
+        !autosaveBeforePlay()) {
+        return;
+    }
     const PlayTransition transition = playSessionValue.apply(control);
     switch (transition) {  // NO default:
         case PlayTransition::Started:
-            // The order at Play (task 4.7.2): 4.7.3's autosave, then this park, then 4.7.4 binds its ScriptSystem to
-            // the copy and runs onInit. The game runs a copy with every handle identical; the scene from before Play
-            // waits parked, untouched, until Stop. After apply, because only apply knows a transition happened, and
-            // before any game frame, which the next tick's advance runs.
+            // The order at Play (task 4.7.2): the autosave ran above, then this park, then 4.7.4 binds its
+            // ScriptSystem to the copy and runs onInit. The game runs a copy with every handle identical; the scene
+            // from before Play waits parked, untouched, until Stop. After apply, because only apply knows a
+            // transition happened, and before any game frame, which the next tick's advance runs.
             parkedScene.park(sceneWorld, rootOrder);
             // The one focus slot hands the Viewport the keyboard on the next tick (D5).
             requestedPanelFocus = VIEWPORT_ID;
@@ -626,7 +681,9 @@ void EditorApp::applyPlayControl(PlayControl control) {
             break;
         case PlayTransition::Stopped:
             // The order at Stop (task 4.7.2): 4.7.4's onDestroy runs and its ScriptSystem is destroyed HERE, before
-            // the restore, so no VM holds an entity of the copy across the move.
+            // the restore, so no VM holds an entity of the copy across the move. The record is finished before it too
+            // (task 4.7.3), so a crash inside the restore still finds a document the next open need not offer.
+            finishPlayRecord();
             restoreAfterPlay();
             break;
         case PlayTransition::None:

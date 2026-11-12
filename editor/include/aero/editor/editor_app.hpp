@@ -50,6 +50,7 @@
                                                  // value in the one-shots below. PUBLIC and PURE.
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/parked_scene.hpp>        // task 4.7.2 -- a VALUE member (parkedScene); PURE
+#include <aero/editor/play_recovery.hpp>       // task 4.7.3 -- a VALUE member (playRecord); PURE
 #include <aero/editor/play_session.hpp>        // task 4.7.1 -- a VALUE member (playSessionValue); PURE
 #include <aero/editor/scene_asset_ledger.hpp>  // task 3.1.5 -- a VALUE member (sceneAssetLedger) needs
                                                // the definition, the asset_database.hpp precedent. It
@@ -839,6 +840,9 @@ public:
     // D4: how many requests the scene lock refused while a game played -- an undo, a redo, a create, a drop, and any
     // file action but Quit. "Refused" and "never arrived" differ by this count.
     [[nodiscard]] std::size_t playLockRefusalCount() const noexcept { return playLockRefusals; }
+    // task 4.7.3 (D6): how many Plays the autosave refused -- a dirty scene whose recovery copy or play record could
+    // not be written. "Refused" and "never pressed" differ by this count.
+    [[nodiscard]] std::size_t playAutosaveRefusalCount() const noexcept { return playAutosaveRefusals; }
     // D4/F10: whether a file or project request still holds a target path. A request the scene lock abandoned takes its
     // path with it, so none is left for a later action to pick up.
     [[nodiscard]] bool fileRequestPathPending() const noexcept {
@@ -944,6 +948,11 @@ private:
     // task 4.7.2: the ONE Stop path's body -- every Stop (the toolbar, a chord, a request, a Quit) reaches it through
     // applyPlayControl.
     void restoreAfterPlay();
+    // task 4.7.3: Play from Edit writes the recovery copy and the play record BEFORE the session moves. True: Play may
+    // start; false: one ERROR was logged, the refusal counted, and the mode stays Edit with nothing parked.
+    [[nodiscard]] bool autosaveBeforePlay();
+    // task 4.7.3: every Stop rewrites the record with `playing: false`, whether or not Play's own write succeeded.
+    void finishPlayRecord();
     void applyViewportDrop(const ViewportAssetDrop& drop);
     void applySlotDrop(const MaterialSlotTextureDrop& drop);
     // The import -> plan -> command sequence. `placement` is the ROOT entity's local Transform, so the
@@ -1179,6 +1188,9 @@ private:
     PlaySession playSessionValue;
     // task 4.7.2 (D1): the scene from before Play, parked untouched while the game runs its copy in sceneWorld.
     ParkedScene parkedScene;  // [stop:clear]
+    // task 4.7.3: what this Play's record says; finishPlayRecord rewrites it with `playing: false`. No handle.
+    PlayRecoveryState playRecord;
+    std::size_t playAutosaveRefusals = 0;  // playAutosaveRefusalCount()'s value
     std::optional<PlayControl> pendingPlayControl;
     std::vector<platform::Event> pendingGameEvents;
     std::size_t playLockRefusals = 0;                       // playLockRefusalCount()'s value
