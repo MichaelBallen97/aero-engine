@@ -660,6 +660,41 @@ TEST_CASE("play_recovery: a Recover that fails on a clean document logs no recov
     CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
 }
 
+TEST_CASE("play_recovery: a copy gone between the offer and the answer logs one ERROR and swaps nothing (RV21)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    OfferRig rig;
+    rig.ensureOffer();
+    rig.makeDirty();
+    std::error_code ec;
+    REQUIRE(std::filesystem::remove(playRecoveryScenePath(rig.root), ec));  // the offer was raised over a present copy
+    const std::string worldBefore = textOrEmpty(rig.world);
+    const std::size_t entitiesBefore = rig.world.entityCount();
+    const std::string pathBefore(rig.session.path());
+    const std::size_t countBefore = rig.commands.count();
+    const bool cleanBefore = rig.commands.isClean();
+    scope.sink()->take(records);
+    records.clear();
+
+    rig.projectFlow.recoveryOffer.recoverRequested = true;
+    rig.apply();
+    scope.sink()->take(records);
+
+    CHECK(countAt(records, engine::LogLevel::Error) == 1U);
+    CHECK(countLogged(records, engine::LogLevel::Error, "play-recovery.scene.json") == 1U);
+    CHECK(countLogged(records, engine::LogLevel::Info, "recovered the scene") == 0U);
+    CHECK(textOrEmpty(rig.world) == worldBefore);
+    CHECK(rig.world.entityCount() == entitiesBefore);
+    CHECK(rig.session.path() == pathBefore);
+    CHECK(rig.commands.count() == countBefore);
+    CHECK(rig.commands.isClean() == cleanBefore);
+    const std::optional<PlayRecoveryState> after = rig.record();
+    REQUIRE(after.has_value());
+    CHECK_FALSE(after->playing);
+    CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
+}
+
 TEST_CASE("play_recovery: Discard wins a frame with both answers, and another project's answer is dropped (RV16)") {
     OfferRig rig;
     rig.ensureOffer();
