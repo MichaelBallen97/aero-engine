@@ -659,7 +659,10 @@ target_compile_definitions(aero_editor_shell_test PRIVATE
     AERO_SCRIPT_DECLARATIONS_FILE="${_aero_script_declarations_file}"
     AERO_TSCONFIG_TEMPLATE_FILE="${CMAKE_SOURCE_DIR}/editor/templates/tsconfig.json.in"
     # task 4.5.2: CP8 compares the four embedded C++ project templates with their files. A path, not a flag.
-    AERO_CPP_PROJECT_TEMPLATE_DIR="${CMAKE_SOURCE_DIR}/editor/templates/cpp-project")
+    AERO_CPP_PROJECT_TEMPLATE_DIR="${CMAKE_SOURCE_DIR}/editor/templates/cpp-project"
+    # task 4.7.4: SX9 and SX10 read and run the committed TypeScript demo project. A path, not a flag: a missing
+    # directory is a REQUIRE failure, never a silent skip.
+    AERO_PHASE4_TS_SAMPLE_DIR="${CMAKE_SOURCE_DIR}/samples/phase-4-scripting/ts")
 
 # task 3.2.4 (F13): a real subprocess the process layer can spawn on every CI lane, with NO Blender
 # installed. `cmake -E true|false|sleep|echo|cat|touch|copy_directory` covers start, non-blocking poll,
