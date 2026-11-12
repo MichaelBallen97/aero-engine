@@ -695,6 +695,31 @@ TEST_CASE("play_recovery: a copy gone between the offer and the answer logs one 
     CHECK_FALSE(rig.projectFlow.recoveryOffer.open);
 }
 
+TEST_CASE("play_recovery: Recover binds the record's scene, not the scene the project open restored (RV22)") {
+    constexpr std::string_view RESTORED_SCENE = "scenes/b.scene.json";
+    OfferRig rig;
+    REQUIRE(engine::editor::writeTextFileAtomic(rig.root + "/scenes/b.scene.json", EMPTY_SCENE_TEXT).empty());
+    // The editor-state now names b; the record still names a (the scene the game was started from).
+    REQUIRE(engine::editor::writeProjectState(rig.root,
+                                              {.lastScene = std::string(RESTORED_SCENE), .lastSceneRecorded = true})
+                .empty());
+    rig.ensureOffer();
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK(rig.session.path().empty());  // no scene I/O: no restore and no swap, so nothing to rebind
+        return;
+    }
+    REQUIRE(rig.session.path() == engine::editor::absoluteScenePath(rig.root, RESTORED_SCENE));
+    CHECK(rig.projectFlow.recoveryOffer.scene == RECORDED_SCENE);
+
+    rig.projectFlow.recoveryOffer.recoverRequested = true;
+    rig.apply();
+
+    CHECK(textOrEmpty(rig.world) == rig.copyText);
+    CHECK(rig.session.path() == engine::editor::absoluteScenePath(rig.root, RECORDED_SCENE));
+    CHECK(rig.session.path() != engine::editor::absoluteScenePath(rig.root, RESTORED_SCENE));
+    CHECK_FALSE(rig.commands.isClean());
+}
+
 TEST_CASE("play_recovery: Discard wins a frame with both answers, and another project's answer is dropped (RV16)") {
     OfferRig rig;
     rig.ensureOffer();
