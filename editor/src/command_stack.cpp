@@ -172,6 +172,11 @@ void CommandStack::setClean() noexcept {
     mergeOpen = false;
 }
 
+void CommandStack::forgetClean() noexcept {
+    cleanPosition = std::nullopt;
+    mergeOpen = false;  // a later push must not merge into an earlier command and hide the dirty state
+}
+
 bool CommandStack::isClean() const noexcept { return cleanPosition.has_value() && *cleanPosition == applied; }
 
 }  // namespace engine::editor
