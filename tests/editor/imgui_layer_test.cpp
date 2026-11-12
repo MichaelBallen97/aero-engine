@@ -34413,6 +34413,61 @@ TEST_CASE("editor: the recovery modal binds Escape, Enter and its drained arm by
     }
 }
 
+TEST_CASE("editor: Play is refused in the tick that opens a project and raises the recovery offer (task 4.7.3, I431)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "recover i431", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    if (!engine::editor::sceneIoAvailable()) {
+        return;  // no copy is written without scene I/O, so no offer is raised: I421's tools-OFF arm holds that line
+    }
+    using engine::editor::PlayControl;
+    using engine::editor::PlayMode;
+    // Project B: a crashed Play's record (`playing: true`, `copyWritten: true`) and its copy.
+    const CrashedPlay crashed = crashAPlayingEditor(*device, *window, ctx);
+    const std::string recordPath = engine::editor::playRecoveryStatePath(crashed.root);
+    const std::string recordBefore = recoveryFileText(recordPath);
+    const std::string copyBefore = recoveryFileText(engine::editor::playRecoveryScenePath(crashed.root));
+
+    // Project A is open and clean; the toolbar accepts Play in the very tick that opens B.
+    std::optional<engine::editor::EditorApp> app = openPlayApp(*device, *window, ctx, TS);
+    REQUIRE(app.has_value());
+    REQUIRE((app->playSession().mode() == PlayMode::Edit));
+    REQUIRE(app->playAutosaveRefusalCount() == 0U);
+    REQUIRE(app->playModalRefusalCount() == 0U);
+
+    app->requestOpenProject(crashed.root);
+    app->requestPlayControl(PlayControl::Play);
+    REQUIRE(app->tick());
+    CHECK(app->playRecoveryOfferOpen());
+    CHECK(app->projectRoot() == crashed.root);
+    CHECK((app->playSession().mode() == PlayMode::Edit));  // refused, not started behind the modal
+    CHECK(app->playModalRefusalCount() == 1U);
+    CHECK(app->playAutosaveRefusalCount() == 0U);  // refused BEFORE the autosave, which is not a failed one
+    CHECK_FALSE(app->playScriptStats().live);
+    CHECK(recoveryFileText(recordPath) == recordBefore);  // the crashed record is byte-for-byte what it was
+    CHECK(recoveryFileText(engine::editor::playRecoveryScenePath(crashed.root)) == copyBefore);
+
+    // The offer still answers after the refusal.
+    app->requestPlayRecoveryAnswer(engine::editor::PlayRecoveryAnswer::Recover);
+    e62Ticks(*app, 2);
+    CHECK_FALSE(app->playRecoveryOfferOpen());
+    CHECK((app->playSession().mode() == PlayMode::Edit));
+    const std::optional<std::string> recovered = engine::editor::sceneToText(app->world());
+    REQUIRE(recovered.has_value());
+    CHECK(*recovered == crashed.textBeforePlay);
+    CHECK(app->playModalRefusalCount() == 1U);
+    app->requestQuit();
+    app.reset();
+}
+
 // ---- task 4.7.4 (I424-I430): scripts live and die with the mode ----------------------------------------------------
 namespace {
 

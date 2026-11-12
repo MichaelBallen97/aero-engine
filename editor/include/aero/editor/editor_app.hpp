@@ -855,6 +855,9 @@ public:
     // task 4.7.3 (D6): how many Plays the autosave refused -- a dirty scene whose recovery copy or play record could
     // not be written. "Refused" and "never pressed" differ by this count.
     [[nodiscard]] std::size_t playAutosaveRefusalCount() const noexcept { return playAutosaveRefusals; }
+    // task 4.7.3: how many Plays were refused while a modal was up -- the same-tick path the toolbar cannot see.
+    // Refused before the autosave, so one writes nothing and counts nowhere in playAutosaveRefusalCount().
+    [[nodiscard]] std::size_t playModalRefusalCount() const noexcept { return playModalRefusals; }
     // task 4.7.4: what the GPU tier reads of the play scripts (PlayScriptStats).
     [[nodiscard]] PlayScriptStats playScriptStats() const noexcept;
     // D4/F10: whether a file or project request still holds a target path. A request the scene lock abandoned takes its
@@ -1213,6 +1216,7 @@ private:
     // task 4.7.3: what this Play's record says; finishPlayRecord rewrites it with `playing: false`. No handle.
     PlayRecoveryState playRecord;
     std::size_t playAutosaveRefusals = 0;  // playAutosaveRefusalCount()'s value
+    std::size_t playModalRefusals = 0;     // playModalRefusalCount()'s value
     std::optional<PlayControl> pendingPlayControl;
     std::vector<platform::Event> pendingGameEvents;
     std::size_t playLockRefusals = 0;                       // playLockRefusalCount()'s value

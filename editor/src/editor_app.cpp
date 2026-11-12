@@ -673,10 +673,20 @@ PlayScriptStats EditorApp::playScriptStats() const noexcept {
 }
 
 void EditorApp::applyPlayControl(PlayControl control) {
+    const bool startsPlay =
+        playSessionValue.mode() == PlayMode::Edit && nextPlayMode(PlayMode::Edit, control) == PlayMode::Playing;
+    // DEFENCE IN DEPTH, applyCreate's posture: the toolbar already disables Play behind a modal, and this refuses the
+    // same-tick path it cannot see -- applyFileRequests opens a project AFTER the toolbar read its enabled flag, so
+    // the recovery offer can be raised in the tick that accepted Play. BEFORE the autosave, so a refused Play writes
+    // no copy and no record (it would overwrite the opened project's crashed one) and parks nothing. COUNTED, so
+    // "refused" and "never arrived" differ.
+    if (startsPlay && modalInputActive(fileFlow, projectFlow)) {
+        ++playModalRefusals;
+        return;
+    }
     // task 4.7.3: Play from Edit writes the recovery copy and the play record BEFORE the session moves, so a refused
     // autosave leaves the mode in Edit with nothing parked (D6). Only a control that starts play reaches it.
-    if (playSessionValue.mode() == PlayMode::Edit && nextPlayMode(PlayMode::Edit, control) == PlayMode::Playing &&
-        !autosaveBeforePlay()) {
+    if (startsPlay && !autosaveBeforePlay()) {
         return;
     }
     const PlayTransition transition = playSessionValue.apply(control);
