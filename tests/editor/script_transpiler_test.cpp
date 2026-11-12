@@ -1937,6 +1937,33 @@ TEST_CASE("script_transpiler: takePublished reports each publish once, after its
     CHECK(transpiler.takePublished().empty());
 }
 
+TEST_CASE("script_transpiler: a publish whose record cannot be written is not reported, and its neighbour is (ST48)") {
+    ScriptFixture f;
+    f.write("assets/scripts/a.ts", "export const x = 1;\n");
+    f.write("assets/scripts/c.ts", "export const z = 3;\n");
+    f.scan();
+    const Guid a = f.guidOf("scripts/a.ts");
+    const Guid c = f.guidOf("scripts/c.ts");
+
+    // A non-empty directory where a's record goes: its map and js land, and the record -- written last -- cannot.
+    std::error_code ec;
+    std::filesystem::create_directories(pathOf(f.root) / pathOf(f.artifactPath(a, ".json")), ec);
+    REQUIRE_FALSE(ec);
+    f.write(f.artifactPath(a, ".json/keep.txt"), "occupied");
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+
+    const std::vector<std::string> log = rendered(transpiler.takeLog());
+    REQUIRE_FALSE(log.empty());
+    CHECK(log.back() == "INFO scripts: 1 transpiled, 1 failed, 0 up to date");
+    const std::vector<Guid> published = transpiler.takePublished();
+    REQUIRE(published.size() == 1U);
+    CHECK(published[0] == c);
+    CHECK(published[0] != a);
+    CHECK(f.recordOf(c).has_value());
+}
+
 namespace {
 
 // A script whose onUpdate counts and names its entity `<tag>:<count>`; `pad` changes the file's SIZE so the scan's
