@@ -34728,3 +34728,150 @@ TEST_CASE("editor: the autosave, the bind, the teardown and the restore keep the
         CHECK(stopAt < releaseAt);
     }
 }
+
+// ---- task 4.7.4 (I429-I430): a script saved during play reaches the running game --------------------------------
+namespace {
+
+// A TypeScript mover: onUpdate counts and names its entity `<tag>:<count>`. `pad` changes the file's SIZE, so the
+// asset scan's (size, mtime) fast path never reuses a hash for a rewrite within one timestamp tick.
+[[nodiscard]] std::string reloadMoverSource(std::string_view tag, std::size_t pad) {
+    std::string text = "export default class Mover extends engine.Script {\n  count = 0;\n  onUpdate() {\n";
+    text += "    this.count += 1;\n    this.entity.name = \"";
+    text += tag;
+    text += ":\" + this.count;\n  }\n}\n//";
+    text.append(pad, '.');
+    text += "\n";
+    return text;
+}
+
+// The number after the first ':' of "<tag>:<count>", -1 when the name has no such form.
+[[nodiscard]] int reloadCountOf(const std::string& name) {
+    const std::size_t colon = name.find(':');
+    if (colon == std::string::npos || colon + 1U >= name.size()) {
+        return -1;
+    }
+    return std::stoi(name.substr(colon + 1U));
+}
+
+// A TypeScript project holding assets/scripts/mover.ts (v1), transpiled to idle, with two entities on it.
+struct ReloadSetup {
+    std::string root;
+    std::optional<engine::editor::EditorApp> app;
+    engine::Guid script;
+    PlayPair pair;
+};
+
+void openReloadSetup(ReloadSetup& setup, engine::rhi::Device& device, engine::platform::Window& window,
+                     engine::platform::Context& ctx) {
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0", TS);
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    setup.root = created.root;
+    writeScriptProjectFile(setup.root, "assets/scripts/mover.ts", reloadMoverSource("v1", 1U));
+    setup.app = openScriptApp(device, window, ctx, setup.root, AERO_TEST_ESBUILD);
+    REQUIRE(setup.app.has_value());
+    tickUntilScriptsIdle(*setup.app);
+    const std::optional<engine::Guid> guid = setup.app->assetGuidForPath("scripts/mover.ts");
+    REQUIRE(guid.has_value());
+    setup.script = *guid;
+    setup.pair = addScriptedPair(*setup.app, setup.script);
+}
+
+// Rewrites the mover, asks for a rescan and ticks until the transpiler has published it.
+void saveReloadMover(ReloadSetup& setup, std::string_view tag, std::size_t pad) {
+    writeScriptProjectFile(setup.root, "assets/scripts/mover.ts", reloadMoverSource(tag, pad));
+    setup.app->requestAssetRescan();
+    tickUntilScriptsIdle(*setup.app);
+}
+
+}  // namespace
+
+TEST_CASE("editor: a script saved while the game plays or is paused reloads at once, state kept (task 4.7.4, I429)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i429", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    ReloadSetup setup;
+    openReloadSetup(setup, *device, *window, ctx);
+    engine::editor::EditorApp& app = *setup.app;
+    using engine::editor::PlayControl;
+
+    app.requestPlayControl(PlayControl::Play);
+    e62Ticks(app, 6);
+    REQUIRE(playNameOf(app, setup.pair.a).starts_with("v1:"));
+    const int lastV1 = reloadCountOf(playNameOf(app, setup.pair.a));
+    REQUIRE(lastV1 > 1);
+    CHECK(app.playScriptStats().reloads == 0U);
+
+    saveReloadMover(setup, "v2", 2U);  // no Stop: the running game takes it
+    e62Ticks(app, 2);
+    const std::string nameA = playNameOf(app, setup.pair.a);
+    const std::string nameB = playNameOf(app, setup.pair.b);
+    CHECK(nameA.starts_with("v2:"));
+    CHECK(nameB.starts_with("v2:"));
+    CHECK(reloadCountOf(nameA) > lastV1);  // the counter was kept, not restarted
+    CHECK(app.playScriptStats().reloads == 1U);
+    CHECK(app.playScriptStats().reloadsOk == 1U);
+
+    // Paused: the publish reloads at once, the names wait for the next frame, and one Step runs it.
+    app.requestPlayControl(PlayControl::Pause);
+    e62Ticks(app, 2);
+    REQUIRE((app.playSession().mode() == engine::editor::PlayMode::Paused));
+    const std::string pausedName = playNameOf(app, setup.pair.a);
+    const int pausedCount = reloadCountOf(pausedName);
+    saveReloadMover(setup, "v3", 3U);
+    e62Ticks(app, 2);
+    CHECK(app.playScriptStats().reloads == 2U);
+    CHECK(app.playScriptStats().reloadsOk == 2U);
+    CHECK(playNameOf(app, setup.pair.a) == pausedName);  // no frame ran
+    app.requestPlayControl(PlayControl::Step);
+    e62Ticks(app, 2);
+    CHECK(playNameOf(app, setup.pair.a) == std::format("v3:{}", pausedCount + 1));
+    CHECK(playNameOf(app, setup.pair.b).starts_with("v3:"));
+
+    tickUntilScriptsIdle(app);
+    app.requestQuit();
+    CHECK(app.tick() == false);
+    setup.app.reset();
+}
+
+TEST_CASE("editor: a script saved in Edit reaches no reload, and the next Play runs it from its first frame (I430)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "play i430", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    ReloadSetup setup;
+    openReloadSetup(setup, *device, *window, ctx);
+    engine::editor::EditorApp& app = *setup.app;
+
+    saveReloadMover(setup, "v2", 2U);  // the game is in Edit: the report is dropped
+    e62Ticks(app, 2);
+    CHECK(app.playScriptStats().reloads == 0U);
+    CHECK(app.playScriptStats().reloadsOk == 0U);
+    CHECK_FALSE(app.playScriptStats().live);
+
+    app.requestPlayControl(engine::editor::PlayControl::Play);
+    e62Ticks(app, 2);  // the tick that applies Play, then the first game frame
+    CHECK(playNameOf(app, setup.pair.a) == "v2:1");
+    CHECK(playNameOf(app, setup.pair.b) == "v2:1");
+    CHECK(app.playScriptStats().reloads == 0U);
+
+    tickUntilScriptsIdle(app);
+    app.requestQuit();
+    CHECK(app.tick() == false);
+    setup.app.reset();
+}

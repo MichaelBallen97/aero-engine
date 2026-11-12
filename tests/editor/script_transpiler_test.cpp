@@ -32,7 +32,13 @@
 #include <aero/editor/esbuild_tool.hpp>
 #include <aero/editor/project.hpp>
 #include <aero/editor/text_file.hpp>
+#include <aero/platform/input.hpp>
+#include <aero/scene/script_component.hpp>
+#include <aero/scene/world.hpp>
+#include <aero/script/script_system.hpp>
 #include <aero/script/vm.hpp>
+
+#include "../../editor/src/play_scripts.hpp"
 
 #include <doctest/doctest.h>
 
@@ -1888,5 +1894,191 @@ TEST_CASE("script_transpiler: a script loaded from a Library/Scripts mount names
 
     const ed::LogEntry entry = onlyErrorEntry(outcome.history);
     CHECK(entry.message == "script: ../../assets/scripts/util.ts:3:37: uncaught Error: util failed: x");
+    pumpUntilIdle(transpiler, f.db);
+}
+
+// ST45-ST47 (task 4.7.4, step 7): the publish report the play session reloads from, and the real transpiler feeding
+// PlayScripts.
+
+TEST_CASE("script_transpiler: takePublished reports each publish once, after its record, and never a failure (ST45)") {
+    ScriptFixture f;
+    f.write("assets/scripts/a.ts", "export const x = 1;\n");
+    f.write("assets/scripts/b.ts", "export const y = ;\n");
+    f.scan();
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    CHECK(transpiler.takePublished().empty());  // nothing before any pass
+
+    runPass(transpiler, f);
+    const Guid a = f.guidOf("scripts/a.ts");
+    const std::vector<Guid> first = transpiler.takePublished();
+    REQUIRE(first.size() == 1U);
+    CHECK(first[0] == a);
+    // The report follows the record: the record on disk is already current and Ok.
+    const std::optional<ed::ScriptRecord> record = f.recordOf(a);
+    REQUIRE(record.has_value());
+    CHECK(record->status == ed::ScriptRecordStatus::Ok);
+    CHECK(transpiler.takePublished().empty());  // taken once
+
+    f.scan();
+    runPass(transpiler, f);  // both are fresh now: a is current, b's failure is current
+    CHECK(transpiler.takePublished().empty());
+
+    f.write("assets/scripts/a.ts", "export const x = 11;\n");
+    f.scan();
+    runPass(transpiler, f);
+    const std::vector<Guid> again = transpiler.takePublished();
+    REQUIRE(again.size() == 1U);
+    CHECK(again[0] == a);
+
+    f.write("assets/scripts/a.ts", "export const x = 111;\n");
+    f.scan();
+    runPass(transpiler, f);
+    transpiler.resetForProjectSwap();  // a publish the swap overtakes is never reported
+    CHECK(transpiler.takePublished().empty());
+}
+
+namespace {
+
+// A script whose onUpdate counts and names its entity `<tag>:<count>`; `pad` changes the file's SIZE so the scan's
+// (size, mtime) fast path never reuses a hash.
+[[nodiscard]] std::string moverSource(std::string_view tag, std::size_t pad) {
+    std::string text = "export default class Mover extends engine.Script {\n  count = 0;\n  onUpdate() {\n";
+    text += "    this.count += 1;\n    this.entity.name = \"";
+    text += tag;
+    text += ":\" + this.count;\n  }\n}\n//";
+    text.append(pad, '.');
+    text += "\n";
+    return text;
+}
+
+[[nodiscard]] std::string entityName(const engine::World& world, engine::Entity entity) {
+    return std::string(world.name(entity));
+}
+
+// Takes what the transpiler published and reloads each into `play`; the statuses, in order.
+[[nodiscard]] std::vector<sc::ScriptStatus> reloadPublished(ed::ScriptTranspiler& transpiler, ed::PlayScripts& play) {
+    std::vector<sc::ScriptStatus> statuses;
+    for (const Guid& script : transpiler.takePublished()) {
+        statuses.push_back(play.reload(script));
+    }
+    return statuses;
+}
+
+}  // namespace
+
+TEST_CASE("script_transpiler: a published script reloads into a running PlayScripts, a bad one does not (ST46)") {
+    const ConsoleCapture capture;
+    ScriptFixture f;
+    f.write("assets/scripts/mover.ts", moverSource("v1", 1U));
+    f.scan();
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+    const Guid guid = f.guidOf("scripts/mover.ts");
+    REQUIRE(transpiler.takePublished().size() == 1U);
+
+    engine::World world;
+    const engine::platform::InputState game;
+    const engine::Entity entity = world.create();
+    REQUIRE(world.add<engine::ScriptComponent>(entity, engine::ScriptComponent{guid}) != nullptr);
+    REQUIRE(world.setName(entity, "start"));
+    ed::PlayScripts play{f.root, world, game};
+    REQUIRE(play.live());
+    for (int frame = 0; frame < 3; ++frame) {
+        static_cast<void>(play.update(0.5));
+    }
+    CHECK(entityName(world, entity) == "v1:3");
+
+    // v2: published, reloaded, and the next update runs it with the state kept.
+    f.write("assets/scripts/mover.ts", moverSource("v2", 2U));
+    f.scan();
+    runPass(transpiler, f);
+    CHECK(reloadPublished(transpiler, play) == std::vector<sc::ScriptStatus>{sc::ScriptStatus::Ok});
+    static_cast<void>(play.update(0.5));
+    CHECK(entityName(world, entity) == "v2:4");
+
+    // v3 has a syntax error: nothing is published, nothing reloads, the game keeps running v2.
+    f.write("assets/scripts/mover.ts", "export default class Mover extends engine.Script {\n  onUpdate( {\n}\n");
+    f.scan();
+    runPass(transpiler, f);
+    CHECK(transpiler.takePublished().empty());
+    static_cast<void>(play.update(0.5));
+    CHECK(entityName(world, entity) == "v2:5");
+
+    // v4 builds, loads and throws from onUpdate: the reload is Ok, the instance Faulted after its first update.
+    f.write("assets/scripts/mover.ts",
+            "export default class Mover extends engine.Script {\n  onUpdate() { throw new Error(\"v4\"); }\n}\n");
+    f.scan();
+    runPass(transpiler, f);
+    CHECK(reloadPublished(transpiler, play) == std::vector<sc::ScriptStatus>{sc::ScriptStatus::Ok});
+    static_cast<void>(play.update(0.5));
+    REQUIRE(play.system() != nullptr);
+    CHECK(play.system()->stateOf(entity) == sc::ScriptEntityState::Faulted);
+
+    // v5 is good: the reload is Ok and the fault is cleared.
+    f.write("assets/scripts/mover.ts", moverSource("v5", 5U));
+    f.scan();
+    runPass(transpiler, f);
+    CHECK(reloadPublished(transpiler, play) == std::vector<sc::ScriptStatus>{sc::ScriptStatus::Ok});
+    static_cast<void>(play.update(0.5));
+    CHECK(play.system()->stateOf(entity) == sc::ScriptEntityState::Running);
+    CHECK(entityName(world, entity).starts_with("v5:"));
+    static_cast<void>(play.stop());
+    pumpUntilIdle(transpiler, f.db);
+}
+
+TEST_CASE("script_transpiler: a throw in a game's script names its .ts files under the project-root mount (ST47)") {
+    const ConsoleCapture capture;
+    ScriptFixture f;
+    f.write("assets/scripts/util.ts", THROWING_UTIL_TS);
+    f.write("assets/scripts/player.ts",
+            "import { fail } from \"./util\";\n"
+            "\n"
+            "export default class Player extends engine.Script {\n"
+            "  onUpdate() { fail(\"x\"); }\n"
+            "}\n");
+    f.scan();
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+    const Guid guid = f.guidOf("scripts/player.ts");
+
+    engine::World world;
+    const engine::platform::InputState game;
+    std::vector<engine::Entity> entities;
+    for (int i = 0; i < 2; ++i) {
+        const engine::Entity entity = world.create();
+        REQUIRE(world.add<engine::ScriptComponent>(entity, engine::ScriptComponent{guid}) != nullptr);
+        entities.push_back(entity);
+    }
+    ed::PlayScripts play{f.root, world, game};
+    REQUIRE(play.live());
+    static_cast<void>(play.update(0.1));
+
+    std::vector<ed::LogEntry> taken;
+    capture.scope.sink()->take(taken);
+    ed::LogHistory history;
+    history.appendAll(taken);
+    // Each faulted instance logs its own record: two entities, two Errors, one message.
+    CHECK(history.levelCount(engine::LogLevel::Error) == 2U);
+    CHECK(history.levelCount(engine::LogLevel::Warn) == 0U);
+    for (std::size_t at = 0; at < history.visibleCount(); ++at) {
+        const ed::LogEntry& entry = history.visibleAt(at);
+        if (entry.level != engine::LogLevel::Error) {
+            continue;
+        }
+        CHECK(entry.message == "script: res://assets/scripts/util.ts:3:37: uncaught Error: util failed: x");
+        CHECK(entry.detail.find("res://assets/scripts/util.ts") != std::string::npos);
+        CHECK(entry.detail.find("res://assets/scripts/player.ts") != std::string::npos);
+        CHECK(entry.detail.find("../../assets") == std::string::npos);
+    }
+    REQUIRE(play.system() != nullptr);
+    for (const engine::Entity entity : entities) {
+        CHECK(play.system()->stateOf(entity) == sc::ScriptEntityState::Faulted);
+    }
+
+    static_cast<void>(play.update(0.1));  // a faulted instance is not run again, and logs nothing more
+    taken.clear();
+    capture.scope.sink()->take(taken);
+    CHECK(taken.empty());
+    static_cast<void>(play.stop());
     pumpUntilIdle(transpiler, f.db);
 }

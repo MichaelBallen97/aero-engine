@@ -56,7 +56,11 @@ public:
     void service(const AssetDatabase& database, float deltaSeconds);
     // Kills the child, drops the queue and the open pass. Files a killed run staged are never published.
     void resetForProjectSwap() noexcept;
-    [[nodiscard]] std::vector<ScriptLogLine> takeLog() noexcept;    // moves the pending lines out
+    [[nodiscard]] std::vector<ScriptLogLine> takeLog() noexcept;  // moves the pending lines out
+    // The scripts published since the last take, in publish order, each reported after its provenance record (the
+    // file written last, so a reload keyed on it reads one build's JavaScript and map); a failed or refused job and a
+    // script found fresh report nothing.
+    [[nodiscard]] std::vector<Guid> takePublished() noexcept;
     [[nodiscard]] bool idle() const noexcept;                       // no queue, no child, no open pass
     [[nodiscard]] std::size_t runCount() const noexcept;            // esbuild starts ATTEMPTED, lifetime
     [[nodiscard]] const std::string& esbuildPath() const noexcept;  // "" until resolved
@@ -139,6 +143,7 @@ private:
     std::vector<FreshFailure> failedAtLatest;              // its fresh failed records, in evaluation order
 
     std::vector<ScriptLogLine> pending;
+    std::vector<Guid> publishedSinceTake;
     std::size_t runs = 0;
 };
 

@@ -1072,6 +1072,18 @@ bool EditorApp::tick() {
         if (scriptTranspiler != nullptr) {
             scriptTranspiler->service(assetDatabase, frameClock.deltaSeconds());
             drainScriptLog();
+            // task 4.7.4 (C5): every publish is taken here, every tick. While a game is playing or paused each one
+            // reloads at once (a paused game runs it at its next Step or resume); outside play it is dropped, because
+            // the next Play's new VM loads what is published.
+            const std::vector<Guid> published = scriptTranspiler->takePublished();
+            if (playScripts != nullptr) {
+                for (const Guid& script : published) {
+                    ++playScriptCounts.reloads;
+                    if (playScripts->reload(script) == script::ScriptStatus::Ok) {
+                        ++playScriptCounts.reloadsOk;
+                    }
+                }
+            }
         }
         if (assetBrowserPanel != nullptr) {
             if (assetBrowserPanel->root() != assetDatabase.root()) {
