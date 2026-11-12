@@ -605,10 +605,12 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                # task 4.7.2 — ParkedScene and the holder pin (RS)
                editor/parked_scene_test.cpp
                # task 4.7.3 — the play record and its rules (RV)
-               editor/play_recovery_test.cpp)
+               editor/play_recovery_test.cpp
+               # task 4.7.4 — PlayScripts over a project root (SX)
+               editor/play_scripts_test.cpp)
 # task 4.3.1: aero::script joins so that script_transpiler_test.cpp's ST20-ST22 evaluate the editor's own transpiled
-# output in the engine's VM. Tests sit outside the boundary rule (the aero_tests precedent); aero_editor_core itself
-# does not link it, and the editor binary does not either.
+# output in the engine's VM. Tests sit outside the boundary rule (the aero_tests precedent); aero_editor_core links
+# aero::script PRIVATE since 4.7.4, and the shell test names it too because its cases call the VM directly.
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core aero::script Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
