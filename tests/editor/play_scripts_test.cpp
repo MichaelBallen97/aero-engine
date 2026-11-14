@@ -4,9 +4,9 @@
 // no scene I/O and returns when it has none. Do NOT define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN; shell_test.cpp
 // supplies main().
 //
-// SX9 and SX10 (step 8) read and run the committed TypeScript demo project, samples/phase-4-scripting/ts, through
+// SX9, SX10 and SX11 read and run the committed TypeScript demo project, samples/phase-4-scripting/ts, through
 // AERO_PHASE4_TS_SAMPLE_DIR (a path, not a flag: a missing directory is a REQUIRE failure). SX9 only reads it in place;
-// SX10 copies it to a temporary directory first, so no case writes into the tree.
+// SX10 and SX11 copy it to a temporary directory first, so no case writes into the tree.
 #include "../../editor/src/play_scripts.hpp"
 
 #include <aero/core/guid.hpp>
@@ -562,4 +562,129 @@ TEST_CASE("play scripts: the sample's two cubes move under Play and stop cleanly
     CHECK(std::abs(moved[1] - moved[0]) > 1.0F);
     CHECK(play.stop().detached == 2);
     CHECK(log.loud() == 0);
+}
+
+TEST_CASE("play scripts: a saved SPEED reaches the sample's running cubes at once, with no jump (SX11)") {
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK_FALSE(engine::editor::sceneIoAvailable());
+        return;
+    }
+    const TempDir copy;
+    const std::string root = copy.utf8();
+    const std::filesystem::path source = std::filesystem::path{sampleRoot()};
+    std::error_code ec;
+    for (const char* const leaf : {"project.json", "tsconfig.json"}) {
+        std::filesystem::copy_file(source / leaf, copy.path() / leaf, std::filesystem::copy_options::overwrite_existing,
+                                   ec);
+        REQUIRE_FALSE(ec);
+    }
+    for (const char* const leaf : {"assets", "scenes"}) {
+        std::filesystem::copy(source / leaf, copy.path() / leaf, std::filesystem::copy_options::recursive, ec);
+        REQUIRE_FALSE(ec);
+    }
+
+    // 1. The copy's script holds the speed once, and the case rewrites it.
+    const std::string moverPath = root + "/assets/scripts/mover.ts";
+    std::string moverText = readSampleFile(moverPath);
+    constexpr std::string_view OLD_SPEED = "SPEED = 1.5";
+    constexpr std::string_view NEW_SPEED = "SPEED = 4.5";
+    const std::size_t speedAt = moverText.find(OLD_SPEED);
+    REQUIRE(speedAt != std::string::npos);
+    REQUIRE(moverText.find(OLD_SPEED, speedAt + 1) == std::string::npos);
+
+    engine::editor::AssetDatabase database;
+    engine::GuidGenerator generator{0x4311ULL};
+    static_cast<void>(database.rescan(root, root + "/assets", generator));
+    const engine::editor::AssetRecord* const record = database.findByPath("scripts/mover.ts");
+    REQUIRE(record != nullptr);
+    const Guid script = record->guid;
+
+    engine::editor::ScriptTranspilerConfig config;
+    config.esbuildPath = std::string{AERO_TEST_ESBUILD};
+    const engine::editor::ScriptProjectView view{root, "assets", engine::editor::ProjectLanguage::Ts};
+    const auto settle = [&](engine::editor::ScriptTranspiler& transpiler) {
+        transpiler.noteScan(database, view);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{20};
+        while (!transpiler.idle() && std::chrono::steady_clock::now() < deadline) {
+            transpiler.service(database, 0.0F);
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+        REQUIRE(transpiler.idle());
+    };
+    const auto publishedMover = [&](engine::editor::ScriptTranspiler& transpiler) {
+        bool found = false;
+        for (const Guid& guid : transpiler.takePublished()) {
+            found = found || guid == script;
+        }
+        return found;
+    };
+
+    engine::editor::ScriptTranspiler transpiler{config};
+    settle(transpiler);
+    REQUIRE(publishedMover(transpiler));
+
+    SampleScene scene;
+    const std::string sceneText = readSampleFile(root + "/scenes/main.scene.json");
+    REQUIRE(engine::editor::openSceneText(scene.context, scene.commands, sceneText).ok);
+    const std::vector<float> origin = scriptedX(scene.world, script);
+    REQUIRE(origin.size() == 2);
+
+    constexpr double DT = 1.0 / 60.0;
+    constexpr int BEFORE_FRAMES = 30;
+    constexpr int AFTER_FRAMES = 30;
+    constexpr double OLD_RATE = 1.5;
+    constexpr double NEW_RATE = 4.5;
+    constexpr double AMPLITUDE = 2.0;
+    constexpr double TOLERANCE = 2.0e-3;
+
+    const engine::platform::InputState game;
+    const LogCapture log;
+    {
+        PlayScripts play{root, scene.world, game};
+        REQUIRE(play.live());
+
+        // 2. Thirty frames at the old speed.
+        for (int frame = 0; frame < BEFORE_FRAMES; ++frame) {
+            static_cast<void>(play.update(DT));
+        }
+        const std::vector<float> before = scriptedX(scene.world, script);
+        REQUIRE(before.size() == 2);
+
+        // 3. Save the new speed: the publish names the mover and the reload is Ok.
+        moverText.replace(speedAt, NEW_SPEED.size(), NEW_SPEED);
+        REQUIRE(engine::editor::writeTextFileAtomic(moverPath, moverText).empty());
+        static_cast<void>(database.rescan(root, root + "/assets", generator));
+        settle(transpiler);
+        CHECK(publishedMover(transpiler));
+        CHECK(play.reload(script) == ScriptStatus::Ok);
+
+        // 4. No jump: the first frame moves no further than one frame's travel at the new speed.
+        static_cast<void>(play.update(DT));
+        const std::vector<float> first = scriptedX(scene.world, script);
+        REQUIRE(first.size() == 2);
+        const double oneFrame = AMPLITUDE * NEW_RATE * DT + TOLERANCE;
+        CHECK(std::abs(static_cast<double>(first[0] - before[0])) <= oneFrame);
+        CHECK(std::abs(static_cast<double>(first[1] - before[1])) <= oneFrame);
+
+        // 5. The new rate: the rest of the frames follow the phase the first frames reached, at the new speed.
+        for (int frame = 1; frame < AFTER_FRAMES; ++frame) {
+            static_cast<void>(play.update(DT));
+        }
+        const std::vector<float> after = scriptedX(scene.world, script);
+        REQUIRE(after.size() == 2);
+        const double phase0 = BEFORE_FRAMES * DT * OLD_RATE;
+        const double expectedPhase = phase0 + AFTER_FRAMES * DT * NEW_RATE;
+        const double oldRatePhase = phase0 + AFTER_FRAMES * DT * OLD_RATE;
+        for (std::size_t cube = 0; cube < 2; ++cube) {
+            const double expected = static_cast<double>(origin[cube]) + std::sin(expectedPhase) * AMPLITUDE;
+            const double stale = static_cast<double>(origin[cube]) + std::sin(oldRatePhase) * AMPLITUDE;
+            CHECK(std::abs(expected - stale) > 100.0 * TOLERANCE);  // the old rate would land somewhere else
+            CHECK(std::abs(static_cast<double>(after[cube]) - expected) <= TOLERANCE);
+        }
+
+        // 6. Stop is clean.
+        CHECK(play.stop().detached == 2);
+    }
+    CHECK(log.loud() == 0);
+    static_cast<void>(transpiler.takePublished());
 }

@@ -31,13 +31,15 @@ scene, choose File > Open Scene and pick it.
 
 1. Select `Main Camera` and change its Transform position in the Inspector (orbiting the viewport records no edit),
    then press Play: the change is on disk before the first frame.
-2. While the cubes move, change `speed` in `mover.ts` and save. The cubes follow the new speed from where they are,
-   with no jump, because `time` and `originX` keep their values across the reload.
+2. While the cubes move, change `SPEED` at the top of `mover.ts` and save. The cubes follow the new speed from where
+   they are, with no jump: `SPEED` is module code, which a reload replaces, while `phase` and `originX` are the
+   script's own fields, which a reload keeps. A script's own fields keep their values across a reload, so a field's
+   new initialiser shows at the next Play.
 3. Add `throw new Error("boom");` to `onUpdate` and save. The Console names `assets/scripts/mover.ts` and its line.
    Remove it and save to bring the cubes back.
 4. End the editor mid-play (kill the process) and reopen this project: it offers to recover the work.
 
 ## What the tests pin
 
-`tests/editor/play_scripts_test.cpp` (SX9, SX10) opens this project in place, checks that its scene is byte for byte
-what the editor writes, and runs it for thirty frames from a copy.
+`tests/editor/play_scripts_test.cpp` (SX9, SX10, SX11) opens this project in place, checks that its scene is byte for
+byte what the editor writes, runs it for thirty frames from a copy, and saves a new `SPEED` into that copy mid-play.
