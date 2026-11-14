@@ -9,7 +9,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <numbers>  // sqrt2_v: modernize-use-std-numbers refuses a spelled sqrt(2)
+#include <string>
+#include <string_view>
 #include <utility>  // std::move
 
 namespace engine::editor {
@@ -280,6 +283,40 @@ NewProjectFooterLayout newProjectFooterLayout(const NewProjectDialogLayout& layo
     return footer;
 }
 
+std::string playRecoverySceneLabel(std::string_view scene) {
+    const std::size_t slash = scene.rfind('/');
+    const std::string_view leaf = slash == std::string_view::npos ? scene : scene.substr(slash + 1U);
+    return leaf.empty() ? std::string(PLAY_RECOVERY_UNTITLED) : std::string(leaf);
+}
+
+PlayRecoveryDialogLayout playRecoveryDialogLayout(float workWidth, float uiScale) noexcept {
+    const ThemeDialogs& d = EDITOR_THEME.dialogs;
+    const float s = layoutScale(uiScale);
+    PlayRecoveryDialogLayout l;
+    l.width = windowWidth(d.welcomeWidth, workWidth, s);
+    l.paddingX = d.paddingX * s;
+    l.contentWidth = l.width - (2.0F * l.paddingX);
+    l.headerHeight = d.headerHeight * s;
+    l.footerHeight = d.footerHeight * s;
+    l.windowRounding = d.windowRounding * s;
+    l.controlRounding = d.controlRounding * s;
+    l.buttonHeight = d.buttonHeight * s;
+    l.buttonPadding = Vec2{d.buttonPaddingX * s, (l.buttonHeight - bodyPoints(s)) * 0.5F};
+    l.bodyTop = d.bodyTop * s;
+    l.lineGap = d.lineGap * s;
+    l.footerButtonGap = d.footerButtonGap * s;
+    return l;
+}
+
+PlayRecoveryFooterLayout playRecoveryFooterLayout(const PlayRecoveryDialogLayout& layout, float discardWidth,
+                                                  float recoverWidth) noexcept {
+    PlayRecoveryFooterLayout footer;
+    footer.recoverX = layout.width - layout.paddingX - recoverWidth;
+    footer.discardX = footer.recoverX - layout.footerButtonGap - discardWidth;
+    footer.buttonY = (layout.footerHeight - layout.buttonHeight) * 0.5F;
+    return footer;
+}
+
 RecentCardText recentCardText(std::string_view root, std::string_view home) {
     return RecentCardText{rootDisplayName(root), abbreviateHome(root, home)};
 }
@@ -389,6 +426,18 @@ void beginNewProjectRecordFrame(NewProjectRecord& record) noexcept {
     record.cancel = ItemRectRecord{};
     record.create = ItemRectRecord{};
     record.language = {};
+}
+
+void beginPlayRecoveryRecordFrame(PlayRecoveryDialogRecord& record) noexcept {
+    record.popupOpenAtEntry = false;
+    record.drawnThisFrame = false;
+    record.layout = PlayRecoveryDialogLayout{};
+    record.header.title.clear();
+    record.header.version.clear();
+    record.header.close = ItemRectRecord{};
+    record.sceneLabel.clear();
+    record.discard = ItemRectRecord{};
+    record.recover = ItemRectRecord{};
 }
 
 }  // namespace engine::editor

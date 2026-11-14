@@ -4,6 +4,7 @@
 // serialization bridge live in text_file.cpp / scene_io.cpp instead (D19/F17, F9's gate).
 #include <aero/core/log.hpp>
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/play_recovery.hpp>      // task 4.7.3: the record, the copy and the offer's decider
 #include <aero/editor/project_files.hpp>      // fix 2.5.1: isHiddenName, the hidden rule listDirectory applies
 #include <aero/editor/project_state.hpp>      // task E.4.1: the per-project state, its resolver and its
                                               // path arithmetic. ProjectSession itself arrives through
@@ -33,9 +34,11 @@ namespace engine::editor {
 // pure function's body this task makes -- and it is what buys AC-19 whole (D1).
 bool modalInputActive(const FileFlow& flow, const ProjectFlow& projectFlow) noexcept {
     return flow.dialog != DialogKind::None || flow.confirmOpen || projectFlow.form.open ||
-           flow.containmentOffer.open;  // task E.4.2 -- the THIRD modal. Omitting it is 2.5.1's
-                                        // BLOCKING-2 in a new costume: a Ctrl+S behind the modal
-                                        // launching a second native dialog on top of it (D10).
+           flow.containmentOffer.open ||    // task E.4.2 -- the THIRD modal. Omitting it is 2.5.1's
+                                            // BLOCKING-2 in a new costume: a Ctrl+S behind the modal
+                                            // launching a second native dialog on top of it (D10).
+           projectFlow.recoveryOffer.open;  // task 4.7.3 -- the FOURTH: Play and Save are refused behind it, so
+                                            // the recovery copy cannot be overwritten before it is answered.
 }
 
 bool discardsWork(FileAction action) noexcept {
@@ -505,6 +508,33 @@ void adoptScriptTypes(const ProjectSession& projectSession) {
     }
 }
 
+// task 4.7.3: the last statement of openProjectPath, after restoreLastScene, and nothing else calls it
+// (createAndOpenProject never does: a new project has no record). It ALWAYS resets the offer first, so a previous
+// project's offer never survives into this one, then raises it for exactly one combination of facts
+// (playRecoveryOffered). It reads two files and writes nothing.
+void offerPlayRecovery(ProjectContext& project) {
+    const std::string root(project.session.root());  // a NAMED LOCAL: root() is a view into the live session
+    project.flow.recoveryOffer = PlayRecoveryOffer{};
+    const PlayRecoveryRead read = readPlayRecoveryState(root);
+    if (read.corrupt) {
+        // UNCONDITIONAL, above any scene-I/O gate: restoreLastScene's D10 reason, so every configuration logs the
+        // same line and the ungated test tier can assert it.
+        AERO_LOG_WARN("editor: play record '{}' is unreadable or unsupported -- no recovery is offered",
+                      playRecoveryStatePath(root));
+    }
+    const PlayRecoveryFacts facts{.sceneIo = sceneIoAvailable(),
+                                  .found = read.state.has_value() || read.corrupt,
+                                  .corrupt = read.corrupt,
+                                  .playing = read.state.has_value() && read.state->playing,
+                                  .copyWritten = read.state.has_value() && read.state->copyWritten,
+                                  .copyExists = fileExists(playRecoveryScenePath(root))};
+    if (!playRecoveryOffered(facts) || !read.state.has_value()) {  // the second half only narrows the optional
+        return;
+    }
+    project.flow.recoveryOffer = PlayRecoveryOffer{.open = true, .projectRoot = root, .scene = read.state->scene};
+    AERO_LOG_INFO("editor: the last Play in project '{}' did not stop; a recovery copy is offered", root);
+}
+
 }  // namespace
 
 bool openProjectPath(CommandContext& context, CommandStack& commands, SceneSession& session, ProjectContext& project,
@@ -558,6 +588,7 @@ bool openProjectPath(CommandContext& context, CommandStack& commands, SceneSessi
     // With the INFO last, a restore whose candidate fails to open reads "could not open scene X"
     // followed by "opened project Y", which a reader parses as the PROJECT having failed.
     restoreLastScene(context, commands, session, project.session);
+    offerPlayRecovery(project);  // task 4.7.3: LAST -- it needs the restore done and the project adopted
     return true;
 }
 
@@ -678,6 +709,50 @@ void performAction(FileAction action, CommandContext& context, CommandStack& com
 
 namespace {
 
+// task 4.7.3: Recover. The copy is parsed first and the World is swapped only when it parsed (openSceneText's rule), so
+// every failure below leaves the World, the Selection, the root order, the history and the path as they were.
+void recoverPlayCopy(CommandContext& context, CommandStack& commands, SceneSession& session, const std::string& root,
+                     const std::string& scene) {
+    const std::string copyPath = playRecoveryScenePath(root);
+    const FileReadResult read = readTextFile(copyPath);
+    if (!read.text.has_value()) {
+        AERO_LOG_ERROR("editor: could not recover the scene from '{}' -- {}", copyPath, read.error);
+        return;
+    }
+    const SceneOpenOutcome outcome = openSceneText(context, commands, *read.text);
+    if (!outcome.ok) {
+        std::string reason = outcome.message;
+        if (outcome.line > 0) {
+            reason += " (line " + std::to_string(outcome.line) + ", column " + std::to_string(outcome.column) + ")";
+        }
+        AERO_LOG_ERROR("editor: could not recover the scene from '{}' -- {}", copyPath, reason);
+        return;
+    }
+    const std::string absolute = absoluteScenePath(root, scene);
+    if (absolute.empty()) {
+        session.clearPath();  // the document was untitled (or outside the project) when the game started
+    } else {
+        session.setPath(absolute);
+    }
+    // The recovered document holds changes no history position can undo back to: it is NOT clean, or Quit would
+    // discard it without asking.
+    commands.forgetClean();
+    AERO_LOG_INFO("editor: recovered the scene from before Play ('{}') -- unsaved", copyPath);
+    if (outcome.skipped + outcome.failed > 0) {  // openSceneFile's D21 wording
+        AERO_LOG_WARN("editor: scene '{}' loaded with {} skipped and {} failed components", copyPath, outcome.skipped,
+                      outcome.failed);
+    }
+}
+
+// task 4.7.3: both answers end the same way -- the record says no game is running, the other fields kept.
+void answerPlayRecovery(const std::string& root, const std::string& scene) {
+    const std::string reason =
+        writePlayRecoveryState(root, PlayRecoveryState{.playing = false, .scene = scene, .copyWritten = true});
+    if (!reason.empty()) {
+        AERO_LOG_WARN("editor: could not write the play record '{}' -- {}", playRecoveryStatePath(root), reason);
+    }
+}
+
 // task E.6.4 (D11/D12): step 0e's body. Inputs that moved since the last answer make the answer -- and a failed
 // Create's message -- describe a pair the form no longer holds, so the message is dropped; unless a Create ran in
 // THIS call, when the message is about exactly these inputs (the AC-12 case). A Create that ran forces a re-probe:
@@ -777,6 +852,20 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
         project.flow.clearRecentsRequested = false;
         project.recents.paths.clear();
         project.flow.recentsDirty = true;
+    }
+    // 0f. task 4.7.3: the recovery offer's two answers, drained HERE for 0a's reason -- step 2's modalInputActive
+    //     refusal reads `recoveryOffer.open`, so a later drain would let the modal swallow the request it answers.
+    //     The offer closes FIRST whatever happens next, and Discard wins a frame carrying both: it changes nothing
+    //     but the record. An answer for a project that is no longer the open one is dropped.
+    if (project.flow.recoveryOffer.recoverRequested || project.flow.recoveryOffer.discardRequested) {
+        const PlayRecoveryOffer offer = std::exchange(project.flow.recoveryOffer, PlayRecoveryOffer{});
+        const std::string root(project.session.root());
+        if (!root.empty() && offer.projectRoot == root) {
+            if (!offer.discardRequested) {
+                recoverPlayCopy(context, commands, session, root, offer.scene);
+            }
+            answerPlayRecovery(root, offer.scene);
+        }
     }
 
     // 1. Resolve the modal FIRST -- before the new request, so one call carrying both a modal answer

@@ -71,6 +71,8 @@ _nd_seed("editor/src/project_state.cpp"  "${_nd_clean_body}")
 _nd_seed("editor/src/script_transpiler.cpp" "${_nd_clean_body}")
 # task 4.5.2: the NINTH Check-A file, for the same reason.
 _nd_seed("editor/src/cpp_project_template.cpp" "${_nd_clean_body}")
+# task 4.7.3: the TENTH Check-A file, for the same reason.
+_nd_seed("editor/src/play_recovery.cpp" "${_nd_clean_body}")
 # task 3.1.3 (D13): Check B's own PERMITTED_DELETERS entries, plus a THIRD, ordinary file that must
 # stay clean throughout -- the hole Check B exists to close.
 _nd_seed("editor/src/text_file.cpp"          "${_nd_clean_body}")
@@ -267,5 +269,14 @@ _nd_run("stage 20 (copy, cpp_project_template.cpp)" 1 "${BASH}" "${SCRIPT}")
 _nd_expect_substr("stage 20" "${_nd_out}" "editor/src/cpp_project_template.cpp:1" TRUE)
 _nd_seed("editor/src/cpp_project_template.cpp" "${_nd_clean_body}")
 _nd_run("stage 20 (cleaned)" 0 "${BASH}" "${SCRIPT}")
+
+# --- Stage 21 (task 4.7.3): std::filesystem::copy seeded in play_recovery.cpp -> exit 1. The tenth Check-A
+# file's own proof, for Stage 13's reason: `::copy` is in Check A's FORBIDDEN_RE and not in Check B's
+# DELETE_RE, so only the FORBIDDEN_FILES entry can fail this stage. ----------------------------------------
+_nd_seed("editor/src/play_recovery.cpp" "void bad() { std::error_code ec; std::filesystem::copy(\"x\", \"y\", ec); }\n")
+_nd_run("stage 21 (copy, play_recovery.cpp)" 1 "${BASH}" "${SCRIPT}")
+_nd_expect_substr("stage 21" "${_nd_out}" "editor/src/play_recovery.cpp:1" TRUE)
+_nd_seed("editor/src/play_recovery.cpp" "${_nd_clean_body}")
+_nd_run("stage 21 (cleaned)" 0 "${BASH}" "${SCRIPT}")
 
 message(STATUS "project-no-delete.no_delete_e2e: OK")

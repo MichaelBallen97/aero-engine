@@ -139,6 +139,8 @@ struct FileMenuContext {
     ProjectUiRecord* projectUiRecord = nullptr;
     NewProjectAnswer newProjectAnswer = NewProjectAnswer::None;
     bool newProjectInputApplied = false;
+    // task 4.7.3: the GPU tier's answer to the recovery offer, resolved inside the modal by its own predicates.
+    PlayRecoveryAnswer playRecoveryAnswer = PlayRecoveryAnswer::None;
 };
 
 // Draws the menu bar, the full-viewport dockspace, and every visible panel (Begin/End around

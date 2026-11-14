@@ -15,4 +15,8 @@ void drawWelcomeWindow(FileMenuContext& fileMenu);
 // as the unsaved-changes modal.
 void drawNewProjectModal(FileMenuContext& fileMenu);
 
+// task 4.7.3: the recovery offer, drawn while `fileMenu.project.flow.recoveryOffer.open`. Same slot and same
+// first-contact frame as the New Project modal; records one answer and closes its own popup.
+void drawPlayRecoveryModal(FileMenuContext& fileMenu);
+
 }  // namespace engine::editor

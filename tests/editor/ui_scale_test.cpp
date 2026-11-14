@@ -386,8 +386,9 @@ TEST_CASE(
         // task E.6.3: viewportHudLayout, viewAxisCircleRadius -- and, since the code-review round, viewAxisCircleRect,
         // the circle's box the HUD's keep test and the press claim share.
         {"viewport_hud.hpp", "PPP"},
-        // task E.6.4: aeroMarkPoints, dialogHeaderLayout, newProjectDialogLayout, welcomeLayout.
-        {"project_ui_view.hpp", "PPPP"},
+        // task E.6.4: aeroMarkPoints, dialogHeaderLayout, newProjectDialogLayout, welcomeLayout; task 4.7.3 adds
+        // playRecoveryDialogLayout.
+        {"project_ui_view.hpp", "PPPPP"},
     };
     CHECK(found.size() == expected.size());
     for (const auto& [file, kinds] : expected) {

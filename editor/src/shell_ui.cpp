@@ -754,6 +754,7 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
                                           // returned, EndMainMenuBar has run, the ID stack is clean and
                                           // OpenPopup is legal here (2.5.1's F13)
     drawSceneContainmentModal(fileMenu);  // task E.4.2 -- the THIRD modal, same slot, same rules (D11)
+    drawPlayRecoveryModal(fileMenu);      // task 4.7.3 -- the FOURTH, before the drain that answers it
     {
         // applyFileRequests runs BEFORE applyHistoryRequests, on purpose (plan A32/E22): if one frame
         // carries both a scene swap and an undo request, the undo must be evaluated against the stack

@@ -182,6 +182,8 @@ add_library(aero_editor_core STATIC
     src/toolbar_model.cpp        # task E.6.2 -- the toolbar's tables, snap field, undo slot and layout; PURE
     src/play_session.cpp         # task 4.7.1 -- the play mode spine, the game clock and the game's input feed; PURE
     src/parked_scene.cpp         # task 4.7.2 -- the scene parked while a game plays; PURE
+    src/play_recovery.cpp        # task 4.7.3 -- Library/play-recovery.json and its scene copy; never logs
+    src/play_scripts.cpp         # task 4.7.4 -- one VM, VFS and ScriptSystem per Play; the ONLY script-typed TU
     src/breadcrumb.cpp           # task E.6.2 -- the menu bar's breadcrumb and its elision; PURE
     src/status_bar.cpp           # task E.6.2 -- the watcher's classification, root, count, readout, layout; PURE
     src/shell_chrome_ui.cpp      # task E.6.2 -- the toolbar, status bar and breadcrumb: the chrome's ONE ImGui TU
@@ -302,9 +304,15 @@ target_link_libraries(aero_editor_core
     # token "assimp" immediately followed by a forward slash in a comment anywhere under editor/,
     # tests/, engine/, runtime/ or tools/ -- AC-11's grep scans those roots and a prose mention would
     # turn it red for a reason that is not a violation.
+    # aero::script (task 4.7.4) is PRIVATE because only editor/src/play_scripts.cpp names a script type and no public
+    # editor header includes one. On a STATIC library it propagates as $<LINK_ONLY:...>, so the archive (and
+    # quickjs-ng's, PRIVATE behind it) reaches aero_editor and every test link line while engine/script/include
+    # reaches no consumer's compile line. Not gated: aero_script exists in every configuration (the reflect tools
+    # only gate its component bindings), and no boundary probe links aero::editor_core.
     PRIVATE aero::profiling imgui::imgui imguizmo::imguizmo SDL3::SDL3 EnTT::EnTT aero::scene_render
             aero::platform_internal aero::rhi_internal fastgltf::fastgltf aero_ufbx
             tinyobjloader::tinyobjloader assimp::assimp
+            aero::script
 )
 
 # task 2.6.1 (D14): the ONLY consumer is editor_app.cpp, and `engineVersion` is INFORMATIONAL in v0

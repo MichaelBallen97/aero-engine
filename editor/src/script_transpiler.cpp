@@ -86,6 +86,8 @@ std::vector<ScriptLogLine> ScriptTranspiler::takeLog() noexcept {
     return lines;
 }
 
+std::vector<Guid> ScriptTranspiler::takePublished() noexcept { return std::exchange(publishedSinceTake, {}); }
+
 void ScriptTranspiler::resetForProjectSwap() noexcept {
     process = ToolProcess{};
     queue.clear();
@@ -98,6 +100,7 @@ void ScriptTranspiler::resetForProjectSwap() noexcept {
     failedAtLatest.clear();
     view = ScriptProjectView{};
     assetsPrefix.clear();
+    publishedSinceTake.clear();
 }
 
 std::string ScriptTranspiler::stagingDirectory() const {
@@ -605,6 +608,7 @@ void ScriptTranspiler::publish(const AssetDatabase& database, const ScriptJob& j
                                                     job.projectRelative, log.firstLine, logPath));
         }
     }
+    publishedSinceTake.push_back(job.guid);
     setOutcome(job.guid, ScriptOutcome::Transpiled);
 }
 

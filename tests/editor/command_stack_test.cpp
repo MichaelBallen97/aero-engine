@@ -858,3 +858,51 @@ TEST_CASE("command_stack: truncation forward of the clean position keeps it (C21
     CHECK(stack.appliedCount() == 1);
     CHECK(stack.isClean());
 }
+
+// RV9 (task 4.7.3): forgetClean() makes the document dirty with no history behind it -- a recovered scene.
+TEST_CASE("command_stack: forgetClean is dirty with no history, survives moves and never merges (RV9)") {
+    engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
+    CommandLog logA;
+    CommandLog logB;
+    CommandLog logC;
+    CommandStack stack;
+
+    stack.clear();
+    stack.forgetClean();
+    CHECK_FALSE(stack.isClean());
+    CHECK_FALSE(stack.canUndo());
+    CHECK_FALSE(stack.canRedo());
+    CHECK(stack.count() == 0);
+
+    // A push keeps it dirty, and undoing that push does not return to a clean state.
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logA, "A")));
+    CHECK_FALSE(stack.isClean());
+    REQUIRE(stack.undo(ctx));
+    CHECK_FALSE(stack.isClean());
+
+    stack.setClean();
+    CHECK(stack.isClean());
+
+    // The hand-written moves carry the dirty state.
+    stack.forgetClean();
+    CommandStack movedTo(std::move(stack));
+    CHECK_FALSE(movedTo.isClean());
+    CommandStack assigned;
+    CHECK(assigned.isClean());
+    assigned = std::move(movedTo);
+    CHECK_FALSE(assigned.isClean());
+
+    // The merge chain is closed: a push after forgetClean never merges into an earlier command.
+    CommandStack chain;
+    auto first = std::make_unique<FakeCommand>(logB, "B");
+    first->mergeResult = true;  // would swallow the next push if the chain were still open
+    REQUIRE(chain.push(ctx, std::move(first)));
+    chain.forgetClean();
+    REQUIRE(chain.push(ctx, std::make_unique<FakeCommand>(logC, "C")));
+    CHECK(chain.count() == 2);
+    CHECK(logB.mergeCalls == 0);
+    CHECK_FALSE(chain.isClean());
+}

@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "name": "Main Camera",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 1,
+            "z": 6
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        },
+        "engine::Camera": {
+          "fovYRadians": 1.0471976,
+          "nearPlane": 0.1,
+          "farPlane": 100
+        }
+      }
+    },
+    {
+      "id": 2,
+      "name": "Sun",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": -0.42261827,
+            "y": 0,
+            "z": 0,
+            "w": 0.90630776
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        },
+        "engine::DirectionalLight": {
+          "color": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "intensity": 3,
+          "castsShadows": true,
+          "shadowBias": 0.0015,
+          "shadowNormalBias": 0.02,
+          "shadowDistance": 50
+        }
+      }
+    },
+    {
+      "id": 3,
+      "name": "Cube A",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": -1.5,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        },
+        "engine::MeshRenderer": {
+          "primitive": 0,
+          "color": {
+            "x": 0.9,
+            "y": 0.25,
+            "z": 0.2
+          },
+          "mesh": "00000000000000000000000000000000",
+          "meshIndex": 0,
+          "material": "00000000000000000000000000000000"
+        },
+        "engine::ScriptComponent": {
+          "script": "0364eb133a9bb87c48e6ba1b38862722"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "name": "Cube B",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 1.5,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        },
+        "engine::MeshRenderer": {
+          "primitive": 0,
+          "color": {
+            "x": 0.2,
+            "y": 0.45,
+            "z": 0.9
+          },
+          "mesh": "00000000000000000000000000000000",
+          "meshIndex": 0,
+          "material": "00000000000000000000000000000000"
+        },
+        "engine::ScriptComponent": {
+          "script": "0364eb133a9bb87c48e6ba1b38862722"
+        }
+      }
+    }
+  ]
+}

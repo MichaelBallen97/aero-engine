@@ -157,6 +157,10 @@ public:
     // World its commands were recorded against. 2.5.1's New/Open Scene must clear() this stack in the
     // SAME operation that replaces that World.
     void setClean() noexcept;
+    // The document has unsaved changes that no history position can undo back to -- a recovered document
+    // (task 4.7.3). Makes the clean state UNREACHABLE (the same nullopt a capacity trim reaches) and closes
+    // the merge chain, so isClean() is false until setClean() or clear(). Nothing else changes.
+    void forgetClean() noexcept;
     [[nodiscard]] bool isClean() const noexcept;
 
 private:

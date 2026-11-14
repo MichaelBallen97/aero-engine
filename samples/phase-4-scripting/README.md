@@ -18,6 +18,14 @@ against the engine's public API — committed in this folder.
 The C++ half is read through the gate artifact line: the C++ mini-game is built the way a C++ project from the C++ project template is
 (`find_package` and `aero_add_game`, against an installed prefix) and runs as its own program. Play in the editor runs the TypeScript half.
 
+## Layout
+
+```
+phase-4-scripting/
+├── ts/    the TypeScript half: an Aero project of two scripted cubes (open it in the editor)
+└── cpp/   the C++ half: the mini-game, built against the installed engine
+```
+
 ## How the demo is built up
 
 Phase 4 is cut into four stories, in the `## Stories` section of `docs/tasks/phase-4.md`. Each story makes more of

@@ -201,6 +201,44 @@ struct NewProjectFooterLayout {  // x window-relative, y footer-relative
 [[nodiscard]] NewProjectFooterLayout newProjectFooterLayout(const NewProjectDialogLayout& layout, float cancelWidth,
                                                             float createWidth) noexcept;
 
+// ---- the recovery offer's dialog (task 4.7.3): the New Project dialog's frame, a Welcome-wide window --------------
+inline constexpr std::string_view PLAY_RECOVERY_TITLE = "Recover scene";
+inline constexpr std::string_view PLAY_RECOVERY_HEADLINE = "The editor stopped while a game was playing.";
+inline constexpr std::string_view PLAY_RECOVERY_BODY =
+    "Recover the scene as it was before Play, or discard the copy and keep the scene that opened.";
+inline constexpr std::string_view PLAY_RECOVERY_DISCARD_LABEL = "Discard";
+inline constexpr std::string_view PLAY_RECOVERY_RECOVER_LABEL = "Recover";
+inline constexpr std::string_view PLAY_RECOVERY_UNTITLED = "Untitled";
+// The scene's leaf (the text after the last '/'), or PLAY_RECOVERY_UNTITLED for an empty path.
+[[nodiscard]] std::string playRecoverySceneLabel(std::string_view scene);
+
+struct PlayRecoveryDialogLayout {  // points; x window-relative
+    float width = 0.0F;            // welcomeWidth, clamped like the other dialogs'
+    float paddingX = 0.0F;
+    float contentWidth = 0.0F;  // width - 2 x paddingX
+    float headerHeight = 0.0F;
+    float footerHeight = 0.0F;
+    float windowRounding = 0.0F;
+    float controlRounding = 0.0F;
+    Vec2 buttonPadding{};  // (buttonPaddingX, (buttonHeight - body points) / 2)
+    float buttonHeight = 0.0F;
+    float bodyTop = 0.0F;
+    float lineGap = 0.0F;
+    float footerButtonGap = 0.0F;
+    friend constexpr bool operator==(const PlayRecoveryDialogLayout&, const PlayRecoveryDialogLayout&) = default;
+};
+[[nodiscard]] PlayRecoveryDialogLayout playRecoveryDialogLayout(float workWidth, float uiScale) noexcept;
+
+struct PlayRecoveryFooterLayout {  // x window-relative, y footer-relative
+    float discardX = 0.0F;
+    float recoverX = 0.0F;  // its right edge is width - paddingX
+    float buttonY = 0.0F;
+    friend constexpr bool operator==(const PlayRecoveryFooterLayout&, const PlayRecoveryFooterLayout&) = default;
+};
+// The two widths are the buttons' own (ImGui::Button's label width + 2 x buttonPadding.x, measured by the draw).
+[[nodiscard]] PlayRecoveryFooterLayout playRecoveryFooterLayout(const PlayRecoveryDialogLayout& layout,
+                                                                float discardWidth, float recoverWidth) noexcept;
+
 // ---- the Welcome window (D6, D9, D34) ---------------------------------------------------------------------------
 // The blurb's height wrapped at `wrapWidth`, as the draw measures it under the Body face (project_ui.cpp's
 // bodyWrappedHeight); tier 0 passes arithmetic. welcomeLayout asks it at its OWN content width (D34).
@@ -307,14 +345,26 @@ struct NewProjectRecord {
     std::array<ItemRectRecord, 2>
         language{};  // NEW_PROJECT_LANGUAGE_CARDS order; drawnActive = drawn selected (NewProjectForm::language)
 };
+struct PlayRecoveryDialogRecord {
+    std::uint64_t framesDrawn = 0;  // + 1 per frame BeginPopupModal returned true
+    bool popupOpenAtEntry = false;  // IsPopupOpen(the modal's id), read FIRST on every call: false once answered
+    bool drawnThisFrame = false;
+    PlayRecoveryDialogLayout layout{};
+    DialogHeaderRecord header;  // title only: no version, no close box
+    std::string sceneLabel;     // as drawn
+    ItemRectRecord discard{};
+    ItemRectRecord recover{};
+};
 struct ProjectUiRecord {
     WelcomeRecord welcome;
     NewProjectRecord newProject;
+    PlayRecoveryDialogRecord recovery;
 };
 // Open one frame of a window's record: the monotonic framesDrawn kept, every per-frame field reset (capacity kept).
 // Called as the window function's FIRST statement, before any early return.
 void beginWelcomeRecordFrame(WelcomeRecord& record) noexcept;
 void beginNewProjectRecordFrame(NewProjectRecord& record) noexcept;
+void beginPlayRecoveryRecordFrame(PlayRecoveryDialogRecord& record) noexcept;
 
 // ---- the GPU tier's click-equivalents (D27) ----------------------------------------------------------------------
 // The pending input lands in form.name / form.location before the draw; the dialog then reloads the ACTIVE Name
@@ -324,5 +374,7 @@ struct NewProjectInput {  // exactly what the Name widget and a ProjectLocation 
     std::string location;
 };
 enum class NewProjectAnswer : std::uint8_t { None = 0, Create, Dismiss };
+// The GPU tier's answer to the recovery offer (task 4.7.3): the same predicates as the buttons and keys.
+enum class PlayRecoveryAnswer : std::uint8_t { None = 0, Recover, Discard };
 
 }  // namespace engine::editor

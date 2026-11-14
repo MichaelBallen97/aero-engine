@@ -63,7 +63,7 @@ public:
     [[nodiscard]] std::uint64_t frame() const noexcept { return frameValue; }
     [[nodiscard]] bool stepQueued() const noexcept { return stepQueuedValue; }
     [[nodiscard]] bool gameFocused() const noexcept { return focusValue; }
-    // The game's state: made empty at Play, dropped at Stop. 4.7.4 binds it with Vm::bindInput.
+    // The game's state: made empty at Play, dropped at Stop. The play scripts bind it with Vm::bindInput (task 4.7.4).
     [[nodiscard]] const platform::InputState& input() const noexcept { return game; }
 
     // The ONE writer of the mode.

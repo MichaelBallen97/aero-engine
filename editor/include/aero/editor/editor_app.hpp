@@ -50,6 +50,7 @@
                                                  // value in the one-shots below. PUBLIC and PURE.
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/parked_scene.hpp>        // task 4.7.2 -- a VALUE member (parkedScene); PURE
+#include <aero/editor/play_recovery.hpp>       // task 4.7.3 -- a VALUE member (playRecord); PURE
 #include <aero/editor/play_session.hpp>        // task 4.7.1 -- a VALUE member (playSessionValue); PURE
 #include <aero/editor/scene_asset_ledger.hpp>  // task 3.1.5 -- a VALUE member (sceneAssetLedger) needs
                                                // the definition, the asset_database.hpp precedent. It
@@ -113,6 +114,8 @@ class ThumbnailService;    // task E.3.3: src-private (editor/src/thumbnail_serv
                            // editor_app.hpp is a PUBLIC header that exposes engine + std types only.
 class ScriptTranspiler;    // task 4.3.1: src-private (editor/src/script_transpiler.hpp), held through a
                            // unique_ptr, the thumbnails posture.
+class PlayScripts;         // task 4.7.4: src-private (editor/src/play_scripts.hpp), held through a unique_ptr,
+                           // the ScriptTranspiler posture: no public editor header names a script type.
 class SceneAssetLoader;    // task 3.1.5: src-private (editor/src/scene_asset_loader.hpp). Held through
                            // a unique_ptr, which is legal with an INCOMPLETE type here because
                            // ~EditorApp is defined OUT OF LINE in editor_app.cpp, where the definition
@@ -216,6 +219,16 @@ inline constexpr std::uint32_t MINIMIZED_SLEEP_MS = 4;
 // The finiteness test comes FIRST (a NaN fails both range comparisons, so the range test alone would pass it), and a
 // refused value falls back to the shipping layout rather than clamping, so a typo can never build a degenerate dock.
 [[nodiscard]] float resolveBottomDockFraction(float requested) noexcept;
+
+// task 4.7.4: what the GPU tier reads of the play scripts; all zero before the first Play.
+struct PlayScriptStats {
+    bool live = false;               // a PlayScripts exists (playing or paused) and its system is bound
+    std::size_t running = 0;         // instances Running after the last update
+    std::uint64_t updates = 0;       // update calls this Play
+    std::uint64_t reloads = 0;       // reload calls this Play (one per reported GUID)
+    std::uint64_t reloadsOk = 0;     // of them, answered Ok
+    std::size_t detachedAtStop = 0;  // the last Stop's report.detached (kept after Stop)
+};
 
 class EditorApp {
 public:
@@ -839,6 +852,14 @@ public:
     // D4: how many requests the scene lock refused while a game played -- an undo, a redo, a create, a drop, and any
     // file action but Quit. "Refused" and "never arrived" differ by this count.
     [[nodiscard]] std::size_t playLockRefusalCount() const noexcept { return playLockRefusals; }
+    // task 4.7.3 (D6): how many Plays the autosave refused -- a dirty scene whose recovery copy or play record could
+    // not be written. "Refused" and "never pressed" differ by this count.
+    [[nodiscard]] std::size_t playAutosaveRefusalCount() const noexcept { return playAutosaveRefusals; }
+    // task 4.7.3: how many Plays were refused while a modal was up -- the same-tick path the toolbar cannot see.
+    // Refused before the autosave, so one writes nothing and counts nowhere in playAutosaveRefusalCount().
+    [[nodiscard]] std::size_t playModalRefusalCount() const noexcept { return playModalRefusals; }
+    // task 4.7.4: what the GPU tier reads of the play scripts (PlayScriptStats).
+    [[nodiscard]] PlayScriptStats playScriptStats() const noexcept;
     // D4/F10: whether a file or project request still holds a target path. A request the scene lock abandoned takes its
     // path with it, so none is left for a later action to pick up.
     [[nodiscard]] bool fileRequestPathPending() const noexcept {
@@ -859,6 +880,10 @@ public:
     // while the dialog would let Create be clicked), so it closes the popup the way a click does. No tier can click.
     void requestNewProjectInput(std::string name, std::string location);
     void requestNewProjectAnswer(NewProjectAnswer answer) noexcept { pendingNewProjectAnswer = answer; }
+    // task 4.7.3: the recovery offer's modal is up, and its click-equivalent: applied on the NEXT tick through the
+    // modal's own predicates (Recover has none, Discard wins), dropped with that tick, never deferred.
+    [[nodiscard]] bool playRecoveryOfferOpen() const noexcept { return projectFlow.recoveryOffer.open; }
+    void requestPlayRecoveryAnswer(PlayRecoveryAnswer answer) noexcept { pendingPlayRecoveryAnswer = answer; }
     // task 4.6.1: a language card's click. Written to the form's language only while the form is open, on the next
     // tick, and dropped otherwise; the form's language starts at TypeScript every time the dialog opens.
     void requestNewProjectLanguage(ProjectLanguage language) noexcept;
@@ -944,6 +969,11 @@ private:
     // task 4.7.2: the ONE Stop path's body -- every Stop (the toolbar, a chord, a request, a Quit) reaches it through
     // applyPlayControl.
     void restoreAfterPlay();
+    // task 4.7.3: Play from Edit writes the recovery copy and the play record BEFORE the session moves. True: Play may
+    // start; false: one ERROR was logged, the refusal counted, and the mode stays Edit with nothing parked.
+    [[nodiscard]] bool autosaveBeforePlay();
+    // task 4.7.3: every Stop rewrites the record with `playing: false`, whether or not Play's own write succeeded.
+    void finishPlayRecord();
     void applyViewportDrop(const ViewportAssetDrop& drop);
     void applySlotDrop(const MaterialSlotTextureDrop& drop);
     // The import -> plan -> command sequence. `placement` is the ROOT entity's local Transform, so the
@@ -1179,6 +1209,14 @@ private:
     PlaySession playSessionValue;
     // task 4.7.2 (D1): the scene from before Play, parked untouched while the game runs its copy in sceneWorld.
     ParkedScene parkedScene;  // [stop:clear]
+    // task 4.7.4: made at every Started, torn down at every Stopped and by ~EditorApp. It borrows sceneWorld and
+    // playSessionValue's input, so an EditorApp is never moved while a game is active.
+    std::unique_ptr<PlayScripts> playScripts;
+    PlayScriptStats playScriptCounts;  // playScriptStats()'s base, named apart from it
+    // task 4.7.3: what this Play's record says; finishPlayRecord rewrites it with `playing: false`. No handle.
+    PlayRecoveryState playRecord;
+    std::size_t playAutosaveRefusals = 0;  // playAutosaveRefusalCount()'s value
+    std::size_t playModalRefusals = 0;     // playModalRefusalCount()'s value
     std::optional<PlayControl> pendingPlayControl;
     std::vector<platform::Event> pendingGameEvents;
     std::size_t playLockRefusals = 0;                       // playLockRefusalCount()'s value
@@ -1186,7 +1224,8 @@ private:
     ProjectUiRecord projectUiRecordValue;                   // task E.6.4: projectUiRecord()'s value
     std::optional<NewProjectInput> pendingNewProjectInput;  // task E.6.4 (D27): applied before a draw
     NewProjectAnswer pendingNewProjectAnswer = NewProjectAnswer::None;  // copied into FileMenuContext, then cleared
-    std::optional<ProjectLanguage> pendingNewProjectLanguage;           // task 4.6.1: applied before a draw
+    PlayRecoveryAnswer pendingPlayRecoveryAnswer = PlayRecoveryAnswer::None;  // task 4.7.3: the same, for the offer
+    std::optional<ProjectLanguage> pendingNewProjectLanguage;                 // task 4.6.1: applied before a draw
     // DISTINCT NAMES from their accessors, the databasePtr/database() rule -- matching
     // ContextRouter::latches/latchCount() and sceneAssetDirectives/sceneAssetDirectiveCount() above.
     std::size_t focusRouteApplies = 0;

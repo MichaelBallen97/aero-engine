@@ -55,6 +55,7 @@
 #include "inspector_panel.hpp"
 #include "material_panel.hpp"  // task 3.4.2 -- MaterialPanel's definition, the ImportDetailsPanel
                                // precedent one panel over
+#include "play_scripts.hpp"    // task 4.7.4 -- PlayScripts' definition, for the same reason
 #include "project_settings_panel.hpp"
 #include "scene_asset_loader.hpp"  // task 3.1.5 -- the loader's definition, so the unique_ptr member
                                    // below can be created and destroyed in this TU
@@ -327,6 +328,13 @@ EditorApp::~EditorApp() {
     // `sceneAssetLoader` is the LIVE-APP signal: a defaulted move leaves the source's unique_ptr null,
     // exactly as it leaves dialogChannel's shared_ptr empty, so a moved-from app -- whose panel
     // pointers dangle -- takes no branch here.
+    //
+    // task 4.7.4: a game still running is torn down first, while the World and the panels live; a destroyed app is not
+    // a Stop, so the play record keeps saying a game was playing. A moved-from app holds null and takes no branch.
+    if (playScripts != nullptr) {
+        static_cast<void>(playScripts->stop());
+        playScripts.reset();
+    }
     if (sceneAssetLoader) {
         releaseSceneAssets();
     }
@@ -609,15 +617,90 @@ void EditorApp::persistProjectState() {
     projectStateScene = scene;
 }
 
+bool EditorApp::autosaveBeforePlay() {
+    // NAMED LOCALS, FIRST: ProjectSession::root() and SceneSession::path() return views into live members.
+    const std::string root(project.root());
+    if (root.empty()) {
+        return true;  // Play needs an open project, so this is only a guard
+    }
+    const PlayAutosavePlan plan = planPlayAutosave(!commandStack.isClean(), sceneIoAvailable());
+    if (plan.warnNoSceneIo) {
+        AERO_LOG_WARN("editor: this build has no scene I/O, so Play writes no recovery copy");
+    }
+    if (plan.writeCopy) {
+        const std::optional<std::string> text = sceneToText(sceneWorld);
+        const std::string reason =
+            text.has_value() ? writePlayRecoveryCopy(root, *text) : "the scene did not serialize";
+        if (!reason.empty()) {
+            AERO_LOG_ERROR("editor: Play refused: could not write the recovery copy '{}' -- {}",
+                           playRecoveryScenePath(root), reason);
+            ++playAutosaveRefusals;
+            return false;
+        }
+    }
+    playRecord = PlayRecoveryState{
+        .playing = true, .scene = projectRelativeScenePath(root, session.path()), .copyWritten = plan.writeCopy};
+    const std::string reason = writePlayRecoveryState(root, playRecord);
+    if (!reason.empty()) {
+        if (plan.refuseOnFailure) {
+            AERO_LOG_ERROR("editor: Play refused: could not write the play record '{}' -- {}",
+                           playRecoveryStatePath(root), reason);
+            ++playAutosaveRefusals;
+            return false;
+        }
+        AERO_LOG_WARN("editor: could not write the play record '{}' -- {}; Play starts without it",
+                      playRecoveryStatePath(root), reason);
+    }
+    return true;
+}
+
+void EditorApp::finishPlayRecord() {
+    const std::string root(project.root());
+    if (root.empty()) {
+        return;
+    }
+    playRecord.playing = false;
+    const std::string reason = writePlayRecoveryState(root, playRecord);
+    if (!reason.empty()) {
+        AERO_LOG_WARN("editor: could not write the play record '{}' -- {}", playRecoveryStatePath(root), reason);
+    }
+}
+
+PlayScriptStats EditorApp::playScriptStats() const noexcept {
+    PlayScriptStats stats = playScriptCounts;
+    stats.live = playScripts != nullptr && playScripts->live();
+    return stats;
+}
+
 void EditorApp::applyPlayControl(PlayControl control) {
+    const bool startsPlay =
+        playSessionValue.mode() == PlayMode::Edit && nextPlayMode(PlayMode::Edit, control) == PlayMode::Playing;
+    // DEFENCE IN DEPTH, applyCreate's posture: the toolbar already disables Play behind a modal, and this refuses the
+    // same-tick path it cannot see -- applyFileRequests opens a project AFTER the toolbar read its enabled flag, so
+    // the recovery offer can be raised in the tick that accepted Play. BEFORE the autosave, so a refused Play writes
+    // no copy and no record (it would overwrite the opened project's crashed one) and parks nothing. COUNTED, so
+    // "refused" and "never arrived" differ.
+    if (startsPlay && modalInputActive(fileFlow, projectFlow)) {
+        ++playModalRefusals;
+        return;
+    }
+    // task 4.7.3: Play from Edit writes the recovery copy and the play record BEFORE the session moves, so a refused
+    // autosave leaves the mode in Edit with nothing parked (D6). Only a control that starts play reaches it.
+    if (startsPlay && !autosaveBeforePlay()) {
+        return;
+    }
     const PlayTransition transition = playSessionValue.apply(control);
     switch (transition) {  // NO default:
         case PlayTransition::Started:
-            // The order at Play (task 4.7.2): 4.7.3's autosave, then this park, then 4.7.4 binds its ScriptSystem to
-            // the copy and runs onInit. The game runs a copy with every handle identical; the scene from before Play
-            // waits parked, untouched, until Stop. After apply, because only apply knows a transition happened, and
-            // before any game frame, which the next tick's advance runs.
+            // The order at Play (task 4.7.2): the autosave ran above, then this park, then the scripts bind to the
+            // copy. The game runs a copy with every handle identical; the scene from before Play waits parked,
+            // untouched, until Stop. After apply, because only apply knows a transition happened, and before any
+            // game frame, which the next tick's advance runs.
             parkedScene.park(sceneWorld, rootOrder);
+            // task 4.7.4: a new VM per Play over the project root, bound to the copy the park left in sceneWorld and
+            // to the game's input. Nothing runs here: the next tick's game frame runs every onInit.
+            playScriptCounts = PlayScriptStats{.detachedAtStop = playScriptCounts.detachedAtStop};
+            playScripts = std::make_unique<PlayScripts>(project.root(), sceneWorld, playSessionValue.input());
             // The one focus slot hands the Viewport the keyboard on the next tick (D5).
             requestedPanelFocus = VIEWPORT_ID;
             if (ctx != nullptr) {
@@ -625,8 +708,15 @@ void EditorApp::applyPlayControl(PlayControl control) {
             }
             break;
         case PlayTransition::Stopped:
-            // The order at Stop (task 4.7.2): 4.7.4's onDestroy runs and its ScriptSystem is destroyed HERE, before
-            // the restore, so no VM holds an entity of the copy across the move.
+            // The order at Stop (task 4.7.2): onDestroy runs on the copy and the system, the input binding, the VM and
+            // the VFS go HERE (task 4.7.4), before the restore, so no VM holds an entity of the copy across the move.
+            // The record is finished before the restore too (task 4.7.3), so a crash inside it still finds a document
+            // the next open need not offer.
+            if (playScripts != nullptr) {
+                playScriptCounts.detachedAtStop = playScripts->stop().detached;
+                playScripts.reset();
+            }
+            finishPlayRecord();
             restoreAfterPlay();
             break;
         case PlayTransition::None:
@@ -730,11 +820,16 @@ bool EditorApp::tick() {
     // task E.6.2 (D14): the RAW delta -- a stall shown honestly, not the 0.25-s clamp -- on the statement after the
     // clock's own tick (I308 pins the adjacency).
     frameReadout.add(frameClock.rawDeltaSeconds());
-    // task 4.7.1 (D6): the game's clock, one frame per editor tick while Playing, one per Step while Paused. 4.7.4 runs
-    // ScriptSystem::update(sceneWorld, frame.deltaSeconds) HERE, before the edges clear; until then the frame is
-    // counted and its edges consumed, so an edge made while paused reaches the next frame that runs (D11).
+    // task 4.7.1 (D6): the game's clock, one frame per editor tick while Playing, one per Step while Paused. The
+    // scripts' update (task 4.7.4) runs HERE, before the edges clear, so an edge made while paused reaches the next
+    // frame that runs (D11); the first frame of a Play runs every onInit.
     if (const GameFrame frame = playSessionValue.advance(frameClock.deltaSeconds()); frame.runs) {
-        playSessionValue.endGameFrame();
+        if (playScripts != nullptr) {
+            const script::ScriptSystemReport report = playScripts->update(static_cast<double>(frame.deltaSeconds));
+            ++playScriptCounts.updates;
+            playScriptCounts.running = report.running;
+        }
+        playSessionValue.endGameFrame();  // after the scripts, so this frame's edges reached them (4.7.1 D11)
     }
 
     // Task 2.2.5 (D14): drain the sink EVERY frame, visible or not -- shell_ui.cpp:74-79 never calls
@@ -987,6 +1082,18 @@ bool EditorApp::tick() {
         if (scriptTranspiler != nullptr) {
             scriptTranspiler->service(assetDatabase, frameClock.deltaSeconds());
             drainScriptLog();
+            // task 4.7.4 (C5): every publish is taken here, every tick. While a game is playing or paused each one
+            // reloads at once (a paused game runs it at its next Step or resume); outside play it is dropped, because
+            // the next Play's new VM loads what is published.
+            const std::vector<Guid> published = scriptTranspiler->takePublished();
+            if (playScripts != nullptr) {
+                for (const Guid& script : published) {
+                    ++playScriptCounts.reloads;
+                    if (playScripts->reload(script) == script::ScriptStatus::Ok) {
+                        ++playScriptCounts.reloadsOk;
+                    }
+                }
+            }
         }
         if (assetBrowserPanel != nullptr) {
             if (assetBrowserPanel->root() != assetDatabase.root()) {
@@ -1424,9 +1531,11 @@ bool EditorApp::tick() {
                              homeDirectory,
                              &projectUiRecordValue,
                              pendingNewProjectAnswer,
-                             newProjectInputApplied};
+                             newProjectInputApplied,
+                             pendingPlayRecoveryAnswer};
     pendingNewProjectAnswer = NewProjectAnswer::None;  // task E.6.4 (D27): a request dies with the tick that carried it
-    drawShellUi(registry, panelContext, ui, fileMenu);  // menu bar -> dockspace -> panels
+    pendingPlayRecoveryAnswer = PlayRecoveryAnswer::None;  // task 4.7.3: the same
+    drawShellUi(registry, panelContext, ui, fileMenu);     // menu bar -> dockspace -> panels
     // task 4.7.1 (D4): a Quit pressed while a game plays. The request is raised now and the NEXT tick's top stops the
     // game before applyFileRequests sees it.
     if (ui.guardedQuitRequested) {

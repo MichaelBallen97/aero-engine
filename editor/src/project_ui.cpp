@@ -51,6 +51,12 @@ constexpr const char* NEW_PROJECT_MODAL_ID = "New Project###aero_new_project";
 constexpr ImGuiWindowFlags NEW_PROJECT_FLAGS = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
                                                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize;
 
+// task 4.7.3: the recovery offer's modal, the New Project modal's frame -- same ### id rule, same flag set (one
+// constant, so each flag token appears once more in this file), re-centred every frame and never saved.
+constexpr const char* PLAY_RECOVERY_MODAL_ID = "Recover Scene###aero_play_recovery";
+constexpr ImGuiWindowFlags PLAY_RECOVERY_FLAGS = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+                                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize;
+
 [[nodiscard]] Vec2 toVec2(ImVec2 v) noexcept { return Vec2{v.x, v.y}; }
 [[nodiscard]] ImVec2 toImVec2(Vec2 v) noexcept { return ImVec2{v.x, v.y}; }
 
@@ -657,6 +663,109 @@ void drawNewProjectBody(FileMenuContext& fileMenu, NewProjectForm& form, const N
     }
 }
 
+// ---- the recovery offer (task 4.7.3) ----------------------------------------------------------------------------
+
+struct RecoveryPresses {
+    bool discard = false;
+    bool recover = false;
+};
+
+// The footer band in drawFooter's construction -- the rule, the Chrome fill, the rounded bottom corners -- with the two
+// buttons at playRecoveryFooterLayout's positions. Each is measured the way ImGui::Button sizes itself, under its own
+// face, so it lands where the layout put it.
+RecoveryPresses drawRecoveryFooter(ImDrawList* list, const PlayRecoveryDialogLayout& layout,
+                                   PlayRecoveryDialogRecord* record) {
+    const ImVec2 top = ImGui::GetCursorScreenPos();   // the window's left edge: the body is unindented
+    ImGui::Dummy(ImVec2(0.0F, layout.footerHeight));  // the band's height only, as the header's
+    const float border = ImGui::GetStyle().WindowBorderSize;
+    const ImVec2 fillMin(top.x + border, top.y);
+    const ImVec2 fillMax(top.x + layout.width - border, top.y + layout.footerHeight - border);
+    list->AddRectFilled(fillMin, fillMax, roleU32(ChromeRole::Chrome), std::max(0.0F, layout.windowRounding - border),
+                        ImDrawFlags_RoundCornersBottom);
+    horizontalRule(list, top.x + border, top.x + layout.width - border, top.y, ChromeRole::Divider);
+    const float discardWidth =
+        ImGui::CalcTextSize(PLAY_RECOVERY_DISCARD_LABEL.data()).x + (2.0F * layout.buttonPadding.x);
+    float recoverWidth = 0.0F;
+    {
+        const ScopedFace strong(PanelFace::Strong);
+        recoverWidth = ImGui::CalcTextSize(PLAY_RECOVERY_RECOVER_LABEL.data()).x + (2.0F * layout.buttonPadding.x);
+    }
+    const PlayRecoveryFooterLayout footer = playRecoveryFooterLayout(layout, discardWidth, recoverWidth);
+    RecoveryPresses presses;
+    const FramePaddingScope padding(layout.buttonPadding);
+    ImGui::SetCursorScreenPos(ImVec2(top.x + footer.discardX, top.y + footer.buttonY));
+    presses.discard = ghostButton(PLAY_RECOVERY_DISCARD_LABEL.data());
+    if (record != nullptr) {
+        recordItem(record->discard, false);
+    }
+    ImGui::SetCursorScreenPos(ImVec2(top.x + footer.recoverX, top.y + footer.buttonY));
+    presses.recover = accentButton(PLAY_RECOVERY_RECOVER_LABEL.data(), true);
+    if (record != nullptr) {
+        recordItem(record->recover, false);
+    }
+    return presses;
+}
+
+void drawPlayRecoveryBody(FileMenuContext& fileMenu, PlayRecoveryOffer& offer, const PlayRecoveryDialogLayout& layout,
+                          float uiScale, PlayRecoveryDialogRecord* record) {
+    ImDrawList* const list = ImGui::GetWindowDrawList();
+    RecoveryPresses presses;
+    {
+        const DialogBodyStyle body(layout.controlRounding);
+        if (record != nullptr) {
+            ++record->framesDrawn;
+            record->drawnThisFrame = true;
+            record->layout = layout;
+        }
+        drawDialogHeader(layout.width, layout.windowRounding, layout.controlRounding, PLAY_RECOVERY_TITLE, "", false,
+                         uiScale, record != nullptr ? &record->header : nullptr);
+        ImGui::Indent(layout.paddingX);
+        gap(layout.bodyTop);
+        {
+            const ScopedFace strong(PanelFace::Strong);
+            roleText(ChromeRole::TextBright, PLAY_RECOVERY_HEADLINE);
+        }
+        gap(layout.lineGap);
+        {
+            // The scene is the record's own text, so it is drawn on the draw list (never a label) and fitted.
+            const auto bodyWidth = [](std::string_view text) { return faceTextWidth(PanelFace::Body, text); };
+            const std::string_view prefix = "Scene: ";
+            const std::string label = fitTextRight(playRecoverySceneLabel(offer.scene),
+                                                   std::max(0.0F, layout.contentWidth - bodyWidth(prefix)), bodyWidth);
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            ImGui::Dummy(ImVec2(layout.contentWidth, panelFacePoints(PanelFace::Body)));
+            drawRoleText(list, PanelFace::Body, at, ChromeRole::Text, std::string(prefix) + label);
+            if (record != nullptr) {
+                record->sceneLabel = label;
+            }
+        }
+        gap(layout.lineGap);
+        // Wrapped at the CONTENT edge (the window has no padding): the sentence is wider than the 508-dp column.
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + layout.contentWidth);
+        mutedText(PLAY_RECOVERY_BODY);
+        ImGui::PopTextWrapPos();
+        gap(layout.paddingX);
+        ImGui::Unindent(layout.paddingX);
+        presses = drawRecoveryFooter(list, layout, record);
+    }
+    // ONE resolution, the New Project dialog's recipe: Enter and KeypadEnter commit Recover (no disabled state, so the
+    // key and the button share one trivially-true predicate); Escape, Discard and the GPU tier's Discard dismiss, and a
+    // dismiss WINS over a same-frame Recover. Each arm closes the popup itself on the line after its one-shot:
+    // ImGui never collects a popup that merely stops being submitted (2.6.1's BLOCKING-1). No tier can press a key.
+    const bool confirmKey =
+        ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
+    const bool escapeKey = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    const bool discard = escapeKey || presses.discard || fileMenu.playRecoveryAnswer == PlayRecoveryAnswer::Discard;
+    const bool recover = confirmKey || presses.recover || fileMenu.playRecoveryAnswer == PlayRecoveryAnswer::Recover;
+    if (discard) {
+        offer.discardRequested = true;
+        ImGui::CloseCurrentPopup();
+    } else if (recover) {
+        offer.recoverRequested = true;
+        ImGui::CloseCurrentPopup();
+    }
+}
+
 }  // namespace
 
 void drawWelcomeWindow(FileMenuContext& fileMenu) {
@@ -730,6 +839,47 @@ void drawNewProjectModal(FileMenuContext& fileMenu) {
         // keeps the flow from wedging with form.open stuck true (the drawUnsavedChangesModal
         // precedent, shell_ui.cpp).
         form.cancelRequested = true;
+    }
+}
+
+void drawPlayRecoveryModal(FileMenuContext& fileMenu) {
+    PlayRecoveryDialogRecord* const record =
+        fileMenu.projectUiRecord != nullptr ? &fileMenu.projectUiRecord->recovery : nullptr;
+    if (record != nullptr) {
+        beginPlayRecoveryRecordFrame(*record);
+        record->popupOpenAtEntry = ImGui::IsPopupOpen(PLAY_RECOVERY_MODAL_ID);  // FIRST: false once an answer closed it
+    }
+    PlayRecoveryOffer& offer = fileMenu.project.flow.recoveryOffer;
+    if (offer.open && !ImGui::IsPopupOpen(PLAY_RECOVERY_MODAL_ID)) {
+        ImGui::OpenPopup(PLAY_RECOVERY_MODAL_ID);
+    }
+    if (!offer.open) {
+        // The drained arm: ImGui never collects a popup that merely stops being submitted, so one still on its stack
+        // when the offer is gone is entered once more and closed (the same wedge 2.6.1's BLOCKING-1 describes).
+        if (ImGui::IsPopupOpen(PLAY_RECOVERY_MODAL_ID) &&
+            ImGui::BeginPopupModal(PLAY_RECOVERY_MODAL_ID, nullptr, PLAY_RECOVERY_FLAGS)) {
+            ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        return;
+    }
+    const float uiScale = currentUiScale();
+    const ImGuiViewport* const viewport = ImGui::GetMainViewport();
+    const PlayRecoveryDialogLayout layout = playRecoveryDialogLayout(viewport->WorkSize.x, uiScale);
+    ImGui::SetNextWindowPos(viewport->GetWorkCenter(), ImGuiCond_Always, ImVec2(0.5F, 0.5F));
+    ImGui::SetNextWindowSize(ImVec2(layout.width, 0.0F), ImGuiCond_Always);
+    ImGui::SetNextWindowScroll(ImVec2(0.0F, -1.0F));  // the other first-contact windows' rule: never scrolled sideways
+    bool open = false;
+    {
+        const DialogFrameStyle frame(ImGuiCol_PopupBg, layout.windowRounding);
+        open = ImGui::BeginPopupModal(PLAY_RECOVERY_MODAL_ID, nullptr, PLAY_RECOVERY_FLAGS);
+    }
+    if (open) {
+        drawPlayRecoveryBody(fileMenu, offer, layout, uiScale, record);
+        ImGui::EndPopup();
+    } else {
+        // A SAFETY NET: only a PROGRAMMATIC close reaches here, and it reads as Discard, which keeps the copy.
+        offer.discardRequested = true;
     }
 }
 

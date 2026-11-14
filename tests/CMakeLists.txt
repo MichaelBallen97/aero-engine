@@ -603,10 +603,14 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                # task 4.7.1 — the play session's rules and the game's feed (PY, GI)
                editor/play_session_test.cpp
                # task 4.7.2 — ParkedScene and the holder pin (RS)
-               editor/parked_scene_test.cpp)
+               editor/parked_scene_test.cpp
+               # task 4.7.3 — the play record and its rules (RV)
+               editor/play_recovery_test.cpp
+               # task 4.7.4 — PlayScripts over a project root (SX)
+               editor/play_scripts_test.cpp)
 # task 4.3.1: aero::script joins so that script_transpiler_test.cpp's ST20-ST22 evaluate the editor's own transpiled
-# output in the engine's VM. Tests sit outside the boundary rule (the aero_tests precedent); aero_editor_core itself
-# does not link it, and the editor binary does not either.
+# output in the engine's VM. Tests sit outside the boundary rule (the aero_tests precedent); aero_editor_core links
+# aero::script PRIVATE since 4.7.4, and the shell test names it too because its cases call the VM directly.
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core aero::script Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -655,7 +659,10 @@ target_compile_definitions(aero_editor_shell_test PRIVATE
     AERO_SCRIPT_DECLARATIONS_FILE="${_aero_script_declarations_file}"
     AERO_TSCONFIG_TEMPLATE_FILE="${CMAKE_SOURCE_DIR}/editor/templates/tsconfig.json.in"
     # task 4.5.2: CP8 compares the four embedded C++ project templates with their files. A path, not a flag.
-    AERO_CPP_PROJECT_TEMPLATE_DIR="${CMAKE_SOURCE_DIR}/editor/templates/cpp-project")
+    AERO_CPP_PROJECT_TEMPLATE_DIR="${CMAKE_SOURCE_DIR}/editor/templates/cpp-project"
+    # task 4.7.4: SX9 and SX10 read and run the committed TypeScript demo project. A path, not a flag: a missing
+    # directory is a REQUIRE failure, never a silent skip.
+    AERO_PHASE4_TS_SAMPLE_DIR="${CMAKE_SOURCE_DIR}/samples/phase-4-scripting/ts")
 
 # task 3.2.4 (F13): a real subprocess the process layer can spawn on every CI lane, with NO Blender
 # installed. `cmake -E true|false|sleep|echo|cat|touch|copy_directory` covers start, non-blocking poll,
