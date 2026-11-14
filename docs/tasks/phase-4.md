@@ -399,12 +399,39 @@ and Stop drops every entity handle the editor kept from play. No parity check ru
 Subtasks:
 - Autosave hook on Play; recovery prompt after a crash
 
+**Outcome:** before Play moves the mode, a scene with unsaved changes, titled or untitled, is written to a recovery
+copy, `Library/play-recovery.scene.json` (the bytes Save Scene writes), and a record, `Library/play-recovery.json`, says
+a game is playing (`docs/09` section 4.13). The scene's own file, its unsaved marker and its undo history are never
+touched, so after Stop the document is exactly as it was before Play. A dirty scene whose copy or record cannot be
+written does not play: one ERROR names the file, and the mode stays Edit. A clean scene writes no copy and always plays.
+Every Stop (the toolbar, the chord, a request or a Quit) marks the record finished before the restore. When a project
+opens on a record that never finished, with its copy beside it, a modal in the New Project dialog's frame offers the
+copy back: Recover makes it the current scene, bound to its original path, unsaved with an empty history; Discard keeps
+the scene the open showed. Enter and the keypad's Enter answer Recover, Escape answers Discard, and either answer
+finishes the record, so the offer is never made again for that copy. Play is refused while the offer, or any modal, is
+up. `project.json` holds no unsaved state in this editor, so the project's half writes nothing, and nothing deletes
+either file.
+
 ### 4.7.4 Script lifecycle in play mode · P0 · M · depends: 4.7.2, 4.4.1
 **Goal:** scripts live and die with the mode.
 **Deliverable:** `onInit` on Play, `onUpdate` while playing (paused = skipped), `onDestroy` on Stop; hot reload still works inside play mode.
 Subtasks:
 - Lifecycle tied to mode transitions; pause semantics
 - Hot reload inside play mode
+
+**Outcome:** each Play makes one `PlayScripts` (`aero_editor_core`): a new VM with the default limits over the project
+root mounted at `res://`, the game's input bound to it, and a `ScriptSystem` over the copy the park left (`docs/03`,
+"Play-in-editor"). A script's module is `res://Library/Scripts/<guid>.js`, the file 4.3.1 publishes, so a mapped stack
+frame names `res://assets/scripts/<name>.ts` and `engine.spawn('res://assets/...')` reads the project's assets folder; a
+script with no published file is one WARN. The tick that applies Play runs no script. Each game frame runs
+`ScriptSystem::update` with the game clock's dt, so the first runs every `onInit` and then `onUpdate`, a paused game
+runs none, and a Step runs exactly one frame of 1/60 s. Every Stop runs `onDestroy` for each initialised instance and
+destroys the system, the input binding, the VM and the mount before the record is finished and the scene restored, so
+nothing of one Play reaches the next. The transpiler reports each script it publishes, after the record it writes last,
+and while a game is playing or paused each one reloads at once, keeping every field whose name and kind did not change;
+outside play the next Play loads what is published. `samples/phase-4-scripting/ts/` is the TypeScript sample both
+stories' demos run on: two cubes that run `mover.ts`, whose `SPEED` is module code, so a saved change reaches a running
+game.
 
 ---
 

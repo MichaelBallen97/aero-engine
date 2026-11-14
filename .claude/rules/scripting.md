@@ -284,6 +284,16 @@ enumerator reaches all three. A new input function joins `INPUT_FUNCTIONS` (`scr
 so a "sloppy" arm run through it is strict. quickjs-ng 0.15.1 ignores a sloppy write to a getter-only accessor and
 throws in strict code (VM87).
 
+**A RELOAD KEEPS EVERY OWN FIELD WHOSE NAME AND KIND DID NOT CHANGE, SO A VALUE A SAMPLE OR DEMO MEANS TO TUNE LIVE IS
+MODULE CODE, NOT AN INSTANCE FIELD (4.7.4's macOS pass).** An instance's own fields are its state (4.3.3): a reload
+re-creates each instance from the new class and keeps every field whose name and kind are unchanged, so a changed field
+initialiser reaches only the next Play; a kind change resets the field, and a new field keeps nothing. The sample's
+speed was an own field, so three saves of a new speed were published without Stop and the running cubes kept the old one
+(validation row 12 failed at `8f121c3`). `bfee75b` made `SPEED` and `AMPLITUDE` module constants, which a reload
+replaces, and kept `phase` and `originX` as fields, with the motion integrated (`phase += dt * SPEED`) so that a new
+rate carries on from where each cube is, where `sin(time * speed)` jumps. `SX11` pins it: with `SPEED` turned back into
+an own field, its new-rate check is red.
+
 ## What Phase 4's next tasks inherit
 
 **Phase 4 is open; Epic 4.1 is closed (4.1.1, 4.1.2) and 4.2.1, quickjs binding emission, is merged (`docs/tasks/phase-4.md`).**
@@ -322,8 +332,9 @@ list. 4.4.4 added `spawn(asset, ...)` beside `spawn()`. 4.7.4's play session bin
 **What 4.4.3 leaves for later tasks.** 4.7.1 feeds a game `InputState` from the viewport, with points from its
 top-left, releases what the game holds when the viewport loses game focus, and turns on the editor's gamepad switch;
 ImGui's SDL3 backend then opens the first pad itself, with its own fixed 8000 deadzone. 4.7.4 calls `bindInput` at Play
-and `unbindInput` at Stop and owns the `newFrame()` cadence under Pause and Step: an edge made while paused is dropped
-by the next `newFrame()`. Phase 5's runtime binds `ctx.input()` and opts in to `System`. 6.1.2's touch joins
+and `unbindInput` at Stop. `PlaySession::endGameFrame()` calls `newFrame()` only after a game frame that ran, so an edge
+made while paused reaches the next frame that runs, a Step or the resume (4.7.1 D11). Phase 5's runtime binds
+`ctx.input()` and opts in to `System`. 6.1.2's touch joins
 `engine.input`. The three handoffs and R38 (Windows' DirectInput stall) are in `docs/08`.
 
 **`engine.spawn(path, ...)` CHECKS IN ONE ORDER AND LEAVES THE WORLD AS IT WAS (4.4.4).** All three forms run the same
@@ -343,3 +354,18 @@ and overruns it runs to its end; the size cap bounds it (`docs/08`).
 project's `assets/` under `res://assets/`, which joins the open mount decision in `docs/08`. 5.1.2 packs a `.aeroprefab`
 as text at its `res://` path. Reloading a prefab during a Play, `spawn` with a parent and a script's preload are left out,
 and a renamed prefab breaks a script's `res://` string at the call, with a mapped stack.
+
+**What 4.7.4 leaves for later tasks.** A play session's `res://` is the PROJECT ROOT: `PlayScripts` mounts one
+`DirectoryBackend` over it, its resolver maps a script's GUID to `res://Library/Scripts/<guid>.js` (4.3.1's published
+file) and answers `""` with one WARN per GUID while that file is missing, a mapped frame names
+`res://assets/scripts/<name>.ts`, and `engine.spawn('res://assets/...')` reads the project's assets folder. Phase 5's
+pak keeps the same project-relative paths. `res://assets/` is the assets folder only while `paths.assets` keeps its
+default name, `assets` (D4's recorded cost). One `PlayScripts` per Play: a new VM with `VmConfig{}`'s limits, its input
+bound to `PlaySession::input()`, and a `ScriptSystem` over the copy, all torn down at Stop in reverse order, so module
+state, a fault, a suspension and R36's per-reload growth end with each Play. The reload trigger is the transpiler's
+publish report, `ScriptTranspiler::takePublished()`, taken every tick after `service` and the log drain: while a game is
+playing or paused each reported GUID goes to `reloadScript` at once, a paused game running it at its next Step or
+resume, and outside play the report is dropped, because the next Play's VM loads what is published. A script whose
+transpile failed runs its last published JavaScript in play. Every `PlayScripts` call runs on the editor's main thread
+inside `tick()`, never in a draw walk; Windows' 1 MiB main thread under such a call is unmeasured in the editor (an
+unowned handoff in `docs/08`).

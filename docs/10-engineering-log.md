@@ -77,6 +77,8 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | 4.6.1 Language field + editor gating | #137 | `bb14048` | **7 / 7** with 4.7.1, one page for both; row 8 (a physical pad) NOT EXECUTABLE, none connected; nothing failed after the fix (macOS, Release, a signed throwaway `.app`: the first pass saw Add Component draw at full strength in play against AC-11, `d65bdfe` fixed it and rows 3 and 7 ran again at `a3bdce2`). Story 4's demo: 7 / 7 executable rows on a build of `main` (2026-11-09), two rows waiting on the TypeScript small game |
 | 4.7.1 Play/stop state machine + toolbar | #137 | `bb14048` | **7 / 7**: the same page, PR and merge as 4.6.1 (rows 1–3 are 4.6.1's, rows 4–8 this task's; row 8 NOT EXECUTABLE) |
 | 4.7.2 Scene snapshot & restore | #138 | `2dde14a` | **7 / 7**, nothing failed, none NOT EXECUTABLE (macOS, Release, a signed throwaway `.app` on two 1× displays: after Play and Stop the Hierarchy, the title's unsaved marker, the Inspector and the viewport 0 px from the captures taken before Play; Undo and Redo of an edit made before Play; a selection made in play; Pause and Step; Cmd+Q while playing, dirty with Cancel and then saved; every frame at Play and at Stop on 10 000 entities under 33 ms, measured with Tracy). Sabotage 58 / 58 RED after WC9, RS8 and RS9 closed its three HOLEs |
+| 4.7.3 Autosave-before-play | #139 | `abc38e5` | **17 / 17** executable rows with 4.7.4, one page for both, none NOT EXECUTABLE (macOS, Release, a signed throwaway `.app` on the built-in 2× panel: a `kill -9` mid-play and the recovery modal naming `main.scene.json` or `Untitled`, Recover, Discard, Return, keypad Enter and Escape; a clean scene's crash offering nothing; the modal's frame against New Project's and a 92-character name elided; a read-only `Library/`; on 10 000 entities a dirty Play's tick of 105.2 ms, 95.6 ms of it the autosave, and a 6 258 212-byte copy). Row 12 failed at `8f121c3` (a saved `speed` field never reached the running cubes) and passed after `bfee75b` made the speed module code; row 15's zero-height half is unreachable; row 7 ran at UI scale 1 on a 2× panel, its 1× capture owed. Sabotage: 99 rows, 94 RED, 1 COMPILE-RED and 4 witnessed by the page, 0 HOLE after the first run's eight closed. Story 1's demo 6 / 6 and Story 2's 5 / 5 executable rows PASS on 2026-11-14 on a build of `main` |
+| 4.7.4 Script lifecycle in play mode | #139 | `abc38e5` | **17 / 17**: the same page, PR and merge as 4.7.3 (rows 1–8, 16 and 17 are 4.7.3's, rows 9–15 this task's: the sample's cubes swinging, Pause and three Steps, Stop's 0 px restore, three saves of `SPEED` reaching the running cubes 2.5–2.7 s after each with no jump, a throw's Console row naming `mover.ts:20:19`, a held Space, a hidden Viewport reading no pointer) |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -22383,3 +22385,327 @@ none was NOT EXECUTABLE.
 - `aero_editor_core` gains `parked_scene.cpp` and its public header. `aero_tests` gains `tests/scene_clone_test.cpp` and
   the header-only `tests/world_dump.hpp`, and `aero_editor_shell_test` gains `tests/editor/parked_scene_test.cpp`.
 - Docs: `docs/03`, `docs/08`, the phase file, and the components, editor, editor-projects and tests rule files.
+
+### 4.7.3 + 4.7.4 — Autosave-before-play and Script lifecycle in play mode — Play keeps a recovery copy of an unsaved scene that the next open offers back after a crash, and runs the project's scripts in one VM per Play over the project root, from `onInit` on the first game frame to `onDestroy` before the restore, reloading each script the transpiler publishes; Epic 4.7 closes, and with it every numbered Phase 4 task
+
+Play now runs a TypeScript project's scripts, and a crash during a game costs no work. Before Play moves the mode, a
+scene with unsaved changes is written to a recovery copy under `Library/`, and a record says a game is playing; every
+Stop marks the record finished, and a project that opens on a record that never finished offers the copy back in a
+modal. Each Play makes one VM and one `ScriptSystem` over the copy the park left, with the project root mounted at
+`res://`: `onInit` runs on the first game frame, `onUpdate` once per game frame, `onDestroy` at Stop before the restore,
+and a script the transpiler publishes while a game is playing or paused reloads into it at once. The two tasks ran as
+one unit (spec D1): one spec, one plan, one branch, one review loop, one sabotage matrix, one validation page and one
+PR, built in order 4.7.3, then 4.7.4's lifecycle part, then its hot-reload part, each ending at a named boundary commit.
+Merged as PR #139 (`abc38e5`, a merge commit): nineteen commits on `c4c36c9`. They are the eight plan steps (`2d2eb1d`,
+`3cdaaa0`, `f7c7cc7`, `efb707d` as 4.7.3's boundary, `cf1cd86`, `e75d21d` as the lifecycle boundary, `e57ec88` as the
+hot-reload boundary, and `af62134`, the sample); round 1's fixes (`36e7aab`, `f0638d4`, `e205a47`); the seven cases that
+closed the sabotage holes (`01703e2`, `e255407`, `abcf15a`, `0b1af2b`, `df4d4a0`, `1c3bb06`, `8f121c3`); and the Ship
+fix `bfee75b`, made after the manual pass failed row 12. CI: the PR's run `43552203571`, 6 / 6 green on its first
+attempt, and `main`'s push run on the merge, `43558044537`, 6 / 6 green on its first attempt. The unit is the last task
+of Story 1 and of Story 2. Story 1 gains its second line, the `onUpdate` half of its third and its fifth line's
+`onDestroy`; Story 2 gains its first and second lines (4.7.3) and its third (4.7.4's hot reload), and its fourth line
+now names the `.ts` file in the editor, through the project-root mount. Story 1's demo ran on 2026-11-14 on a build of
+`main`: 6 / 6 executable rows PASS (`editor/validation/phase-4-story-1-demo.md`). Story 2's demo, the same day on the
+same build: 5 / 5 (`editor/validation/phase-4-story-2-demo.md`); a saved `SPEED` reached the running cubes 2.23–2.56 s
+later, felt as a pause of about 2.5 s, with no stop and no jump.
+
+**What shipped.**
+- **The play record** (`play_recovery.hpp`, `play_recovery.cpp`, new in `aero_editor_core`: a public header, pure apart
+  from four disk functions through `text_file.hpp`, no `<filesystem>`, and nothing logged; RV1–RV8, RV19).
+  `Library/play-recovery.json` (`docs/09` section 4.13) holds `version`, `playing`, `scene` (project-relative, `""` for
+  an untitled scene) and `copyWritten`, every key required, in that order, with one trailing newline; a damaged record
+  parses to nothing, never to defaults. `Library/play-recovery.scene.json` is the copy, the bytes Save Scene writes.
+  Both writes create `Library/` and, only when absent, its `.gitignore`, and each is one atomic rewrite; nothing deletes
+  either file. `planPlayAutosave` (four rows) and `playRecoveryOffered` (true for one row of 64) are the pure deciders.
+- **`CommandStack::forgetClean`** (`command_stack.{hpp,cpp}`; RV9). The clean point becomes unreachable (the `nullopt` a
+  capacity trim already reached) and the merge chain closes, so a document reads unsaved with no history to undo back to
+  it; `setClean()` or `clear()` ends the state, and both moves carry it.
+- **The autosave at Play and the record at every Stop** (`editor_app.{hpp,cpp}`; I417–I420, I432, I433).
+  `autosaveBeforePlay` runs in `applyPlayControl` before `PlaySession::apply`, and only for a control that takes the
+  mode from Edit to Playing: a dirty scene's copy first, then the record `{playing: true, scene, copyWritten}`. A dirty
+  scene whose copy or record cannot be written does not play: one ERROR names the file and the OS reason,
+  `playAutosaveRefusalCount()` counts it, the mode stays Edit and nothing is parked. A clean scene writes no copy, and a
+  record it cannot write is one WARN. A build without scene I/O writes no copy, logs one WARN and plays.
+  `finishPlayRecord` rewrites the record with `playing: false` on every Stop, before `restoreAfterPlay`, whether or not
+  Play's own write succeeded. The scene's file, its unsaved marker and its history are never touched, so after Stop the
+  document is exactly as it was before Play.
+- **No Play while a modal is up** (`36e7aab`, round 1's fix; I431). `applyFileRequests` opens a project after the
+  toolbar has read its enabled flag, so the offer could be raised in the very tick that accepted Play.
+  `applyPlayControl` refuses a control that starts play while `modalInputActive` holds, before the autosave, so a
+  refused Play writes nothing over the crashed record; `playModalRefusalCount()` counts it, and nothing is logged.
+- **The offer at project open** (`scene_session.{hpp,cpp}`; RV10–RV16, RV20–RV22). `offerPlayRecovery` is
+  `openProjectPath`'s last statement, after `adoptProject` and `restoreLastScene`, and `createAndOpenProject` never
+  calls it. It resets the offer, reads the record (one WARN for a record that exists and does not read or parse, in
+  every configuration) and raises `ProjectFlow::recoveryOffer` for the one offering row. `modalInputActive` gains the
+  offer as its fourth term. `applyFileRequests`' new step 0f drains the answer outside the draw walk, before step 2's
+  modal refusal: Discard wins a frame carrying both, an answer for another project is dropped, Recover runs
+  `openSceneText` on the copy (parse first), binds the record's scene as the path (cleared for `""`) and calls
+  `forgetClean`, and both answers rewrite the record with `playing: false`. A copy that is gone or does not parse is one
+  ERROR, the open's scene stays, and the record is still answered.
+- **The recovery modal** (`project_ui.{hpp,cpp}`, `project_ui_view.{hpp,cpp}`, `shell_ui.{hpp,cpp}`, `editor_app.cpp`;
+  RV17, RV18, I421–I423, I434; I358 and US9 edited). `Recover scene` draws in the New Project dialog's frame (the header
+  strip, the accent mark, the active outline, the footer band) at the Welcome's 560-point width, in `drawShellUi`'s
+  post-menu-bar slot after the containment modal and before the drain that answers it. It names the scene's leaf, or
+  `Untitled`, elided inside the content edge. Its two buttons, Enter and the keypad's Enter (Recover), Escape (Discard)
+  and the GPU seam `requestPlayRecoveryAnswer` resolve once inside the body, Discard first, each arm closing the popup
+  on the line after its one-shot; an offer cleared without the body takes I192's drained arm. The seam's one-shot dies
+  with its tick.
+- **`PlayScripts`** (`play_scripts.hpp`, `play_scripts.cpp`, new and src-private in `aero_editor_core`; SX1–SX8). One
+  holder per Play: a `VirtualFileSystem` with one `DirectoryBackend` over the project root at `res://`, a `Vm` with
+  `VmConfig{}` (64 MiB heap, 512 KiB stack, 1 000 ms per call) over it with the game's input bound, and a `ScriptSystem`
+  over the World. Its resolver answers `res://Library/Scripts/<guid>.js` while that file exists and `""` otherwise, with
+  one WARN per GUID. A refused `Vm::create` leaves the holder inert. `stop()` runs `onDestroy` per initialised instance,
+  destroys the system and unbinds the input; the destructor stops it, and the VM and then the VFS go in reverse
+  declaration order. `aero_editor_core` links `aero::script` PRIVATE for it, so the editor binary carries quickjs-ng for
+  the first time, and no public editor header names a script type.
+- **Scripts live and die with the mode** (`editor_app.{hpp,cpp}`; I424–I428). The Started arm makes a new `PlayScripts`
+  after the park, bound to the copy and to `PlaySession::input()`; nothing runs in that tick. `tick()` calls `update`
+  with the game frame's dt between `PlaySession::advance` and `endGameFrame`, so the first game frame runs every
+  `onInit` and then `onUpdate`, a paused game runs no script, and a Step runs one frame of 1/60 s. The Stopped arm stops
+  and destroys the holder before `finishPlayRecord` and `restoreAfterPlay`. `~EditorApp` tears a running game down
+  first, while the World and the panels live, and leaves the record `playing: true`: a destroyed app is not a Stop.
+  `playScriptStats()` is the GPU tier's window.
+- **Hot reload inside play** (`script_transpiler.{hpp,cpp}`, `editor_app.cpp`; ST45–ST48, I429, I430).
+  `ScriptTranspiler::takePublished()` moves out the GUIDs published since the last take, each reported after its
+  provenance record, the file written last; a failed or refused job, a script found fresh and a publish whose record
+  cannot be written report nothing, and `resetForProjectSwap` clears the list. `tick()` takes the report every tick
+  after `service` and the log drain. While a game is playing or paused each GUID goes to `PlayScripts::reload`
+  (`ScriptSystem::reloadScript`); outside play the report is dropped, because the next Play's new VM loads what is
+  published.
+- **The TypeScript sample** (`samples/phase-4-scripting/ts/`, data, never `add_subdirectory`'d; SX9–SX11).
+  `project.json` (`language` `"ts"`), `tsconfig.json` (`renderTsconfig("assets")`'s bytes), `scenes/main.scene.json` (a
+  camera, a sun and two cubes, each with a `ScriptComponent` naming `mover.ts`, in the canonical text `sceneToText`
+  writes), `assets/scripts/mover.ts` with its `.meta`, and a README with both stories' demo steps; `Library/` is left
+  out. `mover.ts` swings each cube along X from its own start and holds it while Space is held. Since `bfee75b`, `SPEED`
+  and `AMPLITUDE` are module constants and `phase` and `originX` the instance's fields.
+  `samples/phase-4-scripting/README.md` names `ts/` beside `cpp/`.
+- **The no-delete guard** (`check-project-no-delete.sh`, `no_delete_e2e.cmake`). `play_recovery.cpp` is Check A's tenth
+  file, and the guard's header now names all ten; Stage 21 plants `::copy` in it and expects exit 1.
+- **Three `docs/08` handoffs close.** The play session's script mount and the publish window (4.3.4, 4.4.4): the project
+  root at `res://`, and a reload keyed on the report made after each publish's record. Binding input to the play
+  session (4.4.3): `bindInput` at Play and `unbindInput` at Stop. A hidden or zero-area Viewport in play (4.7.1):
+  validation row 15 passes its hidden half, and its zero-height half cannot be produced.
+
+**Code-review rounds.** Three.
+- Round 1 (`c4c36c9..af62134`): 5 gaps, 0 blocking, 2 should-fix, 3 minor. (1, should-fix) A Play accepted in the tick
+  that opens a project with a crashed record ran the game behind the recovery modal and overwrote the record:
+  `fileEnabled` is computed before `applyFileRequests` opens the project, and `applyPlayControl` did not check
+  `modalInputActive`. `36e7aab` refuses a starting Play while a modal is up, before the autosave, and counts it; I431
+  was red first (the game started, a VM was live, the refusal count read 0 and the record was overwritten). The
+  finding's second remedy, dropping step 0f's Recover while a game is active, was not taken: once the fix landed, an
+  open offer and a running game cannot coexist, so that guard could never run, and round 2 confirmed it path by path.
+  (2, should-fix) No case reached AC-4's record arm, a dirty scene whose record cannot be written, because I419's
+  `Library`-as-a-file fails the copy first. `e205a47` adds I432, whose record path is a non-empty directory; with the
+  refusal branch replaced by the WARN arm, I432 fails 8 checks and I419 stays green. (3–5, minor) The guard's header
+  listed eight files before saying ten; E.6.4's comment for `refreshNewProjectProbe` headed `recoverPlayCopy`; and the
+  README's "move the camera" could leave the scene clean. `f0638d4` fixes all three.
+- Round 2 (`af62134..e205a47`): approved, every finding closed.
+- Round 3, at Ship (`8f121c3..bfee75b`, the sample fix): 4 gaps, all minor, recorded and not fixed on the branch. (1)
+  SX11's no-jump bound (its property 4) misses the likeliest jump at its sample point, a mover that keeps
+  `sin(time * SPEED)`: the two phases sit almost symmetrically about π/2, so the step (0.0944) stays under the bound
+  (0.152). Property 5, the new rate thirty frames on, catches that variant, and no variant passes both. (2)
+  `ts/README.md:36` says a script's own fields keep their values across a reload without the qualifier: a kind change
+  resets one, and a new field keeps nothing. (3) `tests/CMakeLists.txt:663`'s comment names SX9 and SX10 as the sample's
+  readers, and SX11 reads it too. (4) The gitignored plan's validation row 12 still said `speed`; it was corrected in
+  the plan for the re-run.
+- The seven commits that closed the sabotage holes came after round 2 and touch tests only. No round reviewed them, and
+  each case was seen red against its seed.
+
+**The sabotage matrix.** 99 rows, all on `macos-debug`: 98 seeds designed at `e205a47` (94 on the doctest binaries, S91
+among them as a compile-red row, and W1–W4, whose only witness is a validation row) and one ctest row, C1.
+- The first run: RED 85, COMPILE-RED 1, VALIDATION 4, HOLE 8. S91 (`editor_app.hpp` including `<aero/script/vm.hpp>`)
+  stopped the build, as designed: `aero::script` is PRIVATE to `aero_editor_core`. C1 (`play_recovery.cpp` taken out of
+  Check A's list) turned the e2e's Stage 21 red.
+- Five holes were predicted: S41 (a failed Recover falling through), S42 (the copy-read failure arm), S63 (the answer's
+  one-shot not reset), S87 (the report written before the record) and S95 (Recover dropping `setPath`). Three more came
+  back green where a case was expected red: S18 and S20 (the record's and the copy's atomic-write reason swallowed) and
+  S21 (the copy's, at the GPU tier). RV7 and I419 make `Library` a file, so `prepareLibrary` refuses first and the
+  atomic write's own reason is never reached.
+- The holes closed in seven test-only commits, each case seen red under its seed: RV19 (`01703e2`; S18 and S20,
+  `Library/` present and both target paths non-empty directories), RV20 (`e255407`; S41, a failed Recover from a clean
+  document logs no recovery and leaves it clean), RV21 (`abcf15a`; S42, the copy gone before the answer), RV22
+  (`0b1af2b`; S95, a restored scene other than the recorded one), ST48 (`df4d4a0`; S87, a record path that is a
+  directory), I433 (`1c3bb06`; S21, the copy path a directory at Play) and I434 (`8f121c3`; S63, a second crashed
+  project opened right after the first offer's answer). The re-run at `8f121c3` read 8 / 8 RED.
+- Two rows were red through one case each, as designed: S96 (a WARN added beside the record's write failure) by I432
+  alone, and S97 (a log line in the transpiler) by ST19's logging pin alone.
+- The Ship fix rewrote `mover.ts`, where two seeds anchor, keeping both anchor lines byte for byte. At `bfee75b`, S90
+  (`originX` never recorded) came back RED by SX10, and W3 (Space read as `keyPressed`) VALIDATION, witnessed by row 14.
+- The latest verdicts: 94 RED (the first run's 85, the eight closed holes and C1), 1 COMPILE-RED, 4 VALIDATION (W1 and
+  W2, the modal's fill and its footer band's colour, by row 7; W3 by row 14; W4, the scene label fitted to the whole
+  content width, by row 17) and 0 HOLE. The last full run at `bfee75b` read the shell binary 2644 / 2644, and the tree
+  was clean after each seed.
+
+**Traps found, each measured.**
+- **A reload keeps every own field whose name and kind did not change, so a value a sample means to tune live must be
+  module code.** Row 12 failed at `8f121c3`: three saves of the sample's `speed` field were published without Stop (in
+  3.01, 2.08 and 2.74 s) and the running cubes kept 1.5, by 4.3.3's design. A method-body edit did reach the game, in
+  2.85 s, with a jump, because the motion was `sin(time * speed)`. `bfee75b` made `SPEED` and `AMPLITUDE` module
+  constants and integrated the phase (`phase += dt * SPEED`), so a new rate carries on from where each cube is. SX11 was
+  red first twice: before `mover.ts` changed (its anchor, `play_scripts_test.cpp:592`), and with `SPEED` turned back
+  into an own field read as `this.SPEED`, where the anchor and the no-jump check pass and the new-rate check fails for
+  both cubes (`1.71275 <= 0.002`, `:682`). Rows 9–14 ran again at `bfee75b` and passed.
+- **`seed.sh revert` wipes uncommitted edits.** `seed.sh apply` refuses a dirty tree, but a `revert` after it still runs
+  `git checkout` on every modified tracked file: the holes round lost two uncommitted cases that way and rebuilt them
+  from saved copies. Commit a case before seeding it (`tests.md`'s rule for a fix, met again through the seed script).
+- **A project open and a Play in the same tick** (round 1's finding 1): the toolbar reads `fileEnabled` before
+  `applyFileRequests` opens a project, so the toolbar alone cannot keep Play away from an offer raised that tick;
+  `applyPlayControl`'s own modal check does.
+- **The atomic write's own failure is reachable only past `prepareLibrary`.** A `Library` that is a file fails
+  `ensureDirectory` first, so a case that means to fail the record's or the copy's write makes `Library/` a directory
+  and the target a non-empty directory (RV19, I432, I433). On Windows that fixture assumes a rename onto a non-empty
+  directory fails, which the PR's Windows lanes are the first to run.
+- **A throwaway `.app` needs esbuild 0.28.2 in `Contents/Resources/`** (4.3.1's handoff, met again): without it the
+  editor logs `esbuild was not found` and transpiles nothing. Both validation bundles carried the build tree's copy.
+- **A held key must come from one driver process.** Row 14 first froze nothing with two short driver processes; one
+  process posting both edges held Space for 3.005 s, and the cubes held for all of it.
+- **The first Play of a launch moves glyph-edge pixels in four chrome texts** (row 11): one-pixel columns at a glyph's
+  left edge, 16–18 px tall, in the viewport's `RMB + WASD to fly` chip, a HUD label, the toolbar's `Local` and a Console
+  row. Two further cycles read 0 px everywhere, and the scene, the Hierarchy and the Inspector read 0 px in every cycle.
+  The cause is not identified (`docs/08`).
+- **A zero-height Viewport cannot be produced** (row 15): the dock keeps the Viewport's image at 6 points or more, by
+  the splitter and in a 1280 × 200 window alike; at 6 points the focused game reads the pointer, as the valid rect says.
+- **The permission-prompt watcher exits on an accessibility error** at a first launch: at `8f121c3` it stopped on
+  `window 2 of application process "UserNotificationCenter"` (an invalid index) while two prompts appeared and closed
+  before a capture could read them; at `bfee75b` it stayed up and answered the one Desktop-folder prompt.
+
+**Where the implementation departed from the plan.**
+- Play is refused while a modal is up, before the autosave, and counted by `playModalRefusalCount()` (round 1); the plan
+  had no such check, and the round's second remedy was not taken.
+- Ten cases beyond the plan's 45: I431 and I432 (round 1), RV19–RV22, ST48, I433 and I434 (the sabotage holes) and SX11
+  (the Ship fix). The shell binary reads 2644 and the ImGui binary 440, not the plan's 2638 and 436.
+- The sample's script: the plan's own fields `speed`, `amplitude`, `time` and `originX` became the module constants
+  `SPEED` and `AMPLITUDE` and the fields `phase` and `originX` (the Ship fix). Validation row 12 changed with it, and
+  the page gained row 17 (W4's witness, a long scene name), which the plan's section F did not have.
+- ST47 asserts two ERRORs, one per faulted instance of its two entities, where the plan says one. ST46's last checkpoint
+  asserts a running instance and a `v5:` prefix rather than the plan's `v5:5`: the case updates once more after the
+  broken v3, so the kept count is 6. v2's checkpoints prove the kept value, and SX8 pins `v5:5` exactly.
+- `ui_scale_test.cpp`'s US9 expects `PPPPP` for `project_ui_view.hpp`, since `playRecoveryDialogLayout` takes a
+  `uiScale`; the plan did not list the file.
+- The modal's headline and body are drawn through `roleText` and `mutedText`, wrapped at the content edge, rather than
+  as draw-list text, because the body sentence is wider than the 508-point column; the scene line stays on the draw
+  list. The drained arm enters the popup only while `IsPopupOpen`. RV18 has one extra row (`"scenes/"` gives
+  `Untitled`).
+- `autosaveBeforePlay` checks `sceneToText`'s optional and refuses with "the scene did not serialize" where the plan
+  dereferenced it, and `offerPlayRecovery` also tests `read.state.has_value()` before reading it; both satisfy
+  clang-tidy's optional rule, and neither arm is reachable.
+- `PlayScriptStats` sits at namespace scope in `engine::editor`. `main.scene.json` is `sceneToText`'s canonical output,
+  after SX9 refused a hand-written draft that lacked the keys the writer adds. The guard's header also names 4.5.2's
+  widening, so its count of ten is complete.
+- Steps 1, 2, 4, 5 and 6 wrote their cases with their code; each case was proven by seeding its behaviour away rather
+  than by a red build first. Step 3's cases were red before its code.
+
+**What was deliberately left out, and which task holds each.**
+- Edits not yet applied in the Material and Import Details panels: outside the autosave, as they are outside the quit
+  guard (spec D3). Unowned (`docs/08`).
+- The project's half of Story 2's first line: `project.json` is written only at creation, so the project holds no
+  unsaved state and Play writes nothing for it; a later editable project setting joins the autosave (spec D3). No task
+  holds one.
+- An autosave in Edit mode: none, so a crash outside play offers nothing (spec non-goal). Separate-process play: v2
+  (R11).
+- Two editors on one project: nothing locks a project, so a second editor reads a live Play's record as a crash. Unowned
+  (`docs/08`).
+- A script whose transpile failed runs its last published JavaScript in play, with the transpile error on the Console.
+  Unowned (`docs/08`).
+- Windows' 1 MiB main thread under a VM call inside `tick()`: unmeasured in the editor (plan G3, R37's figure). The
+  Windows pass runs row 13 and records it, and a stall becomes a `/STACK` option for `aero_editor` (`docs/08`).
+- A native file watcher: save to publish stays within 4.3.3's 2.19–3.2 s (2.47–2.62 s at row 12), felt as a short
+  delay; the watcher stays an unowned handoff.
+- R34's VM-core fix, a quickjs-ng patch and a heap-pressure warning (R36): none. Each Play's VM is new, so R36's growth
+  ends with the Play.
+- A prefab reload during a Play (4.4.4) and a reload outside play: none; the next Play loads what is published.
+- The TypeScript small game (Story 3's demo, Story 4's first line, the gate's two-language demo): unowned (`docs/08`);
+  the two-cube sample is what it grows from.
+- `res://assets/` is the assets folder only while `paths.assets` keeps its default name, `assets` (D4's recorded cost).
+- The Hierarchy row-open residual (4.7.2) is reachable now that a script can create an entity in play: cosmetic,
+  unowned.
+- The first Play's glyph-edge pixels (row 11): the cause is not identified. Unowned (`docs/08`).
+- Row 7's 1× capture: owed by a pass on a 1× display (`docs/08`'s validation debt).
+- Round 3's three minors on the branch (SX11's property 4, the README's sentence, the CMake comment): recorded here, not
+  fixed.
+
+**The sentences that govern new work.**
+- At Play from Edit: a modal refusal (nothing written), the autosave (a dirty scene's copy, then the record),
+  `PlaySession::apply`, the park, then a new `PlayScripts` over the copy. A refused Play never reaches `apply`. At Stop:
+  `PlayScripts::stop()` and its destruction (the system, the input binding, the VM, the VFS), the record finished, then
+  `restoreAfterPlay`. Every Stop path is that one call (`docs/03`, "The park and the restore").
+- The record has one writer per transition: Play writes `playing: true`, every Stop and every answer to the offer
+  `playing: false`. Nothing deletes the record or the copy (`play_recovery.cpp` is in Check A).
+- The offer is decided last in `openProjectPath`, never in `adoptProject`. Recover is `openSceneText`, the record's
+  scene as the path, then `forgetClean`, so a recovered document is unsaved with an empty history
+  (`editor-projects.md`).
+- The recovery offer is the fourth modal in `modalInputActive`, answered through one resolution inside its body, with
+  I192's drained arm (`editor-invariants.md`).
+- A play session's `res://` is the project root: a script's module is `res://Library/Scripts/<guid>.js`, a mapped frame
+  names `res://assets/scripts/<name>.ts`, `spawn` reads `res://assets/...`, and Phase 5's pak keeps those paths. One
+  `PlayScripts` per Play, and the reload trigger is `takePublished` (`scripting.md`).
+- A reload keeps every own field whose name and kind did not change, so a value a sample or demo means to tune live is
+  module code (`scripting.md`).
+- `aero_editor_core` links `aero::script` PRIVATE, and no public editor header names a script type
+  (`build-and-guards.md`). `PlayScripts` holds no entity, so it carries no `[stop:…]` marker (`editor.md`). An
+  `EditorApp` is never moved while a game is active (`editor-invariants.md`).
+
+**Validation and sabotage status — macOS 17 / 17 (2026-11-14), Windows and Linux unrun.** The editor was a Release build
+with profiling on, in a signed throwaway `.app` on the built-in 2× panel (3024 × 1964, 1512 × 982 points), macOS 26.6.2.
+Rows 1–8 and 15–17 ran at `8f121c3`; rows 9–14 ran again at `bfee75b` on a fresh copy of the sample, and the editor's
+sources are the same at both. Every row ran, and none was NOT EXECUTABLE.
+- Rows 1–4: a real `kill -9` mid-play left the record (`playing: true`, `copyWritten: true`) and the copy. Reopening
+  raised `Recover scene` naming `main.scene.json`; Recover put Cube A back at Z 2.500, with the title
+  `*main.scene.json`, Undo disabled and the record `playing: false`, and a Save and a reopen showed no modal. An
+  untitled scene's crash named `Untitled` and recovered five entities into `*Untitled`. A clean scene's crash offered
+  nothing. Discard kept Cube A as saved and both files' bytes (`shasum` before and after).
+- Rows 5–6: Return (key code 36) and the keypad's Enter (76) recovered; Escape (53) discarded, and the View menu, the
+  Hierarchy, the toolbar and a dock tab answered clicks afterwards.
+- Row 7 (W1, W2): the modal's outline, header strip, rule, accent diamond, body and footer band matched the New Project
+  dialog's pixel for pixel, and its outline spans 1120 px, 560 points, at UI scale 1 on the 2× panel (no 1× display is
+  attached).
+- Row 8: a read-only `Library/` refused a dirty Play with one ERROR naming `play-recovery.scene.json`; after Save Scene
+  a clean Play started with one WARN naming `play-recovery.json`, and Stop added a second WARN for the record's finish.
+- Rows 9–11 (`bfee75b`): both cubes swung about their own starts (a period of about 4.1 s against 2π / 1.5 = 4.19 s).
+  Pause held them, and three Steps read X −3.475, −3.483 and −3.489, the phase model to the third decimal. After Stop
+  the rendered scene, the Hierarchy and the Inspector were 0 px from the capture before Play, apart from the first
+  Play's glyph edges (the traps above).
+- Row 12 (`bfee75b`): three saves of `SPEED` changed the cubes' rate without Stop about 2.5, 2.7 and 2.6 s after each
+  save (published in 2.47–2.62 s), with continuous positions. Paused, a saved `SPEED` left X unchanged, and the next
+  Steps advanced the phase by 4.5 / 60 and then 1.5 / 60 rad. The delay is felt; nothing jumps.
+- Row 13 (`bfee75b`): `throw new Error("boom")` on line 20 gave
+  `ERROR script: res://assets/scripts/mover.ts:20:19: uncaught Error: boom`, one row per cube, with the tooltip
+  `at onUpdate (res://assets/scripts/mover.ts:20:19)`. The editor kept running, and removing the throw resumed the cubes
+  without Stop 2.6 s after the save.
+- Row 14 (`bfee75b`, W3): a Space held for 3.005 s froze Cube A in all 34 captures and released it on the key-up; Space
+  in Edit changed nothing.
+- Row 15: with the Console docked in front of the Viewport, a probe script's name kept its last pointer value while the
+  pointer moved. The zero-height half is unreachable (the traps above).
+- Row 16: on 4.7.2's 10 000-entity scene under Tracy, a dirty Play's tick took 105.2 ms, 95.6 ms of it the autosave
+  (`saveWorld` 64.8 ms), against 8.5 ms for a clean Play; the copy is 6 258 212 bytes. Beside 4.7.2's 0.801 ms copy, the
+  autosave is the Play tick's cost.
+- Row 17 (W4): a 92-character leaf was elided with an ellipsis, its last ink 4 points inside the content edge.
+- CI: PR #139's run (`43552203571`, 6 / 6 green on its first attempt) is the new cases' first run on MSVC, libstdc++,
+  D3D12 and Vulkan; `main`'s push run on the merge, `43558044537`, was 6 / 6 green on its first attempt.
+- The sabotage matrix ended 94 RED, 1 COMPILE-RED, 4 VALIDATION and 0 HOLE; rows 7, 14 and 17 witness W1–W4, and each of
+  them passed.
+
+Measured at `bfee75b` on fresh build directories:
+- `aero_editor_shell_test` **2644** (+37) and `aero_editor_imgui_test` **440** (+18); `aero_tests` **2054**,
+  `aero_scene_serialize_test` **52**, `aero_editor_inspector_test` **77** and **14 / 28** are unchanged.
+- reflect-tools-OFF `aero_tests` **2022**, shell **2602** and ImGui **440**; shader-tools-OFF `aero_tests` **1914**,
+  shell **2644** and ImGui **421**.
+- `ctest -N` is **233 / 220 / 107**, with `cooker.*` 81 in all three and no entry added; a `macos-sdk` tree is 233 + 6,
+  and its six pass.
+- The guards read math **684**, platform **99**, rhi **200**, scene **99**, golden-rule **202**, project-no-delete
+  **A=10 B=119**, audio **11-3-75**, probes **7-77** and script **182-99-20**. Math moved with the six new C-family
+  files, Check B with the two in `editor/src`, and Check A with `play_recovery.cpp`; no engine, runtime or CMake file
+  was added.
+
+**Case ids claimed:** RV1–RV22 (next free: RV23), SX1–SX11 (SX12), ST45–ST48 (ST49) and I417–I434 (I435); I358 and US9
+edited.
+
+**Build & dependency impact:** no vcpkg port and no new target.
+- `aero_editor_core` gains `play_recovery.cpp` with its public header and `play_scripts.cpp` with its src-private
+  header, and links `aero::script` PRIVATE: the editor binary links quickjs-ng for the first time.
+  `aero_editor_shell_test` gains `tests/editor/play_recovery_test.cpp`, `tests/editor/play_scripts_test.cpp` and the
+  `AERO_PHASE4_TS_SAMPLE_DIR` definition.
+- `check-project-no-delete.sh` lists ten files in Check A, and `no_delete_e2e.cmake` gains Stage 21.
+- `samples/phase-4-scripting/ts/` is data, never `add_subdirectory`'d.
+- Docs: `docs/03`, `docs/08` (R11, the handoffs and the validation debt), `docs/09` section 4.13, the phase file, and
+  the build-and-guards, editor, editor-invariants, editor-projects, scripting and tests rule files.

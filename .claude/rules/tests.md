@@ -9,11 +9,11 @@ Each rule here was earned by a defect, a green-and-wrong test or a measurement t
 
 ## Case ids
 
-**Next free ids, measured by a whole-`tests/` token sweep at `2dde14a` (after 4.7.2): `I417` at the ImGui
+**Next free ids, measured by a whole-`tests/` token sweep at `bfee75b` (4.7.3 + 4.7.4's head): `I435` at the ImGui
 tier**, `AA68`, `AD77`, `AH21`, `AM29`, `AV78`, `BD8`, `BR31`, `BV10`, `CC15`, `CD15`, `CR13`, `CS17`, `DD31`, `DG26`,
 `DR30`, `EB31`, `EC5`, `EK12`, `EP19`, `FT17`, `G29`, `GI14`, `GL8`, `GR34`, `HK7`, `HY9`, `IO24`, `IR27`, `IX19`,
-`MB27`, `ML80`, `MP21`, `NP16`, `P101`, `PC15`, `PX6`, `PY11`, `RF8`, `RS10`, `RT31`, `SQ15`, `SS64`, `ST45`, `TB16`,
-`TH20`, `TS11`, `US13`, `VM89`, `VN5`, `VO15`, `WC10`, `WL7`, `X32`.
+`MB27`, `ML80`, `MP21`, `NP16`, `P101`, `PC15`, `PX6`, `PY11`, `RF8`, `RS10`, `RT31`, `RV23`, `SQ15`, `SS64`, `ST49`,
+`SX12`, `TB16`, `TH20`, `TS11`, `US13`, `VM89`, `VN5`, `VO15`, `WC10`, `WL7`, `X32`.
 The list does not name every taken prefix: `MR` (E.3.4), `PJ`
 (E.4.1), `CN` (E.4.2) and `MC` (mesh cook, which is why the card cache took `CC`) are taken too, so a NEW prefix is
 checked against a fresh sweep, never against this list. Which ids each task took is recorded in its `docs/10` entry.
@@ -219,6 +219,19 @@ ticks, and only then queues its key, button and wheel events. `requestGameInputE
 through the same `handleEvent`, so the injected event takes the production path and no real key press is needed. The
 Context stays `Off` or `VirtualOnly`. The viewport image's rect is real only where the viewport drew: a pointer arm is
 guarded by `GameImageRect::valid` and says so with a `MESSAGE` when it did not run.
+
+**A CASE THAT NEEDS A CRASH DURING PLAY DESTROYS ITS `EditorApp` MID-PLAY (4.7.3).** `~EditorApp` tears a running game
+down and writes nothing to the play record, so an app that presses Play, ends through `requestQuit()` (which skips the
+guard and the Stop) and is destroyed leaves `Library/play-recovery.json` reading `playing: true` beside its copy, which
+is what a killed process leaves (`crashAPlayingEditor`; `I421`, `I422`, `I431`, `I434`). It differs from a real crash in
+what `onDestroy` does to the copy, which the record and the copy never see; validation row 1 is the real `kill -9`.
+
+**A PLAY CASE PUBLISHES ITS SCRIPT'S JAVASCRIPT INTO `Library/Scripts/` BY HAND, UNLESS IT TESTS THE TRANSPILER
+(4.7.4).** `PlayScripts` resolves a script GUID to `res://Library/Scripts/<guid>.js` only while that file exists, so a
+case writes `<guid>.js` in esbuild's measured shape before Play (`publishPlayScript` in `imgui_layer_test.cpp`,
+`publish` in `play_scripts_test.cpp`) and attaches `ScriptComponent{guid}` in Edit (`I424`–`I427`, `SX2`–`SX8`). Only
+a case about the publish runs esbuild (`ST45`–`ST48`, `I429`, `I430`, `SX10`, `SX11`), with `AERO_TEST_ESBUILD`, and
+pumps the transpiler to idle before its `TempDir` goes.
 
 
 ## Sabotage method

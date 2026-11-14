@@ -109,6 +109,21 @@ project folder and must never delete, rename or copy. `tests/project-no-delete/n
 1 refuses a scratch tree that lacks a named file, so a tenth entry in `FORBIDDEN_FILES` needs a seed there or stage 1 exits 2.
 Stage 20 plants `::copy` in it and expects exit 1.
 
+**`editor/src/play_recovery.cpp` IS THE TENTH FILE IN CHECK A (4.7.3)**, and Check B went from 117 to 119 with it and
+`play_scripts.cpp`. It writes the play record and its scene copy into `Library/`, the reason `project_state.cpp` is
+listed, and the guard's header now names all ten files. `no_delete_e2e.cmake` seeds it clean, and Stage 21 plants
+`::copy` in it and expects exit 1; with its `FORBIDDEN_FILES` entry removed, Stage 21 goes red (seed `C1`).
+
+**`aero_editor_core` LINKS `aero::script` PRIVATE (4.7.4), SO THE EDITOR BINARY CARRIES quickjs-ng.** Only
+`editor/src/play_scripts.cpp` and its src-private header name a script type; `editor_app.hpp` forward-declares
+`PlayScripts` and holds it through a `std::unique_ptr`, the `ScriptTranspiler` posture, so no public editor header
+includes a script header. On a STATIC library the edge propagates as `$<LINK_ONLY:...>`: the archive and quickjs-ng's
+reach `aero_editor` and every test link line, while `engine/script/include` reaches no compile line through
+`aero_editor_core`, so a script header included by `editor_app.hpp` stops the build (seed `S91`, COMPILE-RED). The edge
+is not gated, since `aero_script` exists in every configuration (the reflect tools gate only its component bindings),
+and no boundary probe links `aero::editor_core`. quickjs-ng was always a runtime dependency, so the editor linking it
+moves no editor-only dependency.
+
 ## The C++ SDK (4.5.1)
 
 - **An imported target is directory-scoped.** At root scope `if(TARGET EnTT::EnTT)` is FALSE, so a `TARGET` test passes

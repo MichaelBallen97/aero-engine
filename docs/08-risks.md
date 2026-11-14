@@ -18,7 +18,7 @@
 | **R8** | **Mobile signing & platform quirks** (iOS/Android) surface late | Med | Med | Deferred to Phase 6 by design; Mac required for iOS; precompiled-runtime model keeps user-side export toolchain-free for TS projects |
 | **R9** | **quickjs-ng scripting performance** (no JIT) becomes a gameplay bottleneck | Low | Med | Move hot logic to a C++ ECS system (ADR-007), not a language change; heavy work already lives in C++ |
 | **R10** | **Time estimates slip** — part-time solo | High | Med | Estimates are planning aids, not commitments; the deliverable-gate model surfaces slippage early; re-estimate at each phase boundary |
-| **R11** | **In-process play-in-editor** (4.7) — a gameplay crash takes the editor down with it | Med | Med | Autosave-before-play (4.7.3); scene snapshot & exact restore (4.7.2: Play runs on an identity-exact copy and Stop hands back the original World); separate-process play mode deferred to v2 |
+| **R11** | **In-process play-in-editor** (4.7) — a gameplay crash takes the editor down with it | Med | Med | Autosave-before-play (4.7.3: before Play, a scene with unsaved changes is written to a recovery copy under `Library/` and a record that a game is playing, `docs/09` §4.13; a dirty scene whose copy or record cannot be written does not play; a project that opens after a Play that never stopped offers the copy back); scene snapshot & exact restore (4.7.2: Play runs on an identity-exact copy and Stop hands back the original World); separate-process play mode deferred to v2 |
 | **R12** | **vcpkg's shared per-triplet `include/` directory limits the "private backend" compile-time boundary** (found in task 0.2.2) — every port installs into one flat `vcpkg_installed/<triplet>/include/`, and every vcpkg CONFIG target's `INTERFACE_INCLUDE_DIRECTORIES` is that same shared root, not a per-package directory. `PRIVATE`-linking a backend library (e.g. `aero_core`'s GLM link, ADR-005) makes a stray `#include` a hard compile error **only** for targets that link no vcpkg package directly; any target that does (e.g. `tests/` → `doctest::doctest`, or a future `engine/platform` → SDL3) inherits the whole shared root and can resolve the "private" backend's headers regardless | Med | Low | Engine layers (which link no vcpkg package directly) get the compile-time guarantee for free — verified for ADR-005/task 0.2.2 with a throwaway probe target, now the permanent `tests/math_boundary_probe.cpp` (task 0.2.3). Test targets and any layer linking a vcpkg package directly do not, and must rely on the textual grep guards docs/04 already specifies — **math's mitigation is now in place**: `.github/scripts/check-math-boundary.sh`, run by the `lint` job (task 0.2.3). SDL (0.3.1) and now **miniaudio (task 0.3.3)** are the second and third PRIVATE flat-root backends the probe bites for — miniaudio's is `tests/platform_boundary_probe.cpp` again (extended, not a new probe), because the *device* lives in `engine/platform`; the *separate* `engine/audio` guard for Phase 3.7's mixer/clip layer was owned by task 3.7.3, and **audio's mitigation is now in place**: `.github/scripts/check-audio-boundary.sh` (prong A, the no-vcpkg property of `engine/assets`/`engine/audio`/`engine/scene_audio`'s CMakeLists; prong B, a miniaudio token ban over both audio roots with **sources included**) + `tests/audio_boundary_probe.cpp`, which links `aero::audio` alone and is the **sixth** probe. That task also **measured a sharpening of this very risk that no sentence here had stated**: the three vcpkg-free targets link `aero::profiling` `PRIVATE`, and `cmake/profiling.cmake` makes that an INTERFACE library carrying `Tracy::TracyClient` — and with it this shared root — whenever `AERO_ENABLE_PROFILING=ON`. `PRIVATE` keeps it off *consumers'* compile lines, but a target's own `PRIVATE` usage requirements apply to its **own** line, so `engine/audio/src/mixer.cpp`'s compile line carries `vcpkg_installed` in `macos-release` and does not in `macos-debug` (read from both `compile_commands.json`). **Every "hard compile error" claim about a vcpkg-free target is therefore a profiling-OFF claim, and any future sentence making one must say in which configurations.** The probe, which links no profiling, is the only compile-time enforcement that survives Release. Separately, task 3.7.3 closed the probes' own rot mode — a vcpkg package silently joining a probe's link line, opened at 0.2.3 and renewed at 0.4.5 §7.1 — with `.github/scripts/check-boundary-probes.sh`, which derives the probe set from `tests/CMakeLists.txt` and states one bounded predicate: a probe may be named by exactly two calls — its own `add_library(<probe> OBJECT …)` and its single `target_link_libraries(<probe> PRIVATE aero::x)` — and **any other command, in any tracked CMake file, naming a derived probe is a violation**. That is an allowlist rather than a list of banned commands, and deliberately so: three code-review rounds each closed the spellings they were shown (`target_include_directories`, `target_compile_options`, `set_target_properties`, `set_property`, the CMake ≥ 3.13 cross-directory append) and left the class open, because CMake has too many ways to reach a target for enumeration to converge. The link call's own shape — one `aero::` library, one `PRIVATE`, one call — is checked separately, and the routes that reach a probe *without naming it* — a directory-scoped include/link command, and the `EXCLUDE_FROM_ALL` spellings, in the registry's own file, any ancestor, or any `.cmake` module those `include()` — are refused separately. That arm is a denylist and is **not** claimed complete: `add_compile_options(-I…)`, a `CMAKE_CXX_FLAGS` mutation, a toolchain file and a preset's cache variables reach the same compile line, the last two from no CMakeLists at all. The ctest case `boundary-probes.probe_compile_line` is what closes the class, by reading `compile_commands.json` and asserting the property directly rather than predicting it. **RHI's mitigation is now in place**: `.github/scripts/check-rhi-boundary.sh` + `tests/rhi_boundary_probe.cpp` (task 0.4.5) — SDL_GPU is the fourth PRIVATE flat-root backend the probe bites for (after glm, SDL, miniaudio). **EnTT (task 1.3.1) is the fifth**: `.github/scripts/check-scene-boundary.sh` + `tests/scene_boundary_probe.cpp`. **quickjs-ng (task 4.1.1) is the sixth**, and the named next case is closed for it: `.github/scripts/check-script-boundary.sh` + `tests/script_boundary_probe.cpp`, the **seventh** probe — covered by `check-boundary-probes.sh` and `boundary-probes.probe_compile_line` with no edit to either, because both derive their probe sets. One structural novelty: `aero::scene_internal` **deliberately** carries `EnTT::EnTT` INTERFACE, so linking it into any boundary probe would silently make that probe vacuous — recorded in the probe's own comment block, and **refused by name** by both 3.7.3 guards since. R12 itself stays **open** in general: future private backends still inherit it, and so does the residual the textual guards cannot reach. **That residual was bounded wrongly three times in this task and is no longer bounded by a list**: it was described as "a contamination that never touches `tests/CMakeLists.txt`", and a `link_libraries()` in that very file was then measured escaping. CMake pushes state into a directory scope through many commands and through a toolchain file or preset cache variables that are in no CMakeLists at all. What reads a fact rather than predicting it is the ctest case `boundary-probes.probe_compile_line` — and it reads exactly **one symptom**, vcpkg's shared include root on a *probe's* compile line: it filters to `*_boundary_probe.cpp` entries, so it says nothing about `EXCLUDE_FROM_ALL` (an excluded target is still configured and still has an entry) and nothing about the three vcpkg-free targets, whose own lines legitimately carry that root in Release; what remains beyond it is a per-probe negative compile, which is what the still-deferred `try_compile` harness would add |
 | **R13** | **No ThreadSanitizer in CI** (raised by task 0.2.5) — the Debug lanes run ASan/UBSan (0.1.4), neither of which detects data races. `engine/core`'s job system (0.2.5) is the engine's first genuinely concurrent code, and every future subsystem that uses it inherits the gap: the suite can prove a job graph's *results* are correct while a race silently corrupts state on another machine or another day | Med | Med | Accepted for now — the job system's own internals are thin wrappers over enkiTS, which ships its own test suite, and the public API's contract (build single-threaded, submit/wait on the owning thread) keeps first-party concurrent code minimal. Revisit when the first real consumer lands (Phase 3+, likely `render` or `assets`): a TSan lane is a separate task, cheaper to add once there is concurrent first-party code worth pointing it at. TSan cannot share a lane with ASan. Task 2.2.5 added the second genuinely concurrent first-party code path (after 0.2.5's job system): the editor console's `LogSink` is written from arbitrary logging threads and drained from the frame thread. Its coverage is a stress arm under ASan/UBSan, which detects no races — this strengthens the case for a TSan lane. **Still open; the lane was deliberately not opened here.** |
 | **R14** | **In-flight log callbacks are not drained on detach** (raised by task 0.2.4) — `setLogCallback({})` and `shutdownLogging()` clear the *stored* callback but do not wait for an invocation already running on another thread, because the callback is invoked outside the internal lock by design. A record that passed the level check just before the detach can still be mid-callback after it returns, so detaching does **not** make the callback's captured state safe to destroy. ASan-proven heap-use-after-free for the Phase 2 editor-console pattern: a panel detaches, destructs, and a worker-thread record invokes the freed lambda | Med | Med | Documented on the public API at `engine/core/include/aero/core/log.hpp:92-101`. No consumer detaches-then-destroys yet, so it is unreachable today: the only callers are tests, which outlive their callbacks. Until a drain exists the contract is the caller's — keep anything the callback captures (e.g. a `this` pointer) alive until independently certain no in-flight record can still be executing, or synchronize externally. A drain/join was deliberately out of 0.2.4's scope; **decide at Phase 2**, when the editor console panel becomes the first real consumer and can pin down whether the drain belongs at the call site or in `core`. **RESOLVED 2026-07-28 (task 2.2.5)** — at the CALL SITE, by shared ownership, with `engine/core` byte-identical. `editor::LogSinkScope` installs a callback that captures a `std::shared_ptr<LogSink>` **by value**; `logWrite` copies the stored callback under its mutex (`log.cpp:123-133`) and invokes it outside (`:153-156`), so the `std::function` — and every object it captures — is alive for the whole invocation no matter when another thread detaches. Detach-then-destroy is structurally impossible. Proven deterministically by `use_count() >= 2` while installed (`tests/editor/console_model_test.cpp`, case 21) and stressed with 4 concurrent producers under ASan/UBSan (case 24). A drain/join in `core` was **rejected**: it would put a blocking wait into a global logging API on behalf of one consumer, need a reader count or a second lock on `logWrite`'s hot path (every record, every thread), and still not save a consumer that captured a raw `this` — the caller's ownership is what actually has to be right. `log.hpp:92-101`'s warning **stays as written**: it is still correct for anyone who captures raw state, and this task is the worked example of doing it right. |
@@ -74,7 +74,7 @@ Decisions deliberately deferred until there is data or the relevant phase arrive
 Work a task found, measured or declined that no task in `docs/tasks/` owns yet. The list moved here from
 `CLAUDE.md`'s state block on 2026-10-26, where a pointer to this section remains.
 
-**ONE HUNDRED UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**ONE HUNDRED AND TWO UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs in `CLAUDE.md`'s state block (fact
 4's four permitted cases, the inspector-row gap, the closed `File` section, E.1.1's fired thick-line handoff) are
@@ -250,22 +250,19 @@ not repeated here.
   and re-run 4.3.1's validation rows 1 and 6 from the bundle.
 - **A VM-core fix for R34** (4.3.3) — a call interrupted inside a promise executor leaves its rejection's reaction job
   for the VM's next call, which answers `Exception` whatever it is. 4.3.3 accepted and documented it; HR33 pins
-  today's behaviour, so the fix changes HR33's first body. The fix belongs to the VM core, not to the script layer,
-  and is revisited when 4.7.4's play loop exists. Within a `ScriptSystem`, 4.4.1's settle call keeps the job from
-  faulting another instance (R34's row).
+  today's behaviour, so the fix changes HR33's first body. The fix belongs to the VM core, not to the script layer.
+  4.7.4's play loop left it as it was: each Play makes a new VM, so whatever an interrupted call leaves ends with that
+  Play's VM at Stop. Within a `ScriptSystem`, 4.4.1's settle call keeps the job from faulting another instance (R34's
+  row).
 - **A native file watcher behind `poll()`'s seam** (3.1.4's reversal condition, measured by 4.3.3) — 3.1.4 kept the
   asset watcher on polling until "a Phase 4 script-reload loop where 1–2 s of poll latency is felt on every save".
   4.3.3's spike measured a save reaching new JavaScript in 2.19–3.2 s (median about 2.75 s) on macOS, flat over 1, 10
   and 50 scripts: esbuild is 10–25 ms of it, and the watcher's 2 s settle and up to 1 s of cooldown are the rest.
-  4.3.3 left the watcher alone. Whether the latency is felt is settled when Story 2's demo runs (4.7.4); a native
-  backend would be a new task that fills `WatchSnapshot` behind `poll()`'s seam.
-- **The play session's script mount and the publish window** (4.3.4) — what a mapped frame names depends on the mount
-  4.7.4's play session gives the VFS: the project root at `res://` makes a frame read `res://assets/scripts/<name>.ts`,
-  while 4.3.1's `Library/Scripts` mount (ST20–ST22's) makes it read the map's own `../../assets/scripts/<name>.ts`. And
-  a load between a publish's map write and its JavaScript write reads the next build's map with the previous
-  JavaScript (`vm.hpp` documents it); the transpiler writes the provenance record last, so a reload keyed on the
-  record sees both files of one build. `engine.spawn` (4.4.4) reads `.aeroprefab` paths through the same VFS, so the
-  mount must also serve the project's `assets/` under `res://assets/`. Decided when 4.7.4 mounts the play session's VFS.
+  4.3.3 left the watcher alone. 4.7.3 + 4.7.4's validation row 12 measured 2.47–2.62 s from a save to the publish and
+  2.5–2.7 s to a visible change in a running game, and found the delay noticeable; Story 2's demo on `main` measured
+  2.23–2.56 s from a save to a visible change and felt it as a pause of about 2.5 s before the cubes react, so the
+  latency this reversal names is felt; Phase 4's gate comes first, and no task owns the backend yet. A native backend
+  would be a new task that fills `WatchSnapshot` behind `poll()`'s seam.
 - **Attaching a script by dropping it on a Hierarchy row or the Viewport** (4.4.1) — a Script asset drops only on an
   asset-field row (`classifyAssetDrop`); a drop on a Hierarchy row or on the Viewport is refused, and validation row G9
   pins that nothing changes. Attaching it there means adding a ScriptComponent and setting its `script` as one
@@ -274,9 +271,6 @@ not repeated here.
   hook is written with `override` (TS4117), and the template keeps `noImplicitOverride` off because it would demand
   `override` on every hook (TS4114). Nothing at run time reports a method that looks like a misspelt hook. No task owns
   it.
-- **Binding input to the play session** (4.4.3) — for 4.7.4: `Vm::bindInput(playSession.input())` at Play and
-  `unbindInput` at Stop. The cadence is settled by 4.7.1: the game's `InputState` starts a new frame only after a game
-  frame ran, so an edge made while paused reaches the frame that Step or resume runs (GI5).
 - **The runtime's input** (4.4.3) — for Phase 5's runtime loop: bind `ctx.input()` to the game's VM and opt in to
   `GamepadDrivers::System` (R38 on Windows).
 - **Packing a prefab** (4.4.4) — for 5.1.2: a `.aeroprefab` packs as text at its `res://` path, and a referenced asset is
@@ -292,26 +286,22 @@ not repeated here.
   every non-mesh entity in front of the eye sits at distance 0, all of them hit, and the lowest index wins. Measured by
   I378 in a shader-tools-OFF build. Either the comment or `pickEntity`'s degenerate case changes.
 - **The TypeScript half of the two-language demo** (4.5.1) — Story 4's first line asks that the C++ mini-game "plays the
-  same logic as the TypeScript small game", and no TypeScript small game exists. The rules in
+  same logic as the TypeScript small game", and no TypeScript small game exists. Since 4.7.4,
+  `samples/phase-4-scripting/ts/` is a TypeScript project of two cubes that run `mover.ts`: Story 1's and Story 2's
+  demos run on it, and the small game grows from it, but it is not that game. The rules in
   `samples/phase-4-scripting/cpp/README.md` are the reference: every constant, the frame order and the scripted run's
-  pinned line. The TypeScript half is written against them when Story 3's demo is assembled, after Play (4.7.1, 4.7.2
-  and 4.7.4).
+  pinned line. The TypeScript half is written against them when Story 3's demo is assembled; Play runs scripts since
+  4.7.4. The Phase 4 gate's two-language demo waits on it too.
 - **A published SDK archive per tag** (4.5.1) — the SDK exists only as `cmake --install` of an `<os>-sdk` preset. Nothing
   builds, names or uploads a prefix per OS on a tag. It sits beside 5.2.3's precompiled runtime, and no task owns it.
 - **A game in a macOS bundle** (4.5.1) — for 5.4.1. Inside a `.app`, `basePath()` is `Contents/Resources`, while
   `aero_add_game` copies `shaders/` (and a game's `assets/`, by the sample's own rule) beside the executable in
   `Contents/MacOS`. The validation pass had to copy them into `Contents/Resources` by hand to run either game as a bundle.
   An exported macOS game needs that copy.
-- **A hidden or zero-area Viewport in play** (4.7.1) — for 4.7.4's validation. The game's image rect is valid only on a
-  frame whose Viewport drew its image, and the feed reads no pointer without one; dropping the reset
-  (`gameImageRectValue.valid = false`) is unobservable until a script reads `engine.input` (the sabotage row S128). Once
-  4.7.4 binds `PlaySession::input()`, a validation row plays with the Viewport hidden behind another tab and with it
-  shrunk to nothing, and reads that the game sees no pointer. A Viewport behind another tab keeps its last valid rect,
-  which is benign: the game has no focus then.
 - **A Hierarchy row's open state across Stop** (4.7.2) — ImGui keeps each tree row's expanded state under an id made
   from the entity's handle, and Stop clears the editor's handles but not ImGui's state. The restored World's next new
   entity can receive a play-time entity's handle (a new index always starts at version 0), and its row then opens as
-  that entity's did. Cosmetic, and unreachable before 4.7.4 lets a script create an entity in play. No task owns it.
+  that entity's did. Cosmetic, and reachable since 4.7.4, which lets a script create an entity in play. No task owns it.
 - **A seam-made create crossing a Quit-path Stop** (4.7.2) — `requestCreateEntity` recorded while playing, followed by a
   Quit, creates the entity in Edit. Every GUI path to it is locked in play (4.7.1), so only the test seam reaches it,
   and it carries no entity, so Stop's clears do not cover it. No task owns it.
@@ -324,6 +314,24 @@ not repeated here.
   entity (`SubtreeSnapshot::Impl`, history, today) is outside it; it reads one line per declaration, so a declaration
   wrapped over two lines is invisible; and its name lookup is a three-step scope walk, not C++'s (`editor.md`, "Stop
   markers"). Widening it is unowned.
+- **Edits not yet applied in the Material and Import Details panels at Play** (4.7.3, spec D3) — the autosave covers
+  what the unsaved-changes guard covers, the scene. A Material panel's unsaved edit and an Import Details setting not
+  yet Applied stay outside it, as they stay outside the guard at Quit today, so a crash during play loses them. No task
+  owns it.
+- **Two editors on one project** (4.7.3) — nothing locks a project, so a second editor that opens a project while
+  another plays a game in it reads the live Play's record as a crash and offers its copy. No task owns it.
+- **A script whose transpile failed runs its last published JavaScript in play** (4.7.4) — the transpiler keeps the last
+  good publish, and `PlayScripts` loads `Library/Scripts/<guid>.js` whatever build it is, so the game runs the previous
+  code while the Console shows the transpile error. No task owns it.
+- **The Windows editor's 1 MiB main thread under a VM call inside `tick()`** (4.7.4) — every `PlayScripts` call runs on
+  the editor's main thread, and a VM call needs `stackLimitBytes` + 256 KiB free, 768 KiB of Windows' 1 MiB (R37's
+  figure); the editor's own frames above the VM's entry are unmeasured. The Windows pass records it on row 13 of 4.7.3 +
+  4.7.4's page, and a stall makes a `/STACK` link option for `aero_editor` the fix. No task owns it.
+- **The first Play of a launch moves glyph-edge pixels in four chrome texts** (4.7.3 + 4.7.4's validation row 11) —
+  after the first Play and Stop of a launch, one-pixel columns at a glyph's left edge, 16–18 px tall, differ in the
+  viewport's `RMB + WASD to fly` chip, the HUD's `Draw calls` label, the toolbar's `Local` and a Console row. Two
+  further cycles read 0 px everywhere, and the rendered scene, the Hierarchy and the Inspector read 0 px in every cycle.
+  The cause is not identified. No task owns it.
 
 ---
 
@@ -492,6 +500,18 @@ and at Stop on 10 000 entities (the status bar's readout is a 0.5 s average, so 
 CI's lanes ran every new case in both configurations on PR #138's run (`43034906377`, attempt 4), 228 / 228 on Windows
 and 233 / 233 on Linux, where LSan reported nothing for RS6's fifty cycles or WC4's destroyed source. Attempts 1–3 were
 red on Linux's package install alone, because the runner could not resolve `azure.archive.ubuntu.com`.
+
+**4.7.3 AND 4.7.4 OWE A WINDOWS PAGE AND A LINUX PAGE, AND ROW 7'S 1× CAPTURE IS OWED.** No manual pass has run off
+macOS, and all seventeen of the page's rows are owed by hand on both: a killed editor's record and copy, the recovery
+modal's Recover, Discard, Enter, keypad Enter and Escape, a clean scene's crash offering nothing, the modal's frame and
+a long scene name's elision, a read-only `Library/`, the sample's swing, Pause, Step and Stop's restore, three saves of
+`SPEED` while playing with their latency, a throw's Console row and tooltip, a held Space, a hidden Viewport, and a
+dirty Play's tick on 10 000 entities. On Windows, row 13 also records whether a script call fits the editor's 1 MiB main
+thread (the unowned handoff above). Row 7's frame comparison and 560-point width were measured at UI scale 1 on a 2×
+panel, since no 1× display was attached; its 1× capture is owed by a pass on one. Row 15's zero-height half is
+unreachable on macOS, where the dock keeps the Viewport's image at 6 points or more. PR #139's CI run (`43552203571`, 6
+/ 6 green on its first attempt) is the new cases' first run on MSVC, libstdc++, D3D12 and Vulkan, among them the
+fixtures that fail an atomic write onto a non-empty directory (RV19, I432, I433).
 
 **METHOD TRAPS FOR DRIVING THE EDITOR, ALL MEASURED.** A pending TCC prompt stalls the editor to ~0.2% CPU
 with a window that **NEVER RENDERS** (a black capture); the prompts **CASCADE**, one per bundle identity, and

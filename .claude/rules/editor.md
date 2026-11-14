@@ -1027,6 +1027,11 @@ state.
 - RS7 reads the headers and fails on a holder with no marker, on a `[stop:clear]` set that differs from the resets, and
   on a reset body that misses a member. RS9 pins `restoreAfterPlay`'s two `clearRetainedEntities` calls. A new retained
   holder is reset in its class's reset function in the same change.
+- **`PlayScripts` (task 4.7.4) holds no entity, so neither it nor `EditorApp::playScripts` carries a marker.** Its
+  members are a `VirtualFileSystem`, a `script::Vm`, a `std::unique_ptr<script::ScriptSystem>` and a
+  `std::vector<Guid>`, none of them a carrier, and RS7 also fails a marker that sits on no holder, so none is added. A
+  member holding an `Entity` added to it makes it a carrier, and RS7 fails until that member carries a marker (seed
+  `S83`). `PlayRecoveryOffer`, `PlayScriptStats` and `PlayRecoveryState` hold no entity either.
 - RS7's limits: it reads headers only, so a type local to a `.cpp` (`SubtreeSnapshot::Impl`) is outside it; it reads one
   line per declaration, so a declaration wrapped over two lines is invisible; and its name lookup is a three-step scope
   walk, not C++'s.

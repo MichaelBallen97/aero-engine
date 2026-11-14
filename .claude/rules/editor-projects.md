@@ -269,6 +269,44 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   never tried. Such an entry is **skipped and the scan continues**; abandoning the directory would
   hand the whole project's startup scene to the first bad byte in it.
 
+### The play recovery record (task 4.7.3)
+
+`<projectRoot>/Library/play-recovery.json` and `Library/play-recovery.scene.json` (docs/09 §4.13) are the seatbelt
+around Play. `play_recovery.{hpp,cpp}` is PURE apart from four disk functions through `text_file.hpp`: no
+`<filesystem>`, no ImGui, no SDL, no entt, and no logging. It RETURNS a reason and the caller words it: `EditorApp` logs
+the autosave's lines, `scene_session.cpp` the offer's.
+
+- **One writer per transition, and nothing deletes either file.** Play from Edit writes the copy (a dirty scene only)
+  and then the record with `playing: true`, in `EditorApp::autosaveBeforePlay`, BEFORE `PlaySession::apply`. Every Stop
+  rewrites the record with `playing: false`, its other fields kept, in `finishPlayRecord`, before `restoreAfterPlay`,
+  whether or not Play's own write succeeded. Every answer to the offer rewrites it with `playing: false` in
+  `answerPlayRecovery`, at `applyFileRequests`' step 0f. Nothing else writes either file. A finished or Discarded copy
+  stays until the next dirty Play overwrites it, and `play_recovery.cpp` is in `check-project-no-delete.sh`'s Check A.
+- **A failed autosave refuses a DIRTY Play, never a clean one (spec D6).** A dirty scene whose copy or record cannot be
+  written does not play: one ERROR names the file and the reason, the mode stays Edit, nothing is parked and
+  `playAutosaveRefusalCount()` counts it. A clean scene writes no copy, and a record it cannot write is one WARN. A
+  build without scene I/O writes no copy, logs one WARN and plays. Only a control that takes the mode from Edit to
+  Playing reaches the autosave; a resume from Pause writes nothing.
+- **Play is refused while a modal is up, BEFORE the autosave.** `applyFileRequests` opens a project after the toolbar
+  read its enabled flag, so the offer can be raised in the tick that accepted Play. `applyPlayControl` refuses a
+  starting control while `modalInputActive` holds, counted by `playModalRefusalCount()` and logged nowhere, so a refused
+  Play writes nothing over the crashed record it would otherwise overwrite (`I431`).
+- **The offer is decided LAST in `openProjectPath`, after `adoptProject` and `restoreLastScene`, and never inside
+  `adoptProject`**, whose statements stay as they were. `createAndOpenProject` never decides it: a new project has no
+  record. `offerPlayRecovery` resets the offer first, so a previous project's offer never survives into this one, and
+  raises it for exactly one combination of facts (`playRecoveryOffered`: scene I/O, a record that reads, `playing`,
+  `copyWritten` and the copy present). A record that exists and does not read or parse is one WARN, in every
+  configuration, and no offer.
+- **Recover parses the copy first and swaps only on success: `openSceneText` (which clears the history in the same call,
+  INV-6), then the RECORD's scene bound as the path (cleared for `""`), then `CommandStack::forgetClean()`.** The
+  document is unsaved with an empty history, and the title's marker, the breadcrumb and the quit guard all read it
+  through `!isClean()`. The path is the record's, never the scene the open restored (`RV22`). A copy that is gone or
+  does not parse is one ERROR, the open's scene stays, and the answer still finishes the record (`RV15`, `RV20`,
+  `RV21`).
+- **Both answers end the offer, Discard wins a frame carrying both, and an answer for a project that is no longer the
+  open one is dropped** (`RV16`). The drain is step 0f, before step 2's `modalInputActive` refusal, so the modal cannot
+  swallow the answer it is waiting for.
+
 ## Project settings (task 2.6.2)
 
 - **`PanelContext::project` is a `const ProjectSession&`, and the `const` is the enforcement.**

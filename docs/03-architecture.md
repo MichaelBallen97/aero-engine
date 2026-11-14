@@ -228,9 +228,23 @@ editor plays is what the cooked game runs:
 
 While the mode is not `Edit` the scene is locked: every pusher onto the undo stack, the Create menu, drops, Undo and
 Redo and the File menu's scene and project actions are off, and a Quit stops play before the usual unsaved-changes guard
-runs. The play session calls no script: `ScriptSystem::update` hangs on the game frame, `onDestroy` on Stop, and the
-scene snapshot and restore on the transitions into and out of `Playing` (tasks 4.7.4, 4.7.2 and 4.7.3). The editor's
-Context starts the gamepad drivers (`GamepadDrivers::System`) so pads feed the game while it has focus.
+runs. The transitions into and out of `Playing` carry the rest of play: the scene snapshot and restore (task 4.7.2,
+below); the recovery copy and the play record (task 4.7.3: before the mode moves, a scene with unsaved changes is
+written to `Library/play-recovery.scene.json` and `Library/play-recovery.json` records that a game is playing, `docs/09`
+section 4.13; a project that opens on a record that never finished offers the copy back); and the scripts (task 4.7.4).
+The editor's Context starts the gamepad drivers (`GamepadDrivers::System`) so pads feed the game while it has focus.
+
+Play runs the project's scripts. Each Play makes one `PlayScripts` (src-private in `aero_editor_core`, the one editor
+translation unit that names a script type): a new VM with the default limits over a VFS that mounts the project root at
+`res://`, the game's own `InputState` bound to it, and a `ScriptSystem` over the copy the park left. A script's module
+is `res://Library/Scripts/<guid>.js`, the file the transpiler publishes, so a mapped stack frame names
+`res://assets/scripts/<name>.ts` and `engine.spawn('res://assets/...')` reads the project's assets folder; Phase 5's pak
+keeps the same project-relative paths. `ScriptSystem::update` runs once per game frame with the game clock's dt, between
+`PlaySession::advance` and the frame's end, so the first game frame runs every `onInit`, a paused game runs no script,
+and a Step runs exactly one frame. Stop runs `onDestroy` and tears the holder down before the restore, so nothing of one
+Play reaches the next. A script the transpiler publishes while a game is playing or paused reloads into it at once
+(`ScriptTranspiler::takePublished`, the report it makes after each publish's record); outside play the report is
+dropped, and the next Play loads what is published.
 
 ### The park and the restore (task 4.7.2)
 
@@ -244,10 +258,14 @@ selection against the play World, moves the original back as a whole World, puts
 selection again; the copy is destroyed there. `sceneWorld` stays the same object throughout and only its `impl`
 changes, so every `World&` held across the transitions stays valid.
 
-- **At Play:** 4.7.3's autosave, then the park, then 4.7.4's ScriptSystem binds to the copy and runs `onInit`. The park
-  runs after `PlaySession::apply` and before any game frame.
-- **At Stop:** 4.7.4's `onDestroy` runs and its ScriptSystem is destroyed, then `restoreAfterPlay`. No VM holds an
-  entity of the copy across the move, and since the copy keeps every handle, nothing is re-handed after a bind.
+- **At Play:** a Play refused while a modal is up writes nothing. Then 4.7.3's autosave runs, before
+  `PlaySession::apply`, so a refused one leaves the mode in Edit with nothing parked; then the park; then 4.7.4's
+  `PlayScripts` binds a new VM's ScriptSystem to the copy and the game's input. The park runs after `PlaySession::apply`
+  and before any game frame, and the next tick's first game frame runs every `onInit`.
+- **At Stop:** `PlayScripts::stop()` runs `onDestroy` for every initialised instance, then the system, the input
+  binding, the VM and the VFS are destroyed, then the play record is marked finished, and then `restoreAfterPlay` runs.
+  No VM holds an entity of the copy across the move, and since the copy keeps every handle, nothing is re-handed after a
+  bind.
 - **Every Stop path is one call:** the toolbar's Stop, the chord, `requestPlayControl(Stop)` and a Quit while playing or
   paused, which reaches it at the top of `tick()`, before the unsaved-changes guard judges the document. None runs
   inside the draw walk.

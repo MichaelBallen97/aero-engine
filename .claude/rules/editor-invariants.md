@@ -262,6 +262,25 @@ a click does and a GPU case observes the real close (`popupOpenAtEntry`, `I354`,
 witness of a modal close in this tree. A seam that sets a form one-shot from outside the body needs `I192`'s
 drained arm instead; a new way to answer the dialog joins the one resolution.
 
+**THE RECOVERY OFFER IS THE FOURTH MODAL, AND IT KEEPS BOTH MODAL RULES ABOVE (4.7.3).** `modalInputActive` gains its
+fourth term, `projectFlow.recoveryOffer.open`, so Play, every chord-driven file action and every request seam the modal
+rule gates are refused until the offer is answered (`RV12`), and `applyPlayControl` reads the same function before the
+autosave (`I431`). `drawPlayRecoveryModal` draws in `drawShellUi`'s post-menu-bar slot, after
+`drawSceneContainmentModal` and before `applyFileRequests`, whose step 0f drains its answer. Its two buttons, Enter, the
+keypad's Enter, Escape and the GPU seam `requestPlayRecoveryAnswer` record one answer through ONE resolution inside the
+body, Discard first, each arm closing the popup on the line after its one-shot; an offer cleared without the body takes
+`I192`'s drained arm (enter the popup, `CloseCurrentPopup`, `EndPopup`) before it returns. `I423` pins all three as
+source text, and `I421` and `I422` observe the real close. The seam's one-shot dies with its tick, reset beside
+`pendingNewProjectAnswer`, so an answer never reaches the next project's offer (`I434`).
+
+**AN `EditorApp` IS NEVER MOVED WHILE A GAME IS ACTIVE (4.7.4).** `PlayScripts` borrows `sceneWorld` (its
+`ScriptSystem`) and `playSessionValue`'s input (its VM's `bindInput`), both value members, so the defaulted `noexcept`
+move would leave both borrows dangling. No caller moves a live app: every tier holds it in the `std::optional` that
+`create()` returned. The invariant is stated on `playScripts`' declaration, and nothing checks it at run time.
+`~EditorApp` tears a running game down first, while the World and the panels live: `onDestroy` runs on the copy, and
+the play record keeps `playing: true`, because a destroyed app is not a Stop. A moved-from app holds a null
+`playScripts` and takes no branch.
+
 **THE NEW PROJECT DIALOG READS THE DISK ONLY THROUGH `NewProjectForm::probe` (E.6.4)**, which `applyFileRequests`
 keeps outside the draw walk, and the probe and `createProject` share ONE target-path rule (`newProjectTarget` /
 `classifyTarget`; `P86`, `P88`), so the preview and Create cannot disagree. The probe is advisory: `createProject`

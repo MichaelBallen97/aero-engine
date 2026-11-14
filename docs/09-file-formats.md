@@ -485,8 +485,9 @@ file. No golden fixtures; this format has no byte-stability requirement any call
 ### 4.10 The per-project editor state envelope
 
 **Nature.** Machine-local, per-project, derived, disposable. **One file per PROJECT**, at
-`<projectRoot>/Library/editor-state.json` — beside `asset-cache.json` (§6) and `BlenderExports/`
-(§7.5), inside the directory that already carries a `.gitignore` containing `*`, is already excluded
+`<projectRoot>/Library/editor-state.json` — beside `asset-cache.json` (§6), `BlenderExports/`
+(§7.5) and the play recovery record and copy, `play-recovery.json` and `play-recovery.scene.json`
+(§4.13), inside the directory that already carries a `.gitignore` containing `*`, is already excluded
 from the asset scan by the project root's canonical path, and is already excluded from the file
 watcher the same way. It records the editor's **working position** in that project, so that opening
 the project resumes where you left it.
@@ -676,6 +677,82 @@ The writer's one product caller is New Project, for `"cpp"` (task 4.6.1): it run
 never on a later open, so a `main.cpp` the developer deleted on purpose is not put back. A file it cannot write costs
 one WARN, and the project opens anyway: the manifest is valid and nothing is rolled back. The test that builds and runs
 a generated project (`sdk.template`) is the other caller.
+
+### 4.13 The play recovery record (task 4.7.3)
+
+> Enforced in code by `editor/src/play_recovery.cpp` (`parsePlayRecoveryState` / `writePlayRecoveryStateText` /
+> `readPlayRecoveryState` / `writePlayRecoveryState` / `writePlayRecoveryCopy`); `tests/editor/play_recovery_test.cpp`
+> is its machine-checkable form.
+
+**Nature.** Machine-local, per-project, derived, never committed. Two files: the record,
+`<projectRoot>/Library/play-recovery.json`, and the copy, `<projectRoot>/Library/play-recovery.scene.json`, beside
+`editor-state.json` (§4.10) inside the directory that is `.gitignore`d and excluded from the asset scan and the file
+watcher (§15.6). They are the editor's seatbelt around Play (R11): when the editor goes down while a game is playing a
+scene with unsaved changes, the next open of the project offers the scene from before Play back.
+
+**The copy** is scene format v1 (§2): the bytes Save Scene writes, `sceneToText` of the World about to be parked. Only
+a Play from Edit of a scene with unsaved changes, titled or untitled, writes it, in a build with scene I/O. The scene's
+own file is never written by Play.
+
+**The record's envelope.** Four root keys, in this exact order on save. Every key is required: the record is written
+whole by one writer, so a missing key means a damaged file, and a damaged record must never offer.
+
+| Key | Kind | Required | Meaning |
+|---|---|---|---|
+| `version` | number, integral | yes | must equal `1`; validated first |
+| `playing` | bool | yes | a game was started and no Stop has written since |
+| `scene` | string | yes | the scene the document was on at Play: a **project-relative**, `'/'`-separated path satisfying §4.4's relative-path rule, at most 1024 bytes, **or** empty (an untitled scene, or one outside the project). Written even when empty |
+| `copyWritten` | bool | yes | that Play wrote the copy |
+
+```json
+{
+  "version": 1,
+  "playing": true,
+  "scene": "scenes/main.scene.json",
+  "copyWritten": true
+}
+```
+
+**Parse refusals.** The record is damaged, never read as defaults, when the text is not JSON; the root is not an
+object; `version` is missing or is anything but the number `1` (`2` and the string `"1"` included); `playing` or
+`copyWritten` is missing or not a bool (`1` and `"true"` are refused); `scene` is missing or not a string; `scene` is
+longer than 1024 bytes (a failure, never a truncation); or a non-empty `scene` is not a legal relative path (`/abs`,
+`a/../b`, `a\b` and `C:/x` are refused). An **unknown key** is ignored and the record still parses.
+
+**Writers.** Each write is one whole-file atomic rewrite; the record's other fields are kept wherever only `playing`
+changes.
+
+| When | What is written | A failed write |
+|---|---|---|
+| Play from Edit, the scene dirty, scene I/O available | the copy, then the record `{playing: true, scene, copyWritten: true}` | Play is refused: one ERROR names the file and the reason, the mode stays Edit and nothing is parked |
+| Play from Edit, the scene clean | the record `{playing: true, scene, copyWritten: false}`; an existing copy keeps its bytes | one WARN; Play starts |
+| Play from Edit, the scene dirty, no scene I/O (`AERO_REFLECT_TOOLS=OFF`) | one WARN that no copy is written, then the record `{playing: true, scene, copyWritten: false}` | one WARN; Play starts |
+| every Stop (the toolbar, the chord, a request, a Quit while playing or paused) | the record with `playing: false`, its other fields as Play set them | one WARN |
+| an answer to the offer, Recover or Discard | the record `{playing: false, scene, copyWritten: true}` | one WARN |
+
+A resume from Pause writes nothing: only a control that takes the mode from Edit to Playing does. A Play refused because
+a modal is up writes nothing either. Both writers create `Library/` when it is absent and write `Library/.gitignore`
+**only when absent**, never overwriting one, from the constants §6 uses; a `.gitignore` failure does not block the
+write. **Nothing deletes either file**: a finished Play's copy, or one Discard answered, stays until the next dirty Play
+overwrites it, and `play_recovery.cpp` is in `check-project-no-delete.sh`'s Check A.
+
+**The reader** is a project open (`openProjectPath`: at launch, from the Welcome window or recents, or through Open
+Project), after the last-scene restore of §4.10. A missing record is the normal state, silently. A record that exists
+and cannot be read (a directory, or one the OS refuses) or does not parse is one warning naming it and no offer, in
+every build configuration. The offer is raised for exactly one combination: scene I/O available, the record read,
+`playing` and `copyWritten` both true, and the copy present. A project New Project creates has no record and is never
+read. **Recover** parses the copy first and swaps only on success: the copy becomes the current scene, bound to the
+record's `scene` made absolute (no path for `""`), unsaved with an empty undo history. **Discard** keeps the scene the
+open showed and the copy's bytes. A copy that is gone or does not parse is one error, and the open's scene stays; the
+answer still finishes the record.
+
+**Canonicalization.** `writeTextFileAtomic`, `JsonWriter`'s default configuration (pretty, 2-space), the fixed key
+order above with `version` first, exactly one trailing `\n`; re-parses equal. Two writes of the same value produce
+byte-identical files.
+
+**These files are EDITOR-ONLY.** The runtime never reads them.
+
+No golden fixtures; `RV1` pins the canonical text byte for byte.
 
 ## 5. Asset meta format v1
 

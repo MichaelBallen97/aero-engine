@@ -10,13 +10,13 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
-**Phase 4 (Scripting) is open.** Epics 4.1–4.6 are closed and Epic 4.7 is open; every merged task is macOS-validated
-(`docs/10`'s index). Epics 4.1–4.3: a quickjs-ng VM with ES modules read through the VFS; the frozen `engine`
-namespace and `aero-engine.d.ts`, checked by a pinned TypeScript 5.9.3; each changed `.ts` bundled by a pinned esbuild
-0.28.2 to `Library/Scripts/<guid>.js` + `.js.map` (`using` lowered for R21); `.aeroscript` bytecode cooked by
-`aero_cooker script` (`docs/09` §16; R31, R33); all-or-nothing hot reload (R29, R34); and source-mapped stacks (R35).
-Epic 4.4: `engine::ScriptComponent`, the eleventh built-in, and `ScriptSystem`'s per-entity lifecycle (a failure stops
-its instance until `reloadScript`; R37); the entity/world API with a deferred `engine.destroy`; the frozen
+**Phase 4 (Scripting) is closed in code and open at its gate.** Epics 4.1–4.7 are closed; every numbered task is merged
+and macOS-validated (`docs/10`'s index). Epics 4.1–4.3: a quickjs-ng VM with ES modules read through the VFS; the
+frozen `engine` namespace and `aero-engine.d.ts`, checked by a pinned TypeScript 5.9.3; each changed `.ts` bundled by a
+pinned esbuild 0.28.2 to `Library/Scripts/<guid>.js` + `.js.map` (`using` lowered for R21); `.aeroscript` bytecode
+cooked by `aero_cooker script` (`docs/09` §16; R31, R33); all-or-nothing hot reload (R29, R34); and source-mapped stacks
+(R35). Epic 4.4: `engine::ScriptComponent`, the eleventh built-in, and `ScriptSystem`'s per-entity lifecycle (a failure
+stops its instance until `reloadScript`; R37); the entity/world API with a deferred `engine.destroy`; the frozen
 `engine.input` over a borrowed `platform::InputState`, gamepads opt-in per Context (`ContextConfig::gamepads`: `Off`,
 `System`, `VirtualOnly`; R38: Windows' DirectInput can stall a real-driver start-up); and `.aeroprefab` prefab-lite
 spawn with Save as Prefab and drops (`docs/09` §17; R39: BS8 can go red on Windows alone). Epic 4.5 (#136): a C++ game
@@ -29,32 +29,34 @@ Component, by metadata. `engine::editor::PlaySession` (pure, in `aero_editor_cor
 toolbar's Play, Pause, Step and Stop, the Cmd/Ctrl+P, +Shift+P and +Alt+P chords, a game clock (a frame per tick at
 `FrameClock::deltaSeconds()`, Step 1/60 s), the game's own `platform::InputState` fed while the game has focus, and a
 scene lock; Play needs an open TypeScript project and draws through the scene's lowest-index Camera (R38 reaches the
-editor). **4.7.2 (Scene snapshot & restore), PR #138 `2dde14a`, 7 / 7 on 2026-11-12**: Play copies the scene's World
-with `World::clone` (identity-exact, the one new public engine method) and `ParkedScene` holds the original while the
-game runs on the copy; every Stop moves the original back with its root order, keeps the undo history (INV-6's one
-exception) and drops every entity handle the editor kept from play (a `[stop:…]` marker on every holder, RS7; `docs/03`,
-"The park and the restore"). Play runs no script yet: 4.7.4 calls `update`, `stop` (its `onDestroy` before the restore)
-and `reloadScript`, supplies the resolver, binds `PlaySession::input()` and picks the VFS mount that decides whether a
-frame reads `res://assets/...` and where `spawn` finds a prefab; 4.7.3 autosaves before the park (unowned handoffs in
-`docs/08`). No quickjs-ng patch shipped (R21, R23, R24, R25, R31 stay open decisions in `docs/08-risks.md` and
-`docs/future-roadmap.md`). In `docs/tasks/phase-4.md`'s `## Stories`, Story 1 (4.2.1, 4.3.1, 4.4.1, 4.7.1, 4.7.2,
-4.7.4's lifecycle part) has its first and fourth lines, the spine of its third (Pause, then Step runs exactly one
-frame), its fifth line's restore, and the engine side of its second line and of its fifth line's `onDestroy`, and waits
-on 4.7.4; Story 2 (4.7.3, 4.3.3, 4.7.4's hot-reload part, 4.3.4) has the engine side of its third and fourth lines and
-waits on 4.7.3 and 4.7.4; Story 3 (4.4.2, 4.4.3, 4.4.4, 4.2.2, 4.3.2) has every listed task merged: it has its cook
-line, its `.d.ts` line, its third line's editor half and its first line's restore after Stop, and the engine side of its
-first and second lines and of its third line's `spawn`, and its demo waits on 4.7.4; **Story 4 (4.5.1, 4.5.2, 4.6.1) has
-every listed task merged, and its demo ran on 2026-11-09 on a build of `main`: 7 / 7 executable rows PASS**; its first
-line's "same logic as the TypeScript small game" and the demo's "beside the TypeScript version" wait on that game (an
-unowned handoff in `docs/08`). No other story's demo has run. The next task is **4.7.3 (Autosave-before-play)**: the
-order stays numeric.
+editor). 4.7.2 (#138): Play copies the scene's World with `World::clone` (identity-exact, the one new public engine
+method) and `ParkedScene` holds the original while the game runs on the copy; every Stop moves the original back with
+its root order, keeps the undo history (INV-6's one exception) and drops every entity handle the editor kept from play
+(a `[stop:…]` marker on every holder, RS7; `docs/03`, "The park and the restore"). **4.7.3 + 4.7.4 (Autosave-before-play
+and Script lifecycle in play mode), one unit, PR #139 `abc38e5`, 17 / 17 on 2026-11-14**: before Play moves the
+mode, a scene with unsaved changes is copied to `Library/play-recovery.scene.json` and `Library/play-recovery.json`
+records that a game is playing (`docs/09` §4.13); a failed write refuses a dirty Play, every Stop marks the record
+finished, and a project that opens after a Play that never stopped offers the copy back in a modal (Recover, unsaved
+with an empty history, or Discard). Each Play makes one VM and `ScriptSystem` (`PlayScripts`; `aero_editor_core` links
+`aero::script` PRIVATE) over the project root at `res://`: `onInit` on the first game frame, `update` once per game
+frame (none while paused, one per Step), `onDestroy` at Stop before the restore, and a reload of each script the
+transpiler reports published while a game plays or is paused. `samples/phase-4-scripting/ts/` is the TypeScript sample,
+two cubes running `mover.ts`. No quickjs-ng patch shipped (R21, R23, R24, R25, R31 stay open decisions in
+`docs/08-risks.md` and `docs/future-roadmap.md`). In `docs/tasks/phase-4.md`'s `## Stories`, every story has every
+listed task merged. **Story 1's demo: 6 / 6 executable rows PASS and Story 2's: 5 / 5, both on 2026-11-14 on a build
+of `main`; Story 4's: 7 / 7 on 2026-11-09.** Story 3's demo, Story 4's first line ("same logic as the TypeScript small
+game") and its demo's "beside the TypeScript version" wait on the TypeScript small game, which does not exist yet (an
+unowned handoff in `docs/08`), and so does the Phase 4 gate's deliverable, the two-language demo. The next step is the
+Phase 4 gate, before Phase 5: **Story 3's small TypeScript game**, a new Phase 4 task that starts with Decide.
 
-**Three phase gates are still open**, each owing its deliverable rather than code:
+**Four phase gates are still open**, each owing its deliverable rather than code:
 - **Phase 0**: macOS-PASS, held open for the Windows/Linux 60 fps sign-off (`samples/phase-0-cube/VALIDATION.md`).
 - **Phase 3**: all seven epics closed in code; the gate artifact `samples/phase-3-content/` does not exist, and the
   gate's audible half has never been heard.
 - **Phase E**: all 24 tasks merged; the gate artifact `samples/phase-E-editor/` does not exist, and E.1.5's validation
   page has never been run.
+- **Phase 4**: all seven epics closed in code; the gate artifact `samples/phase-4-scripting/` holds the C++ mini-game
+  and the two-cube TypeScript sample, and its two-language demo waits on the TypeScript small game.
 
 No Windows or Linux validation pass exists for any task in any phase. The validation debt is itemised in the
 "Validation debt" section of `docs/08-risks.md`.
@@ -98,7 +100,7 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
 | **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.6 **CLOSED in code** — 24 of 24 merged, see the merged-task index in `docs/10` (E.6.4, `52a5b68`, the last). What is left is the gate below — its artifact `samples/phase-E-editor/` does not exist yet — and ONE unrun validation page (E.1.5), the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
-| **Phase 4** — Scripting | **OPEN.** Epic 4.1 **CLOSED** — 4.1.1 (#123) and 4.1.2 (#124) merged; Epic 4.2 **CLOSED** — 4.2.1 (#125) and 4.2.2 (#126) merged; Epic 4.3 **CLOSED** — 4.3.1 (#127), 4.3.2 (#129), 4.3.3 (#130) and 4.3.4 (#131) merged; Epic 4.4 **CLOSED** — 4.4.1 (#132), 4.4.2 (#133), 4.4.3 (#134) and 4.4.4 (#135) merged; Epic 4.5 **CLOSED** — 4.5.1 and 4.5.2 merged together (#136); Epic 4.6 **CLOSED** — 4.6.1 merged with 4.7.1 (#137); Epic 4.7 — 4.7.1 (#137) and 4.7.2 (#138) merged. Next: 4.7.3. |
+| **Phase 4** — Scripting | **OPEN.** All seven epics (4.1–4.7) **CLOSED in code**, every numbered task merged: Epic 4.1 — 4.1.1 (#123) and 4.1.2 (#124); Epic 4.2 — 4.2.1 (#125) and 4.2.2 (#126); Epic 4.3 — 4.3.1 (#127), 4.3.2 (#129), 4.3.3 (#130) and 4.3.4 (#131); Epic 4.4 — 4.4.1 (#132), 4.4.2 (#133), 4.4.3 (#134) and 4.4.4 (#135); Epic 4.5 — 4.5.1 and 4.5.2 together (#136); Epic 4.6 — 4.6.1 with 4.7.1 (#137); Epic 4.7 — 4.7.1 (#137), 4.7.2 (#138), and 4.7.3 and 4.7.4 together (#139). What is left is the gate below — its two-language demo waits on the TypeScript small game, an unowned handoff in `docs/08` — and the validation debt. Next: Story 3's small TypeScript game, a new Phase 4 task (Decide first). |
 | **Phase 4 gate** | Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly. Gate artifact: `samples/phase-4-scripting/` (the two-language demo). |
 
 ### Engine layers, in dependency order
@@ -110,15 +112,15 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 
 ### Test inventory — measured, never remembered
 
-**After 4.7.2 (#138)**, measured on both presets and on fresh build directories at `9a43ace` (the merge's second
-parent; `main` had not moved, so the merge tree is the same).
+**After 4.7.3 + 4.7.4 (#139)**, measured on both presets and on fresh build directories at `bfee75b` (the merge's
+second parent; `main` had not moved, so the merge tree is the same).
 
 | Measurement | Value |
 |---|---|
 | `ctest -N` | **233** in both presets; **220** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **107** reflect-tools-OFF (120 `reflect-gen.*`, four doctest binaries and `typescript.clean` / `typescript.broken` removed), nothing added in either; `cooker.*` **81 / 81 / 81**; an `AERO_SDK` tree is 233 + 6 (`sdk.*`), and `ctest --preset macos-sdk` selects those six |
-| doctest, seven binaries | **2054 / 2607 / 422 / 52 / 77 / 14 / 28** (`aero_tests` +9: WC1–WC9; shell +9: RS1–RS9; ImGui +6: I411–I416; the other four unchanged, no component); reflect-tools-OFF `aero_tests` **2022**, shader-tools-OFF **1914** |
-| guards | math **678**, platform **99**, rhi **200**, scene **99**, golden-rule **202**, project-no-delete **A=9 B=117** (2 permitted), audio **11-3-75**, probes **7-77**, script **182-99-20** |
-| `git ls-files` | `editor/src/*.cpp` **117**, `editor/include/aero/editor/*.hpp` **87** |
+| doctest, seven binaries | **2054 / 2644 / 440 / 52 / 77 / 14 / 28** (shell +37: RV1–RV22, SX1–SX11, ST45–ST48; ImGui +18: I417–I434; the other five unchanged, no component); reflect-tools-OFF `aero_tests` **2022**, shader-tools-OFF **1914** |
+| guards | math **684**, platform **99**, rhi **200**, scene **99**, golden-rule **202**, project-no-delete **A=10 B=119** (2 permitted), audio **11-3-75**, probes **7-77**, script **182-99-20** |
+| `git ls-files` | `editor/src/*.cpp` **119**, `editor/include/aero/editor/*.hpp` **88** |
 
 The seven doctest binaries, in order: `aero_tests`, `aero_editor_shell_test`, `aero_editor_imgui_test`,
 `aero_scene_serialize_test`, `aero_editor_inspector_test`, `aero_reflect_meta_test`, `aero_reflect_json_test`.
@@ -134,9 +136,9 @@ no target moved math, rhi, golden-rule and script (4.1.2, 4.2.1, 4.3.3, 4.3.4, 4
 those four (4.3.2, 4.4.1, 4.4.4); new `editor/src` files moved math and project-no-delete's B, a new entry in its forbidden
 list its A (4.3.1's `script_transpiler.cpp`), and a new `.cmake` file audio's and probes' last figures (4.2.2, 4.3.1).
 Epic 4.5's four new targets, none an engine library, moved no engine guard: seven C-family files moved math and B, Check
-A's ninth entry its A, and thirteen CMake files audio's and probes' last figures. 4.6.1 + 4.7.1's three new files
-(`play_session.hpp`, `play_session.cpp` and its test) and 4.7.2's five (`parked_scene.hpp`, `parked_scene.cpp` and
-three test files, with `world.hpp`, `world.cpp` and `world_access.hpp` only edited) moved math and B alone.
+A's ninth entry its A, and thirteen CMake files audio's and probes' last figures. 4.7.3 + 4.7.4's six new C-family files
+(`play_recovery.hpp`, `play_recovery.cpp`, `play_scripts.hpp`, `play_scripts.cpp` and their two tests) moved math, the
+two in `editor/src` B, and `play_recovery.cpp`'s entry in Check A its A.
 
 How to measure and compare these figures: `.claude/rules/tests.md`.
 
