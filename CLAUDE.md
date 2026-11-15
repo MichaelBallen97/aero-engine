@@ -10,53 +10,34 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
-**Phase 4 (Scripting) is closed in code and open at its gate.** Epics 4.1–4.7 are closed; every numbered task is merged
-and macOS-validated (`docs/10`'s index). Epics 4.1–4.3: a quickjs-ng VM with ES modules read through the VFS; the
-frozen `engine` namespace and `aero-engine.d.ts`, checked by a pinned TypeScript 5.9.3; each changed `.ts` bundled by a
-pinned esbuild 0.28.2 to `Library/Scripts/<guid>.js` + `.js.map` (`using` lowered for R21); `.aeroscript` bytecode
-cooked by `aero_cooker script` (`docs/09` §16; R31, R33); all-or-nothing hot reload (R29, R34); and source-mapped stacks
-(R35). Epic 4.4: `engine::ScriptComponent`, the eleventh built-in, and `ScriptSystem`'s per-entity lifecycle (a failure
-stops its instance until `reloadScript`; R37); the entity/world API with a deferred `engine.destroy`; the frozen
-`engine.input` over a borrowed `platform::InputState`, gamepads opt-in per Context (`ContextConfig::gamepads`: `Off`,
-`System`, `VirtualOnly`; R38: Windows' DirectInput can stall a real-driver start-up); and `.aeroprefab` prefab-lite
-spawn with Save as Prefab and drops (`docs/09` §17; R39: BS8 can go red on Windows alone). Epic 4.5 (#136): a C++ game
-builds against an installed engine alone, through the `<os>-sdk` presets' prefix (`find_package(AeroEngine)`,
-`aero_add_game`; `docs/04`, "The C++ SDK"); `World::registerComponent<T>` registers a game's own component (R40);
-`samples/phase-4-scripting/cpp` is the C++ mini-game; and `writeCppProject` writes a C++ project (`docs/09` §4.12).
-Epic 4.6 and 4.7.1 (#137, one unit): New Project chooses TypeScript or C++ once (nothing writes `project.json` after)
-and writes the C++ template for `"cpp"`; a C++ project makes a `.ts` plain Text and leaves script components out of Add
-Component, by metadata. `engine::editor::PlaySession` (pure, in `aero_editor_core`) owns Edit/Playing/Paused, the
-toolbar's Play, Pause, Step and Stop, the Cmd/Ctrl+P, +Shift+P and +Alt+P chords, a game clock (a frame per tick at
-`FrameClock::deltaSeconds()`, Step 1/60 s), the game's own `platform::InputState` fed while the game has focus, and a
-scene lock; Play needs an open TypeScript project and draws through the scene's lowest-index Camera (R38 reaches the
-editor). 4.7.2 (#138): Play copies the scene's World with `World::clone` (identity-exact, the one new public engine
-method) and `ParkedScene` holds the original while the game runs on the copy; every Stop moves the original back with
-its root order, keeps the undo history (INV-6's one exception) and drops every entity handle the editor kept from play
-(a `[stop:…]` marker on every holder, RS7; `docs/03`, "The park and the restore"). **4.7.3 + 4.7.4 (Autosave-before-play
-and Script lifecycle in play mode), one unit, PR #139 `abc38e5`, 17 / 17 on 2026-11-14**: before Play moves the
-mode, a scene with unsaved changes is copied to `Library/play-recovery.scene.json` and `Library/play-recovery.json`
-records that a game is playing (`docs/09` §4.13); a failed write refuses a dirty Play, every Stop marks the record
-finished, and a project that opens after a Play that never stopped offers the copy back in a modal (Recover, unsaved
-with an empty history, or Discard). Each Play makes one VM and `ScriptSystem` (`PlayScripts`; `aero_editor_core` links
-`aero::script` PRIVATE) over the project root at `res://`: `onInit` on the first game frame, `update` once per game
-frame (none while paused, one per Step), `onDestroy` at Stop before the restore, and a reload of each script the
-transpiler reports published while a game plays or is paused. `samples/phase-4-scripting/ts/` is the TypeScript sample,
-two cubes running `mover.ts`. No quickjs-ng patch shipped (R21, R23, R24, R25, R31 stay open decisions in
-`docs/08-risks.md` and `docs/future-roadmap.md`). In `docs/tasks/phase-4.md`'s `## Stories`, every story has every
-listed task merged. **Story 1's demo: 6 / 6 executable rows PASS and Story 2's: 5 / 5, both on 2026-11-14 on a build
-of `main`; Story 4's: 7 / 7 on 2026-11-09.** **4.4.5 (Small TypeScript game), PR #140 `655f014`, 10 / 10 on
-2026-11-15**: `game.ts` in `samples/phase-4-scripting/ts/` plays the C++ mini-game's rules, its score in the player's
-name, and `SCRIPTED` replays the C++ scripted run to the same line (SX12–SX18, `typescript.sample`). Both demo halves
-exist. Next: the Phase 4 gate, before Phase 5 — Story 3's demo, Story 4's two waiting lines, then the gate scenario.
+**Phase 4 (Scripting) is COMPLETE — gate met 2026-11-15 on macOS** (`samples/phase-4-scripting/VALIDATION.md`: Story
+3's demo 5 / 5, Story 4's two waiting lines 2 / 2 and the gate scenario 3 / 3 on a build of `main`, none NOT EXECUTABLE;
+Windows and Linux pending). What it delivered, each task's history in `docs/10`: a quickjs-ng VM with ES modules read
+through the VFS; the frozen `engine` namespace and `aero-engine.d.ts`, checked by a pinned TypeScript 5.9.3; each
+changed `.ts` bundled by a pinned esbuild 0.28.2 to `Library/Scripts/<guid>.js` + `.js.map`; `.aeroscript` bytecode
+cooked by `aero_cooker script` (`docs/09` §16); all-or-nothing hot reload and source-mapped stacks (4.1–4.3).
+`engine::ScriptComponent`, the eleventh built-in, with `ScriptSystem`'s per-entity lifecycle (R37); the entity/world API
+with a deferred `engine.destroy`; `engine.input` over a borrowed `platform::InputState`, gamepads opt-in per Context
+(R38); `.aeroprefab` prefab-lite spawn (`docs/09` §17; R39) (4.4.1–4.4.4). A C++ game builds against an installed
+engine alone through the `<os>-sdk` presets' prefix (`find_package(AeroEngine)`, `aero_add_game`; `docs/04`, "The C++
+SDK") and registers its own components with `World::registerComponent<T>` (R40) (4.5). New Project fixes the language
+once and writes the C++ template for `"cpp"` (4.6.1). Play-in-editor: `PlaySession` owns Edit/Playing/Paused, Play,
+Pause, Step and Stop with their chords, a game clock, the game's own input and a scene lock (4.7.1); the game runs on
+an identity-exact `World::clone` and every Stop moves the original back with its undo history (4.7.2); a dirty scene is
+copied to `Library/play-recovery.scene.json` before Play and offered back after a crash (4.7.3); each Play makes one VM
+and `ScriptSystem` over the project root at `res://` and reloads each script the transpiler publishes (4.7.4). 4.4.5
+(#140), new work after the numbered tasks, is the small TypeScript game in `samples/phase-4-scripting/ts/`: the C++
+mini-game's rules as one script whose `SCRIPTED` mode replays the C++ run to the same summary line. No quickjs-ng patch
+shipped (R21, R23, R24, R25, R31 stay open decisions in `docs/08-risks.md` and `docs/future-roadmap.md`). **Next:
+Phase 5 (Export & Ship a Game), starting with Step 0a — its story map, a `## Stories` section in
+`docs/tasks/phase-5.md` with the gate first — before its first task.**
 
-**Four phase gates are still open**, each owing its deliverable rather than code:
+**Three phase gates are still open**, each owing its deliverable rather than code:
 - **Phase 0**: macOS-PASS, held open for the Windows/Linux 60 fps sign-off (`samples/phase-0-cube/VALIDATION.md`).
 - **Phase 3**: all seven epics closed in code; the gate artifact `samples/phase-3-content/` does not exist, and the
   gate's audible half has never been heard.
 - **Phase E**: all 24 tasks merged; the gate artifact `samples/phase-E-editor/` does not exist, and E.1.5's validation
   page has never been run.
-- **Phase 4**: all seven epics closed in code and 4.4.5 merged; the gate artifact `samples/phase-4-scripting/` holds
-  both halves of the two-language demo; Story 3's demo and the gate scenario have not run.
 
 No Windows or Linux validation pass exists for any task in any phase. The validation debt is itemised in the
 "Validation debt" section of `docs/08-risks.md`.
@@ -100,8 +81,9 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
 | **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.6 **CLOSED in code** — 24 of 24 merged, see the merged-task index in `docs/10` (E.6.4, `52a5b68`, the last). What is left is the gate below — its artifact `samples/phase-E-editor/` does not exist yet — and ONE unrun validation page (E.1.5), the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
-| **Phase 4** — Scripting | **OPEN.** All seven epics (4.1–4.7) **CLOSED in code**, every numbered task merged: Epic 4.1 — 4.1.1 (#123) and 4.1.2 (#124); Epic 4.2 — 4.2.1 (#125) and 4.2.2 (#126); Epic 4.3 — 4.3.1 (#127), 4.3.2 (#129), 4.3.3 (#130) and 4.3.4 (#131); Epic 4.4 — 4.4.1 (#132), 4.4.2 (#133), 4.4.3 (#134), 4.4.4 (#135) and 4.4.5, the small TypeScript game (#140); Epic 4.5 — 4.5.1 and 4.5.2 together (#136); Epic 4.6 — 4.6.1 with 4.7.1 (#137); Epic 4.7 — 4.7.1 (#137), 4.7.2 (#138), and 4.7.3 and 4.7.4 together (#139). What is left is the gate below — both halves of its two-language demo are committed since 4.4.5 — and the validation debt. Next: the Phase 4 gate (Story 3's demo, Story 4's two waiting lines, then the gate scenario). |
-| **Phase 4 gate** | Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly. Gate artifact: `samples/phase-4-scripting/` (the two-language demo). |
+| **Phase 4** — Scripting | **COMPLETE, gate met 2026-11-15.** All seven epics closed and every task merged and macOS-validated: Epic 4.1 — 4.1.1 (#123) and 4.1.2 (#124); Epic 4.2 — 4.2.1 (#125) and 4.2.2 (#126); Epic 4.3 — 4.3.1 (#127), 4.3.2 (#129), 4.3.3 (#130) and 4.3.4 (#131); Epic 4.4 — 4.4.1 (#132), 4.4.2 (#133), 4.4.3 (#134), 4.4.4 (#135) and 4.4.5, the small TypeScript game (#140); Epic 4.5 — 4.5.1 and 4.5.2 together (#136); Epic 4.6 — 4.6.1 with 4.7.1 (#137); Epic 4.7 — 4.7.1 (#137), 4.7.2 (#138), and 4.7.3 and 4.7.4 together (#139). Every story's demo passed on a build of `main`. Windows/Linux rows pending for every task (`docs/08`'s validation debt). |
+| **Phase 4 gate** | Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly. **Met 2026-11-15** on macOS, 3 / 3 gate lines, none NOT EXECUTABLE (`samples/phase-4-scripting/VALIDATION.md`). Gate artifact: `samples/phase-4-scripting/` (the two-language demo). |
+| **Phase 5** — Export & Ship a Game | **NEXT, not started.** Step 0a first: its story map (`docs/tasks/phase-5.md` has no `## Stories` section yet). Gate: a downloadable, playable 3D game made entirely in Aero Engine (desktop); artifact `samples/phase-5-game/`. |
 
 ### Engine layers, in dependency order
 

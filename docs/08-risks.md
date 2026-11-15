@@ -330,7 +330,8 @@ not repeated here.
   0.327, and one bullet left the player though no Space key was sent. The two permission prompts of that launch had
   been answered at start-up, more than 40 s before. Nine later holds over two Plays, the first of them after the same
   30 s idle, moved and fired exactly. Either the GUI driver or the game's input feed (4.7.1's `PlaySession::feed` and
-  the game's focus hand-off) is the cause; nothing in the tests reproduces it. No task owns it.
+  the game's focus hand-off) is the cause; nothing in the tests reproduces it, and three fresh-launch attempts in the
+  Phase 4 gate pass (2026-11-15) each reached x 8.000 with no stray shot. No task owns it.
 - **The editor's Play view and a native build light the same scene differently** (4.4.5's validation row 7) — the C++
   mini-game draws `main.cpp`'s scene much darker than the editor's Play view draws `game.scene.json`, whose components
   SX15 holds equal to `main.cpp`'s (the ground about (30, 40, 44) against (112, 129, 139) in the captures): the two

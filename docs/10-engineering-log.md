@@ -22818,3 +22818,31 @@ green on its first attempt) and `main`'s push run `43694530594` (6 / 6).
 **Build & dependency impact:** no vcpkg port, no new target, and no new file outside `samples/`. `ctest -N` 233 → 234
 (shader-tools-OFF 221; reflect-tools-OFF 107, which drops `typescript.sample` with `typescript.clean` and
 `typescript.broken`). Every guard figure unchanged.
+
+### Phase 4 gate — met 2026-11-15 — Play runs a project's TypeScript with hot reload and Stop restores the scene exactly; the same game plays natively as a C++ mini-game
+
+The gate reads: "Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores
+exactly." Its artifact, the two-language demo, is `samples/phase-4-scripting/` (`ts/`: the two-cube scene and the small
+game; `cpp/`: the mini-game), and its ledger is `samples/phase-4-scripting/VALIDATION.md`.
+
+**Readiness.** Every Phase 4 task merged: 4.1.1–4.7.4, and 4.4.5, the TypeScript half of the demo, added after the
+numbered tasks when the close found the demo half-built. Story 1's demo passed 6 / 6 and Story 2's 5 / 5 (2026-11-14),
+Story 4's 7 / 7 (2026-11-09); the gate's own pass ran Story 3's demo, 5 / 5, and Story 4's two lines that waited on the
+small game, 2 / 2.
+
+**The pass (macOS, 2026-11-15, `main` at `4cd7bfe`).** A Release build run as a signed throwaway bundle on a copy of
+`ts/`; the C++ mini-game built per `cpp/README.md` against an SDK installed into a private prefix; the built-in Retina
+panel. 13 / 13 rows PASS: Story 3's demo 5 / 5, Story 4's two lines 2 / 2, three fresh-launch attempts at 4.4.5's
+short-hold event 3 / 3 (not reproduced; the `docs/08` handoff stays open), and the gate scenario 3 / 3:
+1. The small game's TypeScript drives the player, fires and destroys a target, and a `PLAYER_SPEED` of 2 saved while it
+   runs cuts a 1 s hold's reach from 6 units to 2, with no Stop and the score kept.
+2. Stop gives back the Hierarchy, the Inspector and the viewport 0 px from the pre-Play capture, and the scene saved
+   after Stop is byte-identical to the committed `game.scene.json`.
+3. The C++ mini-game plays the same game interactively and prints `mini_game: frames=600 fired=8 hits=3 bullets=0
+   entities=4 drawn=600`, the integers the TypeScript scripted run writes into the player's name.
+
+None NOT EXECUTABLE; no line needed ears.
+
+**Carried forward.** No Windows or Linux pass exists for the gate or for any Phase 4 task (`docs/08`'s validation
+debt); Phase 0's Windows/Linux sign-off and the gates of Phase 3 and Phase E stay open. Next: Phase 5 (Export & Ship a
+Game), starting with its story map.
