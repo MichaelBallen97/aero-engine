@@ -999,6 +999,40 @@ TEST_CASE(
     CHECK(last.x == -8.0F);
     CHECK(last.y == 0.5F);
 
+    // 7. A bullet is spent on the frame its age reaches BULLET_LIFE, not the frame after: at a Play dt of 0.25 s the
+    // age is exactly 1.0 (a double sum of four quarters) on the fourth update. Fired from (-8, 6), its 3.5-unit steps
+    // along -Z stay 4 units from the nearest target (x = -4), so only the expiry can end it.
+    constexpr double QUARTER = 0.25;
+    CHECK(namedEntities(world, "bullet").empty());  // section 4's two bullets expired long ago
+    CHECK(world.entityCount() == 7);
+    game.newFrame();
+    sendKey(game, Key::Space, true);
+    CHECK(play.update(QUARTER).destroyed == 0);
+    sendKey(game, Key::Space, false);
+    CHECK(nameOf(world, player) == "player: fired=3 hits=0");
+    const std::vector<Entity> lastShot = namedEntities(world, "bullet");
+    REQUIRE(lastShot.size() == 1);
+    const auto flying = [&](float z) {
+        REQUIRE(world.alive(lastShot.front()));
+        const engine::Vec3 at = transformOf(world, lastShot.front()).position;
+        CHECK(at.x == -8.0F);
+        CHECK(at.z == z);
+    };
+    flying(2.5F);  // age 0.25
+    game.newFrame();
+    CHECK(play.update(QUARTER).destroyed == 0);
+    flying(-1.0F);  // age 0.5
+    game.newFrame();
+    CHECK(play.update(QUARTER).destroyed == 0);
+    flying(-4.5F);  // age 0.75: alive on the update before the expiry
+    game.newFrame();
+    CHECK(play.update(QUARTER).destroyed == 1);  // age 1.0: spent
+    CHECK_FALSE(world.alive(lastShot.front()));
+    CHECK(namedEntities(world, "bullet").empty());
+    CHECK(namedEntities(world, "target").size() == 3);  // spent by the expiry, not by a hit
+    CHECK(nameOf(world, player) == "player: fired=3 hits=0");
+    CHECK(world.entityCount() == 7);
+
     CHECK(play.stop().detached == 1);
     CHECK(log.loud() == 0);
 }
