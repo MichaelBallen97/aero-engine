@@ -40,6 +40,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -1171,4 +1172,49 @@ TEST_CASE("play scripts: the small game's scene carries main.cpp's colours, prim
     const engine::DirectionalLight* const light = world.get<engine::DirectionalLight>(sun.front());
     REQUIRE(light != nullptr);
     CHECK(*light == engine::DirectionalLight{});
+}
+
+TEST_CASE("play scripts: a held Space fires again after 0.21 s, not 0.2 s, at a frame step of 0.1 s (SX16)") {
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK_FALSE(engine::editor::sceneIoAvailable());
+        return;
+    }
+    // At a Play dt of 0.1 the cooldown counts 0.21, 0.11, 0.01 and is clear on the fourth update, so shots come on
+    // updates 1, 4, 7; a cooldown of 0.2 counts 0.2, 0.1, 0 and is clear on the third, so shots come on 1, 3, 5. SX13
+    // steps by 0.05, where the two meet on the fifth update (0.2 - 4 * 0.05 leaves 1.4e-17, above zero), and SX14 by
+    // 1/60, where both are thirteen frames. Six updates stop before the first bullet, from x = 0, reaches a target.
+    constexpr double DT = 0.1;
+    constexpr int UPDATES = 6;
+    constexpr std::array<int, UPDATES> FIRED_AFTER{1, 1, 1, 2, 2, 2};
+
+    const LogCapture log;
+    const TempDir copy;
+    const std::string root = copy.utf8();
+    copySample(copy);
+    const SamplePublish prepared = publishSample(root);
+    REQUIRE(prepared.game.has_value());
+    CHECK(prepared.published);
+
+    SampleScene scene;
+    REQUIRE(
+        engine::editor::openSceneText(scene.context, scene.commands, readSampleFile(root + "/scenes/game.scene.json"))
+            .ok);
+    engine::World& world = scene.world;
+    const Entity player = scriptedEntity(world, *prepared.game);
+    engine::platform::InputState game;
+    PlayScripts play{root, world, game};
+    REQUIRE(play.live());
+
+    sendKey(game, engine::platform::Key::Space, true);
+    for (int update = 0; update < UPDATES; ++update) {
+        static_cast<void>(play.update(DT));
+        game.newFrame();
+        CHECK(nameOf(world, player) == std::format("player: fired={} hits=0", FIRED_AFTER.at(update)));
+    }
+    CHECK(namedEntities(world, "bullet").size() == 2);
+    CHECK(namedEntities(world, "target").size() == 3);  // no shot has landed yet
+
+    sendKey(game, engine::platform::Key::Space, false);
+    CHECK(play.stop().detached == 1);
+    CHECK(log.loud() == 0);
 }
