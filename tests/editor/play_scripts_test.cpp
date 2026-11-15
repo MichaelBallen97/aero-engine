@@ -1124,3 +1124,51 @@ TEST_CASE("play scripts: the small game's scripted run ends on the C++ mini-game
     CHECK(play.stop().detached == 1);
     CHECK(log.loud() == 0);
 }
+
+TEST_CASE("play scripts: the small game's scene carries main.cpp's colours, primitives, camera and sun (SX15)") {
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK_FALSE(engine::editor::sceneIoAvailable());
+        return;
+    }
+    // samples/phase-4-scripting/cpp/main.cpp's buildScene, value by value: SX12's round trip compares the file with
+    // itself, so a colour, a primitive, the lens or the sun edited in the file alone would still pass it.
+    SampleScene scene;
+    REQUIRE(engine::editor::openSceneText(scene.context, scene.commands,
+                                          readSampleFile(sampleRoot() + "/scenes/game.scene.json"))
+                .ok);
+    engine::World& world = scene.world;
+
+    const auto meshOf = [&](const char* name, std::size_t count) {
+        const std::vector<Entity> found = namedEntities(world, name);
+        REQUIRE(found.size() == count);
+        std::vector<engine::MeshRenderer> meshes;
+        for (const Entity entity : found) {
+            const engine::MeshRenderer* const mesh = world.get<engine::MeshRenderer>(entity);
+            REQUIRE(mesh != nullptr);
+            meshes.push_back(*mesh);
+        }
+        return meshes;
+    };
+
+    // addCube: primitive 0 (a cube), the colour of each role; the ground is primitive 2 (a plane).
+    const std::vector<engine::MeshRenderer> player = meshOf("player", 1);
+    CHECK(player[0] == engine::MeshRenderer{.primitive = 0, .color = {0.2F, 0.5F, 0.9F}});
+    const std::vector<engine::MeshRenderer> targets = meshOf("target", 3);
+    for (const engine::MeshRenderer& target : targets) {
+        CHECK(target == engine::MeshRenderer{.primitive = 0, .color = {0.9F, 0.3F, 0.25F}});
+    }
+    const std::vector<engine::MeshRenderer> ground = meshOf("ground", 1);
+    CHECK(ground[0] == engine::MeshRenderer{.primitive = 2, .color = {0.35F, 0.4F, 0.35F}});
+
+    // main.cpp adds Camera and DirectionalLight with no initialiser: the component defaults.
+    const std::vector<Entity> camera = namedEntities(world, "camera");
+    REQUIRE(camera.size() == 1);
+    const engine::Camera* const lens = world.get<engine::Camera>(camera.front());
+    REQUIRE(lens != nullptr);
+    CHECK(*lens == engine::Camera{});
+    const std::vector<Entity> sun = namedEntities(world, "sun");
+    REQUIRE(sun.size() == 1);
+    const engine::DirectionalLight* const light = world.get<engine::DirectionalLight>(sun.front());
+    REQUIRE(light != nullptr);
+    CHECK(*light == engine::DirectionalLight{});
+}
