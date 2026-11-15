@@ -1262,7 +1262,7 @@ TEST_CASE("play scripts: a bullet strikes a target within 0.6 in the XZ plane an
         const std::vector<Entity> targets = namedEntities(world, "target");
         REQUIRE(targets.size() == 3);
         const auto place = [&](Entity target, float x, float z) {
-            engine::Transform* const transform = world.get<engine::Transform>(target);
+            auto* const transform = world.get<engine::Transform>(target);
             REQUIRE(transform != nullptr);
             transform->position = engine::Vec3{x, 0.5F, z};
         };
