@@ -1095,10 +1095,11 @@ TEST_CASE("play scripts: the small game's scripted run ends on the C++ mini-game
     // 3. The 601st update writes the summary, after the 600th update's destroys were flushed.
     record(RUN_UPDATES + 1, play.update(PLAY_DT));
     CHECK(nameOf(world, player) == SCRIPTED_SUMMARY);
-    // Each bullet's end by frame, which pins the hit radius and its squaring, the XZ plane, FIRE_COOLDOWN and
-    // BULLET_LIFE: the three hits at frames 50, 150 and 510 take the bullet and its target; the held Space's other
-    // bullets expire at frames 182, 195, 208 and 221; and the frame-410 miss at 469, after 60 flights, where the C++
-    // game's float age expires it at 470 (ts/README.md, "The scripted run").
+    // Each bullet's end by frame, which pins the hit test's squaring and its XZ plane, and the hit radius,
+    // FIRE_COOLDOWN and BULLET_LIFE to within one frame's step (SX13 pins the exact life): the three hits at frames
+    // 50, 150 and 510 take the bullet and its target; the held Space's other bullets expire at frames 182, 195, 208
+    // and 221; and the frame-410 miss at 469, after 60 flights, where the C++ game's float age expires it at 470
+    // (ts/README.md, "The scripted run").
     CHECK(destroys == "51:2 151:2 183:1 196:1 209:1 222:1 470:1 511:2");
     CHECK(world.entityCount() == 4);
     CHECK(namedEntities(world, "target").empty());
