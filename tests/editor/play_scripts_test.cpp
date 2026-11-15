@@ -793,6 +793,12 @@ void sendKey(engine::platform::InputState& game, engine::platform::Key key, bool
     game.process(event);
 }
 
+// game.ts's mode switch as committed, and as SX14 turns it on in its copy.
+constexpr std::string_view SCRIPTED_OFF = "const SCRIPTED: boolean = false;";
+constexpr std::string_view SCRIPTED_ON = "const SCRIPTED: boolean = true;";
+// tests/sdk/mini_game.cmake's expectedLine (SDK19), with main.cpp's "mini_game: " prefix.
+constexpr std::string_view SCRIPTED_SUMMARY = "mini_game: frames=600 fired=8 hits=3 bullets=0 entities=4";
+
 }  // namespace
 
 TEST_CASE(
@@ -947,6 +953,83 @@ TEST_CASE(
     CHECK(nameOf(world, player) == "player: fired=2 hits=0");
     CHECK(namedEntities(world, "bullet").size() == 2);
     CHECK(world.entityCount() == 9);
+
+    CHECK(play.stop().detached == 1);
+    CHECK(log.loud() == 0);
+}
+
+TEST_CASE("play scripts: the small game's scripted run ends on the C++ mini-game's summary line (SX14)") {
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK_FALSE(engine::editor::sceneIoAvailable());
+        return;
+    }
+    constexpr double PLAY_DT = 0.05;  // not 1/60: the run steps FIXED_DT whatever Play passes
+    constexpr int RUN_UPDATES = 600;
+    constexpr int AFTER_UPDATES = 9;
+    constexpr float X_TOLERANCE = 1.0e-3F;
+
+    const LogCapture log;
+    const TempDir copy;
+    const std::string root = copy.utf8();
+    copySample(copy);
+
+    // 1. The copy's script holds the mode switch once, and the case turns it on.
+    const std::string gamePath = root + "/assets/scripts/game.ts";
+    std::string gameText = readSampleFile(gamePath);
+    const std::size_t switchAt = gameText.find(SCRIPTED_OFF);
+    REQUIRE(switchAt != std::string::npos);
+    REQUIRE(gameText.find(SCRIPTED_OFF, switchAt + 1) == std::string::npos);
+    gameText.replace(switchAt, SCRIPTED_OFF.size(), SCRIPTED_ON);
+    REQUIRE(engine::editor::writeTextFileAtomic(gamePath, gameText).empty());
+
+    const SamplePublish prepared = publishSample(root);
+    REQUIRE(prepared.game.has_value());
+    CHECK(prepared.published);
+
+    SampleScene scene;
+    REQUIRE(
+        engine::editor::openSceneText(scene.context, scene.commands, readSampleFile(root + "/scenes/game.scene.json"))
+            .ok);
+    engine::World& world = scene.world;
+    const Entity player = scriptedEntity(world, *prepared.game);
+    const engine::platform::InputState game;
+    PlayScripts play{root, world, game};
+    REQUIRE(play.live());
+
+    // 2. Six hundred updates: the score, not yet the summary.
+    std::size_t destroyed = 0;
+    std::size_t faulted = 0;
+    for (int update = 0; update < RUN_UPDATES; ++update) {
+        const engine::script::ScriptSystemReport report = play.update(PLAY_DT);
+        destroyed += report.destroyed;
+        faulted += report.faulted;
+    }
+    CHECK(nameOf(world, player) == "player: fired=8 hits=3");
+
+    // 3. The 601st update writes the summary, after the 600th update's destroys were flushed.
+    const engine::script::ScriptSystemReport last = play.update(PLAY_DT);
+    destroyed += last.destroyed;
+    faulted += last.faulted;
+    CHECK(nameOf(world, player) == SCRIPTED_SUMMARY);
+    CHECK(world.entityCount() == 4);
+    CHECK(namedEntities(world, "target").empty());
+    CHECK(namedEntities(world, "bullet").empty());
+    const engine::Transform ended = transformOf(world, player);
+    CHECK(std::abs(ended.position.x - 4.0F) <= X_TOLERANCE);
+    CHECK(ended.position.y == 0.5F);
+    CHECK(ended.position.z == 5.0F);
+    CHECK(destroyed == 11);  // eight bullets and three targets
+    CHECK(faulted == 0);
+
+    // 4. The run is over: more updates change nothing.
+    std::size_t destroyedAfter = 0;
+    for (int update = 0; update < AFTER_UPDATES; ++update) {
+        destroyedAfter += play.update(PLAY_DT).destroyed;
+    }
+    CHECK(nameOf(world, player) == SCRIPTED_SUMMARY);
+    CHECK(transformOf(world, player).position == ended.position);
+    CHECK(world.entityCount() == 4);
+    CHECK(destroyedAfter == 0);
 
     CHECK(play.stop().detached == 1);
     CHECK(log.loud() == 0);

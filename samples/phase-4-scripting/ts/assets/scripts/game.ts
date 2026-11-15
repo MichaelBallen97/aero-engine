@@ -8,7 +8,12 @@
 //
 // The constants are module code, which a reload replaces, so a saved change reaches a running game; the game's state
 // is the instance's own fields, which a reload keeps. The player's name shows the score.
+//
+// SCRIPTED replays the C++ game's --scripted run: its key table by frame, FIXED_DT whatever Play's dt, 600 frames,
+// then main.cpp's summary line (without its drawn field) in the player's name, after which the game stands still.
+// Set it before Play: a reload that flips it carries the frame count over.
 
+const SCRIPTED: boolean = false; // true: the C++ game's scripted run
 const ARENA_HALF_WIDTH = 8; // X is clamped to +-8
 const ARENA_HALF_DEPTH = 6; // Z is clamped to +-6
 const PLAYER_Y = 0.5;
@@ -17,9 +22,41 @@ const FIRE_COOLDOWN = 0.21; // seconds; never a multiple of 1/60, see cpp/README
 const BULLET_SPEED = 14; // units per second along -Z
 const BULLET_LIFE = 1; // seconds
 const HIT_RADIUS = 0.6; // in the XZ plane
+const FIXED_DT = 1 / 60; // seconds per frame of the scripted run
+const SCRIPT_FRAMES = 600; // frames of the scripted run
 const BULLET_PREFAB = "res://assets/bullet.aeroprefab";
 
 type Key = engine.input.Key;
+
+// main.cpp's SCRIPT: at `frame`, `key` goes down or up. cpp/README.md derives the run by hand.
+const SCRIPT: readonly { frame: number; down: boolean; key: Key }[] = [
+    { frame: 10, down: true, key: "Space" },
+    { frame: 11, down: false, key: "Space" },
+    { frame: 60, down: true, key: "Left" },
+    { frame: 100, down: false, key: "Left" },
+    { frame: 110, down: true, key: "Space" },
+    { frame: 171, down: false, key: "Space" },
+    { frame: 200, down: true, key: "Right" },
+    { frame: 400, down: false, key: "Right" },
+    { frame: 410, down: true, key: "Space" },
+    { frame: 411, down: false, key: "Space" },
+    { frame: 420, down: true, key: "Left" },
+    { frame: 460, down: false, key: "Left" },
+    { frame: 470, down: true, key: "Space" },
+    { frame: 471, down: false, key: "Space" },
+];
+
+// Whether `key` is held at `frame` of the scripted run: the last entry for it at or before that frame, the state the
+// C++ game's InputState holds after folding that frame's events. The table is in frame order.
+function scriptedDown(key: Key, frame: number): boolean {
+    let down = false;
+    for (const entry of SCRIPT) {
+        if (entry.key === key && entry.frame <= frame) {
+            down = entry.down;
+        }
+    }
+    return down;
+}
 
 // A live bullet: what main.cpp keeps in its Velocity and Bullet components.
 interface Bullet {
@@ -37,13 +74,31 @@ export default class Game extends engine.Script {
     cooldown = 0; // seconds until Space fires again
     fired = 0;
     hits = 0;
+    frame = 0; // frames stepped since Play, main.cpp's frames
 
     onInit(): void {
         this.targets = engine.findAll("target");
     }
 
     onUpdate(dt: number): void {
-        this.step(dt, (key) => engine.input.keyDown(key));
+        if (SCRIPTED) {
+            if (this.frame > SCRIPT_FRAMES) {
+                return; // the run is over: the game stands still
+            }
+            if (this.frame === SCRIPT_FRAMES) {
+                // The 600th frame's destroys were destroyed at the end of the previous update, so the World now holds
+                // what main.cpp counts. Every entity of this game holds a Transform, so the query counts them all.
+                const entities = engine.query(engine.Transform).length;
+                this.entity.name = `mini_game: frames=${this.frame} fired=${this.fired} hits=${this.hits} bullets=${this.bullets.length} entities=${entities}`;
+                this.frame += 1;
+                return;
+            }
+            const frame = this.frame;
+            this.step(FIXED_DT, (key) => scriptedDown(key, frame));
+        } else {
+            this.step(dt, (key) => engine.input.keyDown(key));
+        }
+        this.frame += 1;
         this.showScore();
     }
 
