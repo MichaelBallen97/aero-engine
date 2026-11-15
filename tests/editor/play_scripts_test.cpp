@@ -1218,3 +1218,75 @@ TEST_CASE("play scripts: a held Space fires again after 0.21 s, not 0.2 s, at a 
     CHECK(play.stop().detached == 1);
     CHECK(log.loud() == 0);
 }
+
+TEST_CASE("play scripts: a bullet strikes a target within 0.6 in the XZ plane and passes one beyond it (SX17)") {
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK_FALSE(engine::editor::sceneIoAvailable());
+        return;
+    }
+    // At a Play dt of 0.25 a bullet fired from (0, 0.5, 5) is at z = 1.5, -2, -5.5 on the first three updates, all in
+    // binary floats, and is spent on the fourth. Each scenario moves one target to a known offset from the bullet's
+    // third position (0, -5.5) and fires once. A radius of 0.5 or 0.55 misses the 0.55 and diagonal 0.566 hits, and a
+    // radius of 0.7 strikes the 0.65 and diagonal 0.636 misses; the diagonals also tell a distance from a sum or a
+    // maximum of the two axes. The offsets carry both signs on both axes.
+    struct Shot {
+        float x;
+        float z;
+        bool hit;
+    };
+    constexpr std::array<Shot, 6> SHOTS{{
+        {0.0F, -6.05F, true},    // 0.55 ahead on Z
+        {-0.55F, -5.5F, true},   // 0.55 to the left on X
+        {0.4F, -5.9F, true},     // 0.4 right and 0.4 ahead: 0.566
+        {0.0F, -4.85F, false},   // 0.65 behind on Z
+        {0.65F, -5.5F, false},   // 0.65 to the right on X
+        {-0.45F, -5.95F, false}  // 0.45 left and 0.45 ahead: 0.636
+    }};
+    constexpr double QUARTER = 0.25;
+
+    const LogCapture log;
+    const TempDir copy;
+    const std::string root = copy.utf8();
+    copySample(copy);
+    const SamplePublish prepared = publishSample(root);
+    REQUIRE(prepared.game.has_value());
+    CHECK(prepared.published);
+    const std::string sceneText = readSampleFile(root + "/scenes/game.scene.json");
+
+    for (const Shot& shot : SHOTS) {
+        CAPTURE(shot.x);
+        CAPTURE(shot.z);
+        SampleScene scene;
+        REQUIRE(engine::editor::openSceneText(scene.context, scene.commands, sceneText).ok);
+        engine::World& world = scene.world;
+        const std::vector<Entity> targets = namedEntities(world, "target");
+        REQUIRE(targets.size() == 3);
+        const auto place = [&](Entity target, float x, float z) {
+            engine::Transform* const transform = world.get<engine::Transform>(target);
+            REQUIRE(transform != nullptr);
+            transform->position = engine::Vec3{x, 0.5F, z};
+        };
+        place(targets[0], shot.x, shot.z);
+        place(targets[1], -7.0F, -5.5F);  // out of the bullet's way
+        place(targets[2], 7.0F, -5.5F);
+        const Entity player = scriptedEntity(world, *prepared.game);
+
+        engine::platform::InputState game;
+        PlayScripts play{root, world, game};
+        REQUIRE(play.live());
+        sendKey(game, engine::platform::Key::Space, true);
+        static_cast<void>(play.update(QUARTER));
+        sendKey(game, engine::platform::Key::Space, false);
+        game.newFrame();
+        CHECK(nameOf(world, player) == "player: fired=1 hits=0");
+        // The second update, z = -2: nothing within reach. The third, z = -5.5: the target and the bullet, or neither.
+        CHECK(play.update(QUARTER).destroyed == 0);
+        const engine::script::ScriptSystemReport third = play.update(QUARTER);
+        CHECK(third.destroyed == (shot.hit ? 2U : 0U));
+        CHECK(world.alive(targets[0]) == !shot.hit);
+        CHECK(nameOf(world, player) == (shot.hit ? "player: fired=1 hits=1" : "player: fired=1 hits=0"));
+        CHECK(namedEntities(world, "target").size() == (shot.hit ? 2U : 3U));
+        CHECK(play.stop().detached == 1);
+    }
+    CHECK(log.loud() == 0);
+}
