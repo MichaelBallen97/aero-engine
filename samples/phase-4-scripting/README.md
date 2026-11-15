@@ -22,7 +22,7 @@ The C++ half is read through the gate artifact line: the C++ mini-game is built 
 
 ```
 phase-4-scripting/
-├── ts/    the TypeScript half: an Aero project of two scripted cubes (open it in the editor)
+├── ts/    the TypeScript half: an Aero project, two scripted cubes and the small game (open it in the editor)
 └── cpp/   the C++ half: the mini-game, built against the installed engine
 ```
 
@@ -35,7 +35,14 @@ the scenario run, and each one's demo starts from this folder and takes about tw
    scene back exactly.
 2. **Edit while playing.** A saved script change reaches the moving cubes without Stop and Play, a thrown error names
    the `.ts` line, and Play writes unsaved work to disk first.
-3. **A small TypeScript game.** Keys move the player and fire bullets spawned from an entity-tree asset, VSCode
-   autocompletes the API, and the cooker emits each script as bytecode.
+3. **A small TypeScript game** (`ts/scenes/game.scene.json`, the C++ mini-game's rules as one TypeScript script).
+   Keys move the player and fire bullets spawned from an entity-tree asset, VSCode autocompletes the API, and the
+   cooker emits each script as bytecode.
 4. **The same game in C++.** A C++ project is created from the New Project dialog, and the C++ mini-game builds
    against the public headers and plays beside the TypeScript version.
+
+## The same game twice
+
+`ts/assets/scripts/game.ts` with `SCRIPTED` set and `cpp/aero_mini_game --scripted` print the same five integers,
+`frames=600 fired=8 hits=3 bullets=0 entities=4`. `tests/editor/play_scripts_test.cpp`'s SX14 pins the TypeScript line
+and `tests/sdk/mini_game.cmake`'s SDK19 the C++ one.
