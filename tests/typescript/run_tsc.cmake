@@ -1,13 +1,15 @@
-# tests/typescript/run_tsc.cmake -- task 4.2.2. Run as `cmake -P` by the four typescript.* ctest cases.
+# tests/typescript/run_tsc.cmake -- task 4.2.2. Run as `cmake -P` by the five typescript.* ctest cases.
 #
 # It type-checks the declarations a script author's editor sees: a project is assembled in WORK_DIR (assets/, the
 # declarations under Library/types/, and the tsconfig the editor writes), and the PINNED compiler named by
 # tests/typescript/package.json is run over it. The compiler is the one VS Code bundles, so a verdict here is the
 # verdict the squiggles give.
 #
-# Inputs: CASE (clean | broken | prelude_only | driver_e2e), SOURCE_DIR, WORK_DIR, DECLARATIONS (the build's
+# Inputs: CASE (clean | broken | prelude_only | driver_e2e | sample), SOURCE_DIR, WORK_DIR, DECLARATIONS (the build's
 # aero-engine.d.ts), PRELUDE (engine/script/types/prelude.d.ts), JOIN (cmake/reflect_declarations_join.cmake),
-# TEMPLATE (editor/templates/tsconfig.json.in). Two overrides only driver_e2e passes: TSC_ROOT (the folder holding
+# TEMPLATE (editor/templates/tsconfig.json.in). `sample` assembles the project from the two .ts files of the committed
+# demo, samples/phase-4-scripting/ts/assets, under the same declarations and tsconfig, and expects zero diagnostics: a
+# type-only error there runs fine (esbuild strips types) and only the squiggles in VS Code would show it. Two overrides only driver_e2e passes: TSC_ROOT (the folder holding
 # package.json and node_modules; default tests/typescript) and NODE (default: find_program at run time).
 #
 # A missing Node or a missing compiler is a loud skip -- one line the ctest SKIP_REGULAR_EXPRESSION reads -- unless
@@ -19,7 +21,7 @@ foreach(variable IN ITEMS CASE SOURCE_DIR WORK_DIR DECLARATIONS PRELUDE JOIN TEM
         message(FATAL_ERROR "typescript: ${variable} is required")
     endif()
 endforeach()
-set(_known_cases clean broken prelude_only driver_e2e)
+set(_known_cases clean broken prelude_only driver_e2e sample)
 if(NOT CASE IN_LIST _known_cases)
     message(FATAL_ERROR "typescript: unknown CASE '${CASE}'")
 endif()
@@ -142,7 +144,18 @@ if(CASE STREQUAL "prelude_only")
 else()
     file(COPY_FILE "${DECLARATIONS}" "${WORK_DIR}/Library/types/aero-engine.d.ts")
 endif()
-file(COPY "${_fixtures}/${CASE}/" DESTINATION "${WORK_DIR}/assets")
+if(CASE STREQUAL "sample")
+    # Every .ts of the demo's assets (its two scripts), at the same relative paths; the .meta files and the prefab stay.
+    file(COPY "${SOURCE_DIR}/samples/phase-4-scripting/ts/assets/" DESTINATION "${WORK_DIR}/assets"
+         FILES_MATCHING PATTERN "*.ts")
+    foreach(_script IN ITEMS scripts/game.ts scripts/mover.ts)
+        if(NOT EXISTS "${WORK_DIR}/assets/${_script}")
+            message(FATAL_ERROR "typescript.sample: ${_script} was not assembled from samples/phase-4-scripting/ts/assets")
+        endif()
+    endforeach()
+else()
+    file(COPY "${_fixtures}/${CASE}/" DESTINATION "${WORK_DIR}/assets")
+endif()
 if(CASE STREQUAL "clean")
     # A type error under Library/Trash/, which the template's `exclude` must keep unchecked.
     file(MAKE_DIRECTORY "${WORK_DIR}/Library/Trash/0001")

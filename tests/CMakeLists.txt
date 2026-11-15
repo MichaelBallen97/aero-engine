@@ -1425,10 +1425,12 @@ endfunction()
 # These two name no built-in component, so they run in the reflect-tools-OFF tree too; driver_e2e needs no Node at all.
 aero_add_typescript_case(prelude_only)
 aero_add_typescript_case(driver_e2e)
-# These two name built-in components, which the tools-OFF artifact does not declare.
+# These three name built-in components, which the tools-OFF artifact does not declare. `sample` type-checks the committed
+# TypeScript demo's scripts, which name Transform, ScriptComponent and the like.
 if(AERO_REFLECT_TOOLS)
     aero_add_typescript_case(clean)
     aero_add_typescript_case(broken)
+    aero_add_typescript_case(sample)
 endif()
 
 # ---------------------------------------------------------------------------------------------
