@@ -6,8 +6,8 @@
 //
 // SX9, SX10 and SX11 read and run the committed TypeScript demo project, samples/phase-4-scripting/ts, through
 // AERO_PHASE4_TS_SAMPLE_DIR (a path, not a flag: a missing directory is a REQUIRE failure). SX9 only reads it in place;
-// SX10 and SX11 copy it to a temporary directory first, so no case writes into the tree. SX12, SX13 and SX14 read and
-// play the small game's scene the same way, SX12 in place and SX13 and SX14 from a copy.
+// SX10 and SX11 copy it to a temporary directory first, so no case writes into the tree. SX12 and SX15 read the small
+// game's scene in place, and SX13, SX14, SX16, SX17 and SX18 play it from a copy.
 #include "../../editor/src/play_scripts.hpp"
 
 #include <aero/core/guid.hpp>
@@ -1289,4 +1289,108 @@ TEST_CASE("play scripts: a bullet strikes a target within 0.6 in the XZ plane an
         CHECK(play.stop().detached == 1);
     }
     CHECK(log.loud() == 0);
+}
+
+TEST_CASE("play scripts: a saved bullet speed reaches the next shot of a running game, whose score carries on (SX18)") {
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK_FALSE(engine::editor::sceneIoAvailable());
+        return;
+    }
+    // game.ts keeps its constants as module code, which a reload replaces, and its state as the instance's own
+    // fields, which a reload keeps. The copy's script holds the bullet's speed once, as the only "= 14;", and the
+    // case rewrites it to 20 while the game runs: the next bullet leaves 20 * 0.25 = 5 units from the muzzle, not
+    // 14 * 0.25 = 3.5, and the score of the shot and the hit made before the save is still in the player's name.
+    constexpr double QUARTER = 0.25;
+
+    const LogCapture log;
+    const TempDir copy;
+    const std::string root = copy.utf8();
+    copySample(copy);
+
+    const std::string gamePath = root + "/assets/scripts/game.ts";
+    std::string gameText = readSampleFile(gamePath);
+    constexpr std::string_view OLD_SPEED = "= 14;";
+    constexpr std::string_view NEW_SPEED = "= 20;";
+    const std::size_t speedAt = gameText.find(OLD_SPEED);
+    REQUIRE(speedAt != std::string::npos);
+    REQUIRE(gameText.find(OLD_SPEED, speedAt + 1) == std::string::npos);
+
+    engine::editor::AssetDatabase database;
+    engine::GuidGenerator generator{0x4452ULL};
+    static_cast<void>(database.rescan(root, root + "/assets", generator));
+    const engine::editor::AssetRecord* const record = database.findByPath("scripts/game.ts");
+    REQUIRE(record != nullptr);
+    CHECK(engine::formatGuid(record->guid) == SAMPLE_GAME_GUID);
+    const Guid script = record->guid;
+
+    engine::editor::ScriptTranspilerConfig config;
+    config.esbuildPath = std::string{AERO_TEST_ESBUILD};
+    const engine::editor::ScriptProjectView view{root, "assets", engine::editor::ProjectLanguage::Ts};
+    const auto settle = [&](engine::editor::ScriptTranspiler& transpiler) {
+        transpiler.noteScan(database, view);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{20};
+        while (!transpiler.idle() && std::chrono::steady_clock::now() < deadline) {
+            transpiler.service(database, 0.0F);
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+        REQUIRE(transpiler.idle());
+    };
+    const auto publishedGame = [&](engine::editor::ScriptTranspiler& transpiler) {
+        bool found = false;
+        for (const Guid& guid : transpiler.takePublished()) {
+            found = found || guid == script;
+        }
+        return found;
+    };
+
+    engine::editor::ScriptTranspiler transpiler{config};
+    settle(transpiler);
+    REQUIRE(publishedGame(transpiler));
+
+    SampleScene scene;
+    REQUIRE(
+        engine::editor::openSceneText(scene.context, scene.commands, readSampleFile(root + "/scenes/game.scene.json"))
+            .ok);
+    engine::World& world = scene.world;
+    const Entity player = scriptedEntity(world, script);
+    engine::platform::InputState game;
+    {
+        PlayScripts play{root, world, game};
+        REQUIRE(play.live());
+
+        // 1. One shot from (0, 0.5, 5) at the old speed, flown to z = -5.5, where it strikes the middle target (0, -5).
+        sendKey(game, engine::platform::Key::Space, true);
+        static_cast<void>(play.update(QUARTER));
+        sendKey(game, engine::platform::Key::Space, false);
+        game.newFrame();
+        static_cast<void>(play.update(QUARTER));
+        CHECK(play.update(QUARTER).destroyed == 2);
+        CHECK(nameOf(world, player) == "player: fired=1 hits=1");
+        CHECK(namedEntities(world, "bullet").empty());
+        CHECK(namedEntities(world, "target").size() == 2);
+
+        // 2. Save the new speed: the publish names the script and the reload is Ok.
+        gameText.replace(speedAt, OLD_SPEED.size(), NEW_SPEED);
+        REQUIRE(engine::editor::writeTextFileAtomic(gamePath, gameText).empty());
+        static_cast<void>(database.rescan(root, root + "/assets", generator));
+        settle(transpiler);
+        CHECK(publishedGame(transpiler));
+        CHECK(play.reload(script) == ScriptStatus::Ok);
+
+        // 3. The next shot flies its first frame at the new speed, and the score has carried on.
+        sendKey(game, engine::platform::Key::Space, true);
+        static_cast<void>(play.update(QUARTER));
+        sendKey(game, engine::platform::Key::Space, false);
+        CHECK(nameOf(world, player) == "player: fired=2 hits=1");
+        const std::vector<Entity> shot = namedEntities(world, "bullet");
+        REQUIRE(shot.size() == 1);
+        const engine::Transform flown = transformOf(world, shot.front());
+        CHECK(flown.position.x == 0.0F);
+        CHECK(flown.position.z == 0.0F);  // 5 - 5; the old speed would leave it at 1.5
+        CHECK(namedEntities(world, "target").size() == 2);
+
+        CHECK(play.stop().detached == 1);
+    }
+    CHECK(log.loud() == 0);
+    static_cast<void>(transpiler.takePublished());
 }
