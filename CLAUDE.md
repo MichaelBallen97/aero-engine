@@ -44,10 +44,10 @@ transpiler reports published while a game plays or is paused. `samples/phase-4-s
 two cubes running `mover.ts`. No quickjs-ng patch shipped (R21, R23, R24, R25, R31 stay open decisions in
 `docs/08-risks.md` and `docs/future-roadmap.md`). In `docs/tasks/phase-4.md`'s `## Stories`, every story has every
 listed task merged. **Story 1's demo: 6 / 6 executable rows PASS and Story 2's: 5 / 5, both on 2026-11-14 on a build
-of `main`; Story 4's: 7 / 7 on 2026-11-09.** Story 3's demo, Story 4's first line ("same logic as the TypeScript small
-game") and its demo's "beside the TypeScript version" wait on the TypeScript small game, which does not exist yet (an
-unowned handoff in `docs/08`), and so does the Phase 4 gate's deliverable, the two-language demo. The next step is the
-Phase 4 gate, before Phase 5: **Story 3's small TypeScript game**, a new Phase 4 task that starts with Decide.
+of `main`; Story 4's: 7 / 7 on 2026-11-09.** **4.4.5 (Small TypeScript game), PR #140 `655f014`, 10 / 10 on
+2026-11-15**: `game.ts` in `samples/phase-4-scripting/ts/` plays the C++ mini-game's rules, its score in the player's
+name, and `SCRIPTED` replays the C++ scripted run to the same line (SX12–SX18, `typescript.sample`). Both demo halves
+exist. Next: the Phase 4 gate, before Phase 5 — Story 3's demo, Story 4's two waiting lines, then the gate scenario.
 
 **Four phase gates are still open**, each owing its deliverable rather than code:
 - **Phase 0**: macOS-PASS, held open for the Windows/Linux 60 fps sign-off (`samples/phase-0-cube/VALIDATION.md`).
@@ -55,8 +55,8 @@ Phase 4 gate, before Phase 5: **Story 3's small TypeScript game**, a new Phase 4
   gate's audible half has never been heard.
 - **Phase E**: all 24 tasks merged; the gate artifact `samples/phase-E-editor/` does not exist, and E.1.5's validation
   page has never been run.
-- **Phase 4**: all seven epics closed in code; the gate artifact `samples/phase-4-scripting/` holds the C++ mini-game
-  and the two-cube TypeScript sample, and its two-language demo waits on the TypeScript small game.
+- **Phase 4**: all seven epics closed in code and 4.4.5 merged; the gate artifact `samples/phase-4-scripting/` holds
+  both halves of the two-language demo; Story 3's demo and the gate scenario have not run.
 
 No Windows or Linux validation pass exists for any task in any phase. The validation debt is itemised in the
 "Validation debt" section of `docs/08-risks.md`.
@@ -100,7 +100,7 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
 | **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.6 **CLOSED in code** — 24 of 24 merged, see the merged-task index in `docs/10` (E.6.4, `52a5b68`, the last). What is left is the gate below — its artifact `samples/phase-E-editor/` does not exist yet — and ONE unrun validation page (E.1.5), the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
-| **Phase 4** — Scripting | **OPEN.** All seven epics (4.1–4.7) **CLOSED in code**, every numbered task merged: Epic 4.1 — 4.1.1 (#123) and 4.1.2 (#124); Epic 4.2 — 4.2.1 (#125) and 4.2.2 (#126); Epic 4.3 — 4.3.1 (#127), 4.3.2 (#129), 4.3.3 (#130) and 4.3.4 (#131); Epic 4.4 — 4.4.1 (#132), 4.4.2 (#133), 4.4.3 (#134) and 4.4.4 (#135); Epic 4.5 — 4.5.1 and 4.5.2 together (#136); Epic 4.6 — 4.6.1 with 4.7.1 (#137); Epic 4.7 — 4.7.1 (#137), 4.7.2 (#138), and 4.7.3 and 4.7.4 together (#139). What is left is the gate below — its two-language demo waits on the TypeScript small game, an unowned handoff in `docs/08` — and the validation debt. Next: Story 3's small TypeScript game, a new Phase 4 task (Decide first). |
+| **Phase 4** — Scripting | **OPEN.** All seven epics (4.1–4.7) **CLOSED in code**, every numbered task merged: Epic 4.1 — 4.1.1 (#123) and 4.1.2 (#124); Epic 4.2 — 4.2.1 (#125) and 4.2.2 (#126); Epic 4.3 — 4.3.1 (#127), 4.3.2 (#129), 4.3.3 (#130) and 4.3.4 (#131); Epic 4.4 — 4.4.1 (#132), 4.4.2 (#133), 4.4.3 (#134), 4.4.4 (#135) and 4.4.5, the small TypeScript game (#140); Epic 4.5 — 4.5.1 and 4.5.2 together (#136); Epic 4.6 — 4.6.1 with 4.7.1 (#137); Epic 4.7 — 4.7.1 (#137), 4.7.2 (#138), and 4.7.3 and 4.7.4 together (#139). What is left is the gate below — both halves of its two-language demo are committed since 4.4.5 — and the validation debt. Next: the Phase 4 gate (Story 3's demo, Story 4's two waiting lines, then the gate scenario). |
 | **Phase 4 gate** | Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly. Gate artifact: `samples/phase-4-scripting/` (the two-language demo). |
 
 ### Engine layers, in dependency order
@@ -112,13 +112,13 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 
 ### Test inventory — measured, never remembered
 
-**After 4.7.3 + 4.7.4 (#139)**, measured on both presets and on fresh build directories at `bfee75b` (the merge's
-second parent; `main` had not moved, so the merge tree is the same).
+**After 4.4.5 (#140)**, measured on both presets and on fresh build directories at `431c911` (the merge's second
+parent; `main` had not moved, so the merge tree is the same).
 
 | Measurement | Value |
 |---|---|
-| `ctest -N` | **233** in both presets; **220** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **107** reflect-tools-OFF (120 `reflect-gen.*`, four doctest binaries and `typescript.clean` / `typescript.broken` removed), nothing added in either; `cooker.*` **81 / 81 / 81**; an `AERO_SDK` tree is 233 + 6 (`sdk.*`), and `ctest --preset macos-sdk` selects those six |
-| doctest, seven binaries | **2054 / 2644 / 440 / 52 / 77 / 14 / 28** (shell +37: RV1–RV22, SX1–SX11, ST45–ST48; ImGui +18: I417–I434; the other five unchanged, no component); reflect-tools-OFF `aero_tests` **2022**, shader-tools-OFF **1914** |
+| `ctest -N` | **234** in both presets; **221** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **107** reflect-tools-OFF (120 `reflect-gen.*`, four doctest binaries and `typescript.clean` / `typescript.broken` / `typescript.sample` removed), nothing added in either; `cooker.*` **81 / 81 / 81**; an `AERO_SDK` tree is 234 + 6 (`sdk.*`), and `ctest --preset macos-sdk` selects those six |
+| doctest, seven binaries | **2054 / 2651 / 440 / 52 / 77 / 14 / 28** (shell +7: SX12–SX18; the other six unchanged, no component); reflect-tools-OFF `aero_tests` **2022**, shader-tools-OFF **1914** |
 | guards | math **684**, platform **99**, rhi **200**, scene **99**, golden-rule **202**, project-no-delete **A=10 B=119** (2 permitted), audio **11-3-75**, probes **7-77**, script **182-99-20** |
 | `git ls-files` | `editor/src/*.cpp` **119**, `editor/include/aero/editor/*.hpp` **88** |
 
@@ -138,7 +138,8 @@ list its A (4.3.1's `script_transpiler.cpp`), and a new `.cmake` file audio's an
 Epic 4.5's four new targets, none an engine library, moved no engine guard: seven C-family files moved math and B, Check
 A's ninth entry its A, and thirteen CMake files audio's and probes' last figures. 4.7.3 + 4.7.4's six new C-family files
 (`play_recovery.hpp`, `play_recovery.cpp`, `play_scripts.hpp`, `play_scripts.cpp` and their two tests) moved math, the
-two in `editor/src` B, and `play_recovery.cpp`'s entry in Check A its A.
+two in `editor/src` B, and `play_recovery.cpp`'s entry in Check A its A. 4.4.5 added no C-family file and no target, and
+no guard moved; `typescript.sample` moved `ctest -N` alone.
 
 How to measure and compare these figures: `.claude/rules/tests.md`.
 

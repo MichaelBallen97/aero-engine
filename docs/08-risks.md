@@ -74,7 +74,7 @@ Decisions deliberately deferred until there is data or the relevant phase arrive
 Work a task found, measured or declined that no task in `docs/tasks/` owns yet. The list moved here from
 `CLAUDE.md`'s state block on 2026-10-26, where a pointer to this section remains.
 
-**ONE HUNDRED AND TWO UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**ONE HUNDRED AND THREE UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs in `CLAUDE.md`'s state block (fact
 4's four permitted cases, the inspector-row gap, the closed `File` section, E.1.1's fired thick-line handoff) are
@@ -285,13 +285,6 @@ not repeated here.
   case where no point hits, and it is not: `ndcToViewportPoints` collapses the click and every projected point to (0, 0),
   every non-mesh entity in front of the eye sits at distance 0, all of them hit, and the lowest index wins. Measured by
   I378 in a shader-tools-OFF build. Either the comment or `pickEntity`'s degenerate case changes.
-- **The TypeScript half of the two-language demo** (4.5.1) — Story 4's first line asks that the C++ mini-game "plays the
-  same logic as the TypeScript small game", and no TypeScript small game exists. Since 4.7.4,
-  `samples/phase-4-scripting/ts/` is a TypeScript project of two cubes that run `mover.ts`: Story 1's and Story 2's
-  demos run on it, and the small game grows from it, but it is not that game. The rules in
-  `samples/phase-4-scripting/cpp/README.md` are the reference: every constant, the frame order and the scripted run's
-  pinned line. The TypeScript half is written against them when Story 3's demo is assembled; Play runs scripts since
-  4.7.4. The Phase 4 gate's two-language demo waits on it too.
 - **A published SDK archive per tag** (4.5.1) — the SDK exists only as `cmake --install` of an `<os>-sdk` preset. Nothing
   builds, names or uploads a prefix per OS on a tag. It sits beside 5.2.3's precompiled runtime, and no task owns it.
 - **A game in a macOS bundle** (4.5.1) — for 5.4.1. Inside a `.app`, `basePath()` is `Contents/Resources`, while
@@ -332,6 +325,17 @@ not repeated here.
   viewport's `RMB + WASD to fly` chip, the HUD's `Draw calls` label, the toolbar's `Local` and a Console row. Two
   further cycles read 0 px everywhere, and the rendered scene, the Hierarchy and the Inspector read 0 px in every cycle.
   The cause is not identified. No task owns it.
+- **A held key that reached the first Play of a launch short, beside a shot nothing fired** (4.4.5's validation row 2) —
+  in the first Play after the editor started, a 3 s synthetic hold of Right moved the small game's player only to x
+  0.327, and one bullet left the player though no Space key was sent. The two permission prompts of that launch had
+  been answered at start-up, more than 40 s before. Nine later holds over two Plays, the first of them after the same
+  30 s idle, moved and fired exactly. Either the GUI driver or the game's input feed (4.7.1's `PlaySession::feed` and
+  the game's focus hand-off) is the cause; nothing in the tests reproduces it. No task owns it.
+- **The editor's Play view and a native build light the same scene differently** (4.4.5's validation row 7) — the C++
+  mini-game draws `main.cpp`'s scene much darker than the editor's Play view draws `game.scene.json`, whose components
+  SX15 holds equal to `main.cpp`'s (the ground about (30, 40, 44) against (112, 129, 139) in the captures): the two
+  renderers' lighting setups differ, not the scene. For Phase 5's runtime, whose exported game should look as it does in
+  Play. No task owns it.
 
 ---
 
@@ -512,6 +516,13 @@ panel, since no 1× display was attached; its 1× capture is owed by a pass on o
 unreachable on macOS, where the dock keeps the Viewport's image at 6 points or more. PR #139's CI run (`43552203571`, 6
 / 6 green on its first attempt) is the new cases' first run on MSVC, libstdc++, D3D12 and Vulkan, among them the
 fixtures that fail an atomic write onto a non-empty directory (RV19, I432, I433).
+
+**4.4.5 OWES A WINDOWS PAGE AND A LINUX PAGE.** No manual pass has run off macOS, and all ten of the page's rows are
+owed by hand on both: the game scene's open, every movement key and both clamps, a tap and a held Space, the three
+hits, Stop's restore, a saved constant reaching the running game, the scripted run's name against the C++ game's
+`--scripted` line, the prefab's drop, VS Code's completion and diagnostics, and the cooker's bytecode. PR #140's CI run
+(`43687898349`, 6 / 6 green on its first attempt) is SX12–SX18's and `typescript.sample`'s first run on MSVC,
+libstdc++, D3D12 and Vulkan, the scripted run's frame-by-frame destroy sequence among them.
 
 **METHOD TRAPS FOR DRIVING THE EDITOR, ALL MEASURED.** A pending TCC prompt stalls the editor to ~0.2% CPU
 with a window that **NEVER RENDERS** (a black capture); the prompts **CASCADE**, one per bundle identity, and

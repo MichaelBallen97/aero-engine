@@ -295,6 +295,19 @@ Subtasks:
 - The game scene and the bullet prefab, beside the scripts of the Story 1 and Story 2 demos
 - Doctests that open the scene, drive the interactive game through the game's input and replay the scripted run to the C++ line
 
+**Outcome:** `samples/phase-4-scripting/ts/` holds the small game beside the two-cube demo: `scenes/game.scene.json`
+(`main.cpp`'s seven entities), `assets/bullet.aeroprefab` (a byte copy of the C++ half's) and `assets/scripts/game.ts`,
+one script on the player that runs one frame of `cpp/main.cpp` per `onUpdate`, in its order, with the C++ game's
+components as the script's own state. Its constants are module code, so a saved edit reaches a running game, and its
+state is instance fields, which a reload keeps. A script cannot print, so the score is the player's name
+(`player: fired=<n> hits=<n>`). A module constant, `SCRIPTED`, replays the C++ game's scripted run (its key table,
+1/60 s per frame, 600 frames) and writes the C++ summary line, `mini_game: frames=600 fired=8 hits=3 bullets=0
+entities=4`, into the player's name. A TypeScript bullet expires one frame before the C++ one (469 against 470: its age
+adds in doubles, the C++ one in floats), and no summary integer moves. SX12–SX18 pin the scene against `main.cpp`,
+every movement key and both clamps, the cooldown, the hit radius, the exact life, the frame of every destroy in the
+scripted run, and a reload in the middle of a game; `typescript.sample` type-checks the sample's scripts against the
+generated declarations.
+
 ---
 
 ## Epic 4.5 — C++ project mode · engine

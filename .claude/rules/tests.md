@@ -9,11 +9,12 @@ Each rule here was earned by a defect, a green-and-wrong test or a measurement t
 
 ## Case ids
 
-**Next free ids, measured by a whole-`tests/` token sweep at `bfee75b` (4.7.3 + 4.7.4's head): `I435` at the ImGui
+**Next free ids, measured by a whole-`tests/` token sweep at `bfee75b` (4.7.3 + 4.7.4's head), with `SX` moved by
+4.4.5 (`655f014`, which adds SX12–SX18 and no other id): `I435` at the ImGui
 tier**, `AA68`, `AD77`, `AH21`, `AM29`, `AV78`, `BD8`, `BR31`, `BV10`, `CC15`, `CD15`, `CR13`, `CS17`, `DD31`, `DG26`,
 `DR30`, `EB31`, `EC5`, `EK12`, `EP19`, `FT17`, `G29`, `GI14`, `GL8`, `GR34`, `HK7`, `HY9`, `IO24`, `IR27`, `IX19`,
 `MB27`, `ML80`, `MP21`, `NP16`, `P101`, `PC15`, `PX6`, `PY11`, `RF8`, `RS10`, `RT31`, `RV23`, `SQ15`, `SS64`, `ST49`,
-`SX12`, `TB16`, `TH20`, `TS11`, `US13`, `VM89`, `VN5`, `VO15`, `WC10`, `WL7`, `X32`.
+`SX19`, `TB16`, `TH20`, `TS11`, `US13`, `VM89`, `VN5`, `VO15`, `WC10`, `WL7`, `X32`.
 The list does not name every taken prefix: `MR` (E.3.4), `PJ`
 (E.4.1), `CN` (E.4.2) and `MC` (mesh cook, which is why the card cache took `CC`) are taken too, so a NEW prefix is
 checked against a fresh sweep, never against this list. Which ids each task took is recorded in its `docs/10` entry.
@@ -234,6 +235,18 @@ a case about the publish runs esbuild (`ST45`–`ST48`, `I429`, `I430`, `SX10`, 
 pumps the transpiler to idle before its `TempDir` goes.
 
 
+**A SAMPLE THAT PLAYS THE SAME GAME AS ANOTHER IS PINNED BY ITS SCRIPTED RUN'S PER-FRAME EVENTS, NEVER BY ITS END
+INTEGERS ALONE (4.4.5).** The small TypeScript game's `fired=8 hits=3 bullets=0 entities=4` survived, in a frame-by-frame
+simulation, an unsquared hit radius, a hit test that ignored `dx`, any radius in [0.44, 4), any fire cooldown in
+(0.2, 0.25) and any bullet life in (0.69, 3.16): SX14 asserts the frame of every destroy. A rule the scripted run cannot
+separate gets its own arm at a frame step that does (SX16 holds Space at 0.1 s, where 0.21 s and 0.2 s fire on
+different updates; SX17 shoots at 0.55 and 0.65 from a target).
+
+**A SAMPLE'S SCRIPTS ARE TYPE-CHECKED BY `typescript.sample`, BECAUSE NO DOCTEST CAN SEE A TYPE ERROR (4.4.5).** esbuild
+strips types, so a type-only error in a sample script passes every case that plays it (sabotage row S70). The case
+copies the whole of `samples/phase-4-scripting/ts/assets/`, so a script added there is checked with no edit; a sample
+kept anywhere else needs its own copy line in `tests/typescript/run_tsc.cmake`.
+
 ## Sabotage method
 
 **SEED THE MISTAKE, NOT THE SYMPTOM, AND A SEED PLACED AFTER THE GUARD THAT REFUSES IT IS INERT (E.3.2).**
@@ -306,8 +319,9 @@ drivers and its one new TU is a probe with no `TEST_CASE`.
 **COMPARE ENTRY *SETS*, NOT TOTALS**, measured by comparing entry NAMES with the ctest numbering stripped — a
 raw `diff` of `ctest -N` output is dominated by the renumbering and shows every later entry as changed.
 shader-tools-OFF removes exactly the **13 `shaderc.*`** entries; reflect-tools-OFF removes the
-`reflect-gen.*` entries **plus four doctest binaries and, since 4.2.2, `typescript.clean` and `typescript.broken`** (the
-type-check cases that read the generated declarations; `typescript.prelude_only` and `typescript.driver_e2e` stay);
+`reflect-gen.*` entries **plus four doctest binaries and, since 4.2.2, `typescript.clean` and `typescript.broken`, and
+since 4.4.5 `typescript.sample`** (the type-check cases that read the generated declarations; `typescript.prelude_only`
+and `typescript.driver_e2e` stay);
 **nothing is added in either**; and all **70
 `cooker.*` entries are present in all three**, which is the property that check is actually about. **Both
 reduced numbers and the reflect-gen breakdown have each gone stale more than once** — the `159` recorded for

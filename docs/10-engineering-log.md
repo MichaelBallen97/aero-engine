@@ -79,6 +79,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | 4.7.2 Scene snapshot & restore | #138 | `2dde14a` | **7 / 7**, nothing failed, none NOT EXECUTABLE (macOS, Release, a signed throwaway `.app` on two 1× displays: after Play and Stop the Hierarchy, the title's unsaved marker, the Inspector and the viewport 0 px from the captures taken before Play; Undo and Redo of an edit made before Play; a selection made in play; Pause and Step; Cmd+Q while playing, dirty with Cancel and then saved; every frame at Play and at Stop on 10 000 entities under 33 ms, measured with Tracy). Sabotage 58 / 58 RED after WC9, RS8 and RS9 closed its three HOLEs |
 | 4.7.3 Autosave-before-play | #139 | `abc38e5` | **17 / 17** executable rows with 4.7.4, one page for both, none NOT EXECUTABLE (macOS, Release, a signed throwaway `.app` on the built-in 2× panel: a `kill -9` mid-play and the recovery modal naming `main.scene.json` or `Untitled`, Recover, Discard, Return, keypad Enter and Escape; a clean scene's crash offering nothing; the modal's frame against New Project's and a 92-character name elided; a read-only `Library/`; on 10 000 entities a dirty Play's tick of 105.2 ms, 95.6 ms of it the autosave, and a 6 258 212-byte copy). Row 12 failed at `8f121c3` (a saved `speed` field never reached the running cubes) and passed after `bfee75b` made the speed module code; row 15's zero-height half is unreachable; row 7 ran at UI scale 1 on a 2× panel, its 1× capture owed. Sabotage: 99 rows, 94 RED, 1 COMPILE-RED and 4 witnessed by the page, 0 HOLE after the first run's eight closed. Story 1's demo 6 / 6 and Story 2's 5 / 5 executable rows PASS on 2026-11-14 on a build of `main` |
 | 4.7.4 Script lifecycle in play mode | #139 | `abc38e5` | **17 / 17**: the same page, PR and merge as 4.7.3 (rows 1–8, 16 and 17 are 4.7.3's, rows 9–15 this task's: the sample's cubes swinging, Pause and three Steps, Stop's 0 px restore, three saves of `SPEED` reaching the running cubes 2.5–2.7 s after each with no jump, a throw's Console row naming `mover.ts:20:19`, a held Space, a hidden Viewport reading no pointer) |
+| 4.4.5 Small TypeScript game | #140 | `655f014` | **10 / 10**, nothing failed, none NOT EXECUTABLE (the editor GUI driven on macOS, Release, a signed throwaway `.app` on the built-in Retina panel: every movement key and both clamps, a tap and a held Space, three hits, Stop's 0 px restore, a saved `BULLET_SPEED` reaching the running game in about 3.1 s with the score carried on, the scripted run's name equal to the C++ game's `--scripted` line, the prefab's drop, VS Code's completion and diagnostics, the cooker's bytecode); one event in row 2 not reproduced (`docs/08`). Two code-review rounds (round 1: two should-fix, the scripted run's integers blind to a broken hit test, expiry or cooldown, and no Z movement pinned, plus two minor; round 2: one comment-only minor; all closed); a 70-row sabotage matrix whose eight holes, all predicted, closed with SX15–SX18 and re-ran red, and whose type-only seed is red through the new `typescript.sample`; CI green on the first push (`43687898349`, 6 / 6) and on `main`'s push run (`43694530594`, 6 / 6) |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -22709,3 +22710,111 @@ edited.
 - `samples/phase-4-scripting/ts/` is data, never `add_subdirectory`'d.
 - Docs: `docs/03`, `docs/08` (R11, the handoffs and the validation debt), `docs/09` section 4.13, the phase file, and
   the build-and-guards, editor, editor-invariants, editor-projects, scripting and tests rule files.
+
+### 4.4.5 — Small TypeScript game — the C++ mini-game as one TypeScript script in the Phase 4 demo's project, its scripted run pinned in CI to the C++ game's integers; Story 3's last task and the TypeScript half of the two-language demo
+
+PR #140, merged as `655f014` (16 commits on `c8ab751`). New work after every numbered Phase 4 task had merged: the
+Phase 4 gate's two-language demo had no TypeScript half (the unowned handoff 4.5.1 recorded), so Story 3's demo and
+two lines of Story 4's could not run. `docs/07`'s rule gives new work the next free number in its phase; Epic 4.4's
+Definition of Done ("a TS script spawns, moves, and destroys entities in response to input") is this game.
+
+**What shipped.**
+- `samples/phase-4-scripting/ts/assets/scripts/game.ts` (GUID `0c9230e5304dffa96484c38101d407e5`): one script on the
+  player runs one frame of `cpp/main.cpp` per `onUpdate`, in its order: the keys; the player moves and is clamped, the
+  cooldown counts down and a held Space with no cooldown fires; every bullet flies and ages; the hit test (XZ plane,
+  radius 0.6) destroys a bullet and its target; a bullet at its 1 s life is destroyed. The C++ game's `Velocity`,
+  `Bullet` and `Target` components are the script's own state (a script cannot register a component): the live bullets
+  with their ages and the targets, found by name when the game starts. The constants are module code, so a saved edit
+  reaches a running game; the state is instance fields, which a reload keeps.
+- The score is the player's name, `player: fired=<n> hits=<n>`: the VM has no `console` and no log binding.
+- A module constant `SCRIPTED`, false as committed, switches to the C++ scripted run: its 14-entry key table,
+  `FIXED_DT` per frame whatever Play's dt, 600 frames. The 601st update, after the 600th's deferred destroys have
+  flushed, writes `mini_game: frames=600 fired=8 hits=3 bullets=0 entities=4` into the player's name (`entities` is
+  `engine.query(engine.Transform).length`, since every entity of the scene holds a Transform), and the game stands still
+  after.
+- `assets/bullet.aeroprefab` (GUID `be4def93c9c87b23fa0c23109fd3b76b`), a byte copy of `cpp/assets/bullet.aeroprefab`,
+  and `scenes/game.scene.json`, `main.cpp`'s seven entities (camera, sun, ground, player, three targets) in the form the
+  editor writes. The two-cube scene, `mover.ts` and its `.meta`, `project.json` and `tsconfig.json` are byte for byte
+  as they were, so SX9–SX11 still pin them.
+- Tests: SX12–SX18 in `tests/editor/play_scripts_test.cpp` (`aero_editor_shell_test` 2644 → 2651), and
+  `typescript.sample`: `tests/typescript/run_tsc.cmake` gains a `sample` case that type-checks the sample's two scripts
+  against the build's declarations under the editor's tsconfig template, registered in `if(AERO_REFLECT_TOOLS)`
+  (`ctest -N` 233 → 234).
+- Docs: 4.4.5's section and Story 3's task list in the phase file; `samples/phase-4-scripting/README.md` and
+  `ts/README.md` (the game, its keys, Story 3's demo, the scripted mode, what the tests pin).
+
+**Code-review rounds.** Two.
+- Round 1 (`c8ab751..ec52b90`): 0 blocking, 2 should-fix, 2 minor. SX14's integers could not see a broken hit test,
+  expiry or cooldown: a frame-by-frame simulation showed an unsquared radius, a dropped `dx`, any radius in
+  [0.44, 4), any cooldown in (0.2, 0.25) and any life in (0.69, 3.16) all still ending `fired=8 hits=3`. SX14 now
+  asserts the frame of every destroy, `51:2 151:2 183:1 196:1 209:1 222:1 470:1 511:2` (measured; equal to the
+  simulation). No case moved the player along Z; SX13 now pins all eight movement keys on their axes and signs and both
+  clamps exactly. A README path named no binary; a validation row expected x −8 after a 2 s hold from +8 (the plan's
+  text; each key is now held 3 s).
+- A seed made while closing round 1, the expiry's `>=` turned into `>`, stayed green: no case aged a bullet to exactly
+  1.0. SX13's seventh section, at a Play dt of 0.25 s, closed it before round 2.
+- Round 2 (`ec52b90..2995439`): one minor, an SX14 comment claiming to pin the radius and the cooldown exactly where the
+  sequence pins them only to one frame's step; reworded (`9018d34`).
+
+**The sabotage matrix.** 70 seeds at `9018d34`, 69 on SX12–SX14 in `macos-debug` and one VALIDATION row. First run: 61
+RED, 8 HOLE, all eight predicted, 1 VALIDATION.
+- `FIRE_COOLDOWN` 0.2: at dt 0.05 the double round-off (0.2 − 4 × 0.05 = 1.4e-17) refires at the same step. SX16 holds
+  Space at dt 0.1: shots on updates 1, 4 and 7, where 0.2 fires on 1, 3 and 5.
+- `HIT_RADIUS` 0.5: the scripted hits land at dz 0.4333. SX17 must hit at 0.55 and at 0.4 / 0.4 and miss at 0.65 and at
+  0.45 / 0.45, on both signs of both axes.
+- The player's colour and primitive, the camera's `fovYRadians` and the sun's `castsShadows`: SX12's round trip compares
+  the file with itself. SX15 compares every component with what `main.cpp` builds.
+- A constant made an instance field, and the score made module state: no case reloaded `game.ts`. SX18 reloads a copy
+  mid-play: a saved bullet speed (14 → 20) reaches the next bullet, and the name reads `fired=2 hits=1`.
+- Each closed and re-ran RED, and the eight re-ran RED again after `431c911` edited their asserting file. The
+  VALIDATION row, a type-only error (`type Key = string`), is RED through `typescript.sample` (`run-ctest-matrix.py`):
+  esbuild strips types, so only a type check can see it.
+
+**Traps found, each measured.**
+- `World::each` walks storage order, not ascending entity index: a helper that names "the first target" sorts by
+  `Entity::index` (SX12 read targets 0 and 2 swapped without it).
+- 60 × (1/60) summed in doubles is 1.0000000000000013, while the C++ game's float age reaches 1 only after 61 steps, so
+  a TypeScript bullet expires one frame before the C++ one (469 against 470). No summary integer moves. The player ends
+  at x = 4.000004 in both languages (float32 positions).
+- clang-tidy's `modernize-use-auto` fires on `T* const p = world.get<T>(e)` only when the declared type equals what
+  `get<T>` returns; a `const T*` declaration over a non-const World passes. It reddened the lint twice (`ec52b90`,
+  `431c911`).
+
+**Where the implementation departed from the plan.** `namedEntities` sorts by `Entity::index`; `ec52b90` and `431c911`
+are unplanned clang-tidy fixes; the README's Story 3 item carries a sentence beyond the plan's text; SX15–SX18 and
+`typescript.sample` came from the sabotage matrix, not the plan. The plan said a type-only error in the sample fails
+the doctests; it does not (esbuild strips types), and `typescript.sample` is what sees it.
+
+**What was deliberately left out, and which task holds each.**
+- `console.log` or any new script API: no task; the score lives in the player's name.
+- Mouse input in the game: the C++ game has none; 4.4.3's cases pin mouse edges.
+- Any change to the C++ half.
+- Running the sample's bytecode: 4.3.2's cases pin bytecode and JavaScript alike; the validation cooks `game.ts` and
+  reads the header.
+- The C++ window's darker look against the editor's Play view: renderer lighting setup, not logic (`docs/08`, a handoff
+  for Phase 5's runtime).
+
+**The sentences that govern new work.**
+- A sample that mirrors another game is pinned by its scripted run's per-frame events, not only by its end integers:
+  the integers survive most broken rules.
+- A sample constant a saved edit must reach is module code; a value a reload must keep is an instance field (`bfee75b`'s
+  rule, pinned by SX18).
+- A committed sample's scripts are type-checked by `typescript.sample`; a new sample script joins it.
+
+**Validation and sabotage status — macOS 10 / 10 (2026-11-15), Windows and Linux unrun.** A Release build of `431c911`
+as a signed throwaway bundle on the built-in Retina panel, on a copy of the project. The game scene opens with seven
+entities; each key held 3 s reads x ±8 and z ±6; a tap fires one bullet that is gone 0.91 s after it appears, and a
+held Space fires ten more in 2 s; three hits take their targets; Stop puts the viewport and the Inspector back to 0 px;
+a saved `BULLET_SPEED` reaches the running game in about 3.1 s with the score carried on; the scripted run's name
+equals the C++ `--scripted` line (`drawn=600`, exit 0); the prefab drops from the asset browser at scale 0.2 and
+undoes; VS Code completes the API and flags ts(2339) and ts(2345), the type-only seed's manual witness; the cooker
+writes the bytecode (magic `AEROSCR`). None NOT EXECUTABLE. One event was not reproduced: the first Right hold of the
+launch's first Play moved the player only to x 0.327 and one shot fired with no Space sent; nine later holds over two
+Plays behaved exactly (`docs/08`). Sabotage: 70 rows, 0 HOLE after closure. CI: the PR's run `43687898349` (6 / 6,
+green on its first attempt) and `main`'s push run `43694530594` (6 / 6).
+
+**Case ids claimed:** SX12–SX18 (next free: SX19); the ctest case `typescript.sample`.
+
+**Build & dependency impact:** no vcpkg port, no new target, and no new file outside `samples/`. `ctest -N` 233 → 234
+(shader-tools-OFF 221; reflect-tools-OFF 107, which drops `typescript.sample` with `typescript.clean` and
+`typescript.broken`). Every guard figure unchanged.
