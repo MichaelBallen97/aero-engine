@@ -726,7 +726,7 @@ constexpr std::string_view SAMPLE_BULLET_GUID = "be4def93c9c87b23fa0c23109fd3b76
 
 // A COPY of the entity's Transform (REQUIREs one): a spawn may move the component storage under a reference.
 [[nodiscard]] engine::Transform transformOf(const engine::World& world, Entity entity) {
-    const engine::Transform* const transform = world.get<engine::Transform>(entity);
+    const auto* const transform = world.get<engine::Transform>(entity);
     REQUIRE(transform != nullptr);
     return *transform;
 }
