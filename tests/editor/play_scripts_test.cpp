@@ -6,11 +6,13 @@
 //
 // SX9, SX10 and SX11 read and run the committed TypeScript demo project, samples/phase-4-scripting/ts, through
 // AERO_PHASE4_TS_SAMPLE_DIR (a path, not a flag: a missing directory is a REQUIRE failure). SX9 only reads it in place;
-// SX10 and SX11 copy it to a temporary directory first, so no case writes into the tree.
+// SX10 and SX11 copy it to a temporary directory first, so no case writes into the tree. SX12 and SX15 read the small
+// game's scene in place, and SX13, SX14, SX16, SX17 and SX18 play it from a copy.
 #include "../../editor/src/play_scripts.hpp"
 
 #include <aero/core/guid.hpp>
 #include <aero/core/log.hpp>
+#include <aero/core/math.hpp>
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/command_stack.hpp>
@@ -25,6 +27,7 @@
 #include <aero/scene/camera.hpp>
 #include <aero/scene/entity.hpp>
 #include <aero/scene/light.hpp>
+#include <aero/scene/mesh_renderer.hpp>
 #include <aero/scene/prefab.hpp>
 #include <aero/scene/script_component.hpp>
 #include <aero/scene/transform.hpp>
@@ -36,6 +39,8 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -684,6 +689,707 @@ TEST_CASE("play scripts: a saved SPEED reaches the sample's running cubes at onc
 
         // 6. Stop is clean.
         CHECK(play.stop().detached == 2);
+    }
+    CHECK(log.loud() == 0);
+    static_cast<void>(transpiler.takePublished());
+}
+
+namespace {
+
+// samples/phase-4-scripting/ts: assets/scripts/game.ts.meta and assets/bullet.aeroprefab.meta.
+constexpr std::string_view SAMPLE_GAME_GUID = "0c9230e5304dffa96484c38101d407e5";
+constexpr std::string_view SAMPLE_BULLET_GUID = "be4def93c9c87b23fa0c23109fd3b76b";
+
+// Every live entity holding a Transform and named exactly `name`, sorted by ascending entity index (World::each
+// visits in storage order, which is not the creation order).
+[[nodiscard]] std::vector<Entity> namedEntities(engine::World& world, std::string_view name) {
+    std::vector<Entity> found;
+    world.each<engine::Transform>([&](Entity entity, engine::Transform& /*transform*/) {
+        if (world.name(entity) == name) {
+            found.push_back(entity);
+        }
+    });
+    std::ranges::sort(found, [](Entity a, Entity b) { return a.index < b.index; });
+    return found;
+}
+
+// The one entity whose ScriptComponent names `script`; REQUIREs exactly one.
+[[nodiscard]] Entity scriptedEntity(engine::World& world, Guid script) {
+    std::vector<Entity> found;
+    world.each<ScriptComponent>([&](Entity entity, ScriptComponent& component) {
+        if (component.script == script) {
+            found.push_back(entity);
+        }
+    });
+    REQUIRE(found.size() == 1);
+    return found.front();
+}
+
+// A COPY of the entity's Transform (REQUIREs one): a spawn may move the component storage under a reference.
+[[nodiscard]] engine::Transform transformOf(const engine::World& world, Entity entity) {
+    const auto* const transform = world.get<engine::Transform>(entity);
+    REQUIRE(transform != nullptr);
+    return *transform;
+}
+
+// SX10's copy as a helper: project.json and tsconfig.json (copy_file), assets/ and scenes/ (recursive copy).
+void copySample(const TempDir& copy) {
+    const std::filesystem::path source = std::filesystem::path{sampleRoot()};
+    std::error_code ec;
+    for (const char* const leaf : {"project.json", "tsconfig.json"}) {
+        std::filesystem::copy_file(source / leaf, copy.path() / leaf, std::filesystem::copy_options::overwrite_existing,
+                                   ec);
+        REQUIRE_FALSE(ec);
+    }
+    for (const char* const leaf : {"assets", "scenes"}) {
+        std::filesystem::copy(source / leaf, copy.path() / leaf, std::filesystem::copy_options::recursive, ec);
+        REQUIRE_FALSE(ec);
+    }
+}
+
+struct SamplePublish {
+    std::optional<Guid> game;    // scripts/game.ts's GUID when its record is AssetMetaState::Ok
+    std::optional<Guid> bullet;  // bullet.aeroprefab's GUID when its record is AssetMetaState::Ok
+    bool published = false;      // takePublished() named `game`
+};
+
+// Scans `root`, then transpiles every script of the project with the test's esbuild until the transpiler is idle.
+// The transpiler is destroyed, idle, before the call returns.
+[[nodiscard]] SamplePublish publishSample(const std::string& root) {
+    SamplePublish result;
+    engine::editor::AssetDatabase database;
+    engine::GuidGenerator generator{0x4451ULL};
+    static_cast<void>(database.rescan(root, root + "/assets", generator));
+    const engine::editor::AssetRecord* const game = database.findByPath("scripts/game.ts");
+    if (game != nullptr && game->state == engine::editor::AssetMetaState::Ok) {
+        result.game = game->guid;
+    }
+    const engine::editor::AssetRecord* const bullet = database.findByPath("bullet.aeroprefab");
+    if (bullet != nullptr && bullet->state == engine::editor::AssetMetaState::Ok) {
+        result.bullet = bullet->guid;
+    }
+
+    engine::editor::ScriptTranspilerConfig config;
+    config.esbuildPath = std::string{AERO_TEST_ESBUILD};
+    engine::editor::ScriptTranspiler transpiler{config};
+    transpiler.noteScan(database,
+                        engine::editor::ScriptProjectView{root, "assets", engine::editor::ProjectLanguage::Ts});
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{20};
+    while (!transpiler.idle() && std::chrono::steady_clock::now() < deadline) {
+        transpiler.service(database, 0.0F);
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    REQUIRE(transpiler.idle());
+    for (const Guid& guid : transpiler.takePublished()) {
+        result.published = result.published || (result.game.has_value() && guid == *result.game);
+    }
+    return result;
+}
+
+// One KeyDown or KeyUp event folded into `game`.
+void sendKey(engine::platform::InputState& game, engine::platform::Key key, bool down) {
+    engine::platform::Event event;
+    event.type = down ? engine::platform::EventType::KeyDown : engine::platform::EventType::KeyUp;
+    event.key.code = key;
+    game.process(event);
+}
+
+// game.ts's mode switch as committed, and as SX14 turns it on in its copy.
+constexpr std::string_view SCRIPTED_OFF = "const SCRIPTED: boolean = false;";
+constexpr std::string_view SCRIPTED_ON = "const SCRIPTED: boolean = true;";
+// tests/sdk/mini_game.cmake's expectedLine (SDK19), with main.cpp's "mini_game: " prefix.
+constexpr std::string_view SCRIPTED_SUMMARY = "mini_game: frames=600 fired=8 hits=3 bullets=0 entities=4";
+
+}  // namespace
+
+TEST_CASE(
+    "play scripts: the small game's scene opens as main.cpp builds it, beside its script and the C++ game's bullet "
+    "(SX12)") {
+    const std::string root = sampleRoot();
+
+    const engine::editor::MetaParseResult gameMeta =
+        engine::editor::parseMeta(readSampleFile(root + "/assets/scripts/game.ts.meta"));
+    REQUIRE(gameMeta.guid.has_value());
+    CHECK(*gameMeta.guid != Guid{});
+    CHECK(engine::formatGuid(*gameMeta.guid) == SAMPLE_GAME_GUID);
+    CHECK(readSampleFile(root + "/assets/scripts/game.ts.meta") == engine::editor::writeMetaText(*gameMeta.guid));
+
+    const engine::editor::MetaParseResult bulletMeta =
+        engine::editor::parseMeta(readSampleFile(root + "/assets/bullet.aeroprefab.meta"));
+    REQUIRE(bulletMeta.guid.has_value());
+    CHECK(*bulletMeta.guid != Guid{});
+    CHECK(engine::formatGuid(*bulletMeta.guid) == SAMPLE_BULLET_GUID);
+    CHECK(readSampleFile(root + "/assets/bullet.aeroprefab.meta") == engine::editor::writeMetaText(*bulletMeta.guid));
+    CHECK(*gameMeta.guid != *bulletMeta.guid);
+    CHECK(engine::formatGuid(*gameMeta.guid) != SAMPLE_MOVER_GUID);
+    CHECK(engine::formatGuid(*bulletMeta.guid) != SAMPLE_MOVER_GUID);
+
+    CHECK(readSampleFile(root + "/assets/bullet.aeroprefab") ==
+          readSampleFile(root + "/../cpp/assets/bullet.aeroprefab"));
+
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK_FALSE(engine::editor::sceneIoAvailable());
+        return;
+    }
+    const std::string text = readSampleFile(root + "/scenes/game.scene.json");
+    SampleScene scene;
+    const engine::editor::SceneOpenOutcome opened = engine::editor::openSceneText(scene.context, scene.commands, text);
+    REQUIRE(opened.ok);
+    CHECK(opened.skipped == 0);
+    CHECK(opened.failed == 0);
+    engine::World& world = scene.world;
+    CHECK(world.entityCount() == 7);
+    CHECK(world.componentCount<ScriptComponent>() == 1);
+    CHECK(world.componentCount<engine::Camera>() == 1);
+    CHECK(world.componentCount<engine::DirectionalLight>() == 1);
+    CHECK(world.componentCount<engine::MeshRenderer>() == 5);
+
+    const Entity player = scriptedEntity(world, *gameMeta.guid);
+    CHECK(nameOf(world, player) == "player");
+    CHECK(transformOf(world, player).position == engine::Vec3{0.0F, 0.5F, 5.0F});
+
+    const std::vector<Entity> targets = namedEntities(world, "target");
+    REQUIRE(targets.size() == 3);
+    CHECK(transformOf(world, targets[0]).position == engine::Vec3{-4.0F, 0.5F, -5.0F});
+    CHECK(transformOf(world, targets[1]).position == engine::Vec3{0.0F, 0.5F, -5.0F});
+    CHECK(transformOf(world, targets[2]).position == engine::Vec3{4.0F, 0.5F, -5.0F});
+
+    constexpr float ROTATION_TOLERANCE = 1.0e-6F;
+    const auto rotationWithin = [&](const char* name, float degrees) {
+        const std::vector<Entity> found = namedEntities(world, name);
+        REQUIRE(found.size() == 1);
+        const engine::Quat want = engine::fromAxisAngle(engine::Vec3::unitX(), engine::radians(degrees));
+        const engine::Quat have = transformOf(world, found.front()).rotation;
+        CHECK(std::abs(have.x - want.x) <= ROTATION_TOLERANCE);
+        CHECK(std::abs(have.y - want.y) <= ROTATION_TOLERANCE);
+        CHECK(std::abs(have.z - want.z) <= ROTATION_TOLERANCE);
+        CHECK(std::abs(have.w - want.w) <= ROTATION_TOLERANCE);
+        return found.front();
+    };
+    const Entity camera = rotationWithin("camera", -47.5F);
+    CHECK(transformOf(world, camera).position == engine::Vec3{0.0F, 12.0F, 11.0F});
+    static_cast<void>(rotationWithin("sun", -55.0F));
+
+    const std::vector<Entity> ground = namedEntities(world, "ground");
+    REQUIRE(ground.size() == 1);
+    CHECK(transformOf(world, ground.front()).scale == engine::Vec3{10.0F, 1.0F, 10.0F});
+    const engine::MeshRenderer* const groundMesh = world.get<engine::MeshRenderer>(ground.front());
+    REQUIRE(groundMesh != nullptr);
+    CHECK(groundMesh->primitive == 2U);
+
+    const std::optional<std::string> again = engine::editor::sceneToText(world);
+    REQUIRE(again.has_value());
+    CHECK(*again == text);
+}
+
+TEST_CASE(
+    "play scripts: the small game moves the player with a held key and fires the bullet prefab with Space (SX13)") {
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK_FALSE(engine::editor::sceneIoAvailable());
+        return;
+    }
+    using engine::platform::Key;
+    constexpr double DT = 0.05;
+    constexpr float POSITION_TOLERANCE = 1.0e-4F;
+
+    const LogCapture log;
+    const TempDir copy;
+    const std::string root = copy.utf8();
+    copySample(copy);
+    const SamplePublish prepared = publishSample(root);
+    REQUIRE(prepared.game.has_value());
+    CHECK(engine::formatGuid(*prepared.game) == SAMPLE_GAME_GUID);
+    CHECK(prepared.bullet.has_value());
+    CHECK(prepared.published);
+
+    SampleScene scene;
+    REQUIRE(
+        engine::editor::openSceneText(scene.context, scene.commands, readSampleFile(root + "/scenes/game.scene.json"))
+            .ok);
+    engine::World& world = scene.world;
+    const Entity player = scriptedEntity(world, *prepared.game);
+    engine::platform::InputState game;
+    PlayScripts play{root, world, game};
+    REQUIRE(play.live());
+
+    // 1. The first update: the score reads zero and nothing has moved.
+    static_cast<void>(play.update(DT));
+    CHECK(nameOf(world, player) == "player: fired=0 hits=0");
+    CHECK(transformOf(world, player).position == engine::Vec3{0.0F, 0.5F, 5.0F});
+
+    // 2. A held Right moves the player along +X by PLAYER_SPEED * dt of Play's dt, one frame at a time.
+    game.newFrame();
+    sendKey(game, Key::Right, true);
+    for (int frame = 0; frame < 10; ++frame) {
+        static_cast<void>(play.update(DT));
+        game.newFrame();
+    }
+    const engine::Transform moved = transformOf(world, player);
+    CHECK(std::abs(moved.position.x - 3.0F) <= POSITION_TOLERANCE);
+    CHECK(moved.position.y == 0.5F);
+    CHECK(moved.position.z == 5.0F);
+
+    // 3. Space fires the bullet prefab at the player, and the bullet flies in its spawn frame.
+    sendKey(game, Key::Right, false);
+    sendKey(game, Key::Space, true);
+    static_cast<void>(play.update(DT));
+    CHECK(nameOf(world, player) == "player: fired=1 hits=0");
+    CHECK(world.entityCount() == 8);
+    const std::vector<Entity> bullets = namedEntities(world, "bullet");
+    REQUIRE(bullets.size() == 1);
+    const engine::Transform shot = transformOf(world, bullets.front());
+    CHECK(std::abs(shot.position.x - 3.0F) <= POSITION_TOLERANCE);
+    CHECK(shot.position.y == 0.5F);
+    CHECK(std::abs(shot.position.z - 4.3F) <= POSITION_TOLERANCE);
+    CHECK(std::abs(shot.scale.x - 0.2F) <= 1.0e-6F);
+
+    // 4. A held Space fires again after FIRE_COOLDOWN: not on the next four frames, on the fifth.
+    for (int frame = 0; frame < 4; ++frame) {
+        game.newFrame();
+        static_cast<void>(play.update(DT));
+    }
+    CHECK(nameOf(world, player) == "player: fired=1 hits=0");
+    game.newFrame();
+    static_cast<void>(play.update(DT));
+    CHECK(nameOf(world, player) == "player: fired=2 hits=0");
+    CHECK(namedEntities(world, "bullet").size() == 2);
+    CHECK(world.entityCount() == 9);
+
+    // 5. Every movement key, as main.cpp maps it: Left and A along -X, Right and D along +X, Up and W along -Z, Down
+    // and S along +Z, 0.3 a frame. Each key is held a different number of frames, so a key on the wrong axis or sign
+    // lands elsewhere, and the other axis must not move at all.
+    const auto hold = [&](Key key, int frames) {
+        game.newFrame();
+        sendKey(game, key, true);
+        for (int frame = 0; frame < frames; ++frame) {
+            static_cast<void>(play.update(DT));
+            game.newFrame();
+        }
+        sendKey(game, key, false);
+        return transformOf(world, player).position;
+    };
+    game.newFrame();
+    sendKey(game, Key::Space, false);
+    const auto alongX = [&](Key key, int frames, float x) {
+        const engine::Vec3 at = hold(key, frames);
+        CHECK(std::abs(at.x - x) <= POSITION_TOLERANCE);
+        CHECK(at.y == 0.5F);
+        CHECK(at.z == 5.0F);
+    };
+    alongX(Key::Left, 1, 2.7F);
+    alongX(Key::A, 2, 2.1F);
+    alongX(Key::D, 3, 3.0F);
+    const float xBeforeZ = transformOf(world, player).position.x;
+    const auto alongZ = [&](Key key, int frames, float z) {
+        const engine::Vec3 at = hold(key, frames);
+        CHECK(at.x == xBeforeZ);
+        CHECK(at.y == 0.5F);
+        CHECK(std::abs(at.z - z) <= POSITION_TOLERANCE);
+    };
+    alongZ(Key::Up, 1, 4.7F);
+    alongZ(Key::W, 2, 4.1F);
+    alongZ(Key::Down, 3, 5.0F);
+    alongZ(Key::S, 1, 5.3F);
+
+    // 6. Each clamp, read exactly at its bound after a hold that would carry the player past it.
+    CHECK(hold(Key::Right, 20).x == 8.0F);  // 3 + 6 = 9
+    CHECK(hold(Key::Left, 60).x == -8.0F);  // 8 - 18 = -10
+    CHECK(hold(Key::Up, 50).z == -6.0F);    // 5.3 - 15 = -9.7
+    const engine::Vec3 last = hold(Key::Down, 50);
+    CHECK(last.z == 6.0F);  // -6 + 15 = 9
+    CHECK(last.x == -8.0F);
+    CHECK(last.y == 0.5F);
+
+    // 7. A bullet is spent on the frame its age reaches BULLET_LIFE, not the frame after: at a Play dt of 0.25 s the
+    // age is exactly 1.0 (a double sum of four quarters) on the fourth update. Fired from (-8, 6), its 3.5-unit steps
+    // along -Z stay 4 units from the nearest target (x = -4), so only the expiry can end it.
+    constexpr double QUARTER = 0.25;
+    CHECK(namedEntities(world, "bullet").empty());  // section 4's two bullets expired long ago
+    CHECK(world.entityCount() == 7);
+    game.newFrame();
+    sendKey(game, Key::Space, true);
+    CHECK(play.update(QUARTER).destroyed == 0);
+    sendKey(game, Key::Space, false);
+    CHECK(nameOf(world, player) == "player: fired=3 hits=0");
+    const std::vector<Entity> lastShot = namedEntities(world, "bullet");
+    REQUIRE(lastShot.size() == 1);
+    const auto flying = [&](float z) {
+        REQUIRE(world.alive(lastShot.front()));
+        const engine::Vec3 at = transformOf(world, lastShot.front()).position;
+        CHECK(at.x == -8.0F);
+        CHECK(at.z == z);
+    };
+    flying(2.5F);  // age 0.25
+    game.newFrame();
+    CHECK(play.update(QUARTER).destroyed == 0);
+    flying(-1.0F);  // age 0.5
+    game.newFrame();
+    CHECK(play.update(QUARTER).destroyed == 0);
+    flying(-4.5F);  // age 0.75: alive on the update before the expiry
+    game.newFrame();
+    CHECK(play.update(QUARTER).destroyed == 1);  // age 1.0: spent
+    CHECK_FALSE(world.alive(lastShot.front()));
+    CHECK(namedEntities(world, "bullet").empty());
+    CHECK(namedEntities(world, "target").size() == 3);  // spent by the expiry, not by a hit
+    CHECK(nameOf(world, player) == "player: fired=3 hits=0");
+    CHECK(world.entityCount() == 7);
+
+    CHECK(play.stop().detached == 1);
+    CHECK(log.loud() == 0);
+}
+
+TEST_CASE("play scripts: the small game's scripted run ends on the C++ mini-game's summary line (SX14)") {
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK_FALSE(engine::editor::sceneIoAvailable());
+        return;
+    }
+    constexpr double PLAY_DT = 0.05;  // not 1/60: the run steps FIXED_DT whatever Play passes
+    constexpr int RUN_UPDATES = 600;
+    constexpr int AFTER_UPDATES = 9;
+    constexpr float X_TOLERANCE = 1.0e-3F;
+
+    const LogCapture log;
+    const TempDir copy;
+    const std::string root = copy.utf8();
+    copySample(copy);
+
+    // 1. The copy's script holds the mode switch once, and the case turns it on.
+    const std::string gamePath = root + "/assets/scripts/game.ts";
+    std::string gameText = readSampleFile(gamePath);
+    const std::size_t switchAt = gameText.find(SCRIPTED_OFF);
+    REQUIRE(switchAt != std::string::npos);
+    REQUIRE(gameText.find(SCRIPTED_OFF, switchAt + 1) == std::string::npos);
+    gameText.replace(switchAt, SCRIPTED_OFF.size(), SCRIPTED_ON);
+    REQUIRE(engine::editor::writeTextFileAtomic(gamePath, gameText).empty());
+
+    const SamplePublish prepared = publishSample(root);
+    REQUIRE(prepared.game.has_value());
+    CHECK(prepared.published);
+
+    SampleScene scene;
+    REQUIRE(
+        engine::editor::openSceneText(scene.context, scene.commands, readSampleFile(root + "/scenes/game.scene.json"))
+            .ok);
+    engine::World& world = scene.world;
+    const Entity player = scriptedEntity(world, *prepared.game);
+    const engine::platform::InputState game;
+    PlayScripts play{root, world, game};
+    REQUIRE(play.live());
+
+    // 2. Six hundred updates: the score, not yet the summary. Each update that destroys anything is recorded as
+    // "<update>:<count>", counting updates from 1, so update k steps frame k - 1.
+    std::size_t destroyed = 0;
+    std::size_t faulted = 0;
+    std::string destroys;
+    const auto record = [&](int update, const engine::script::ScriptSystemReport& report) {
+        destroyed += report.destroyed;
+        faulted += report.faulted;
+        if (report.destroyed != 0) {
+            destroys += std::format("{}{}:{}", destroys.empty() ? "" : " ", update, report.destroyed);
+        }
+    };
+    for (int update = 1; update <= RUN_UPDATES; ++update) {
+        record(update, play.update(PLAY_DT));
+    }
+    CHECK(nameOf(world, player) == "player: fired=8 hits=3");
+
+    // 3. The 601st update writes the summary, after the 600th update's destroys were flushed.
+    record(RUN_UPDATES + 1, play.update(PLAY_DT));
+    CHECK(nameOf(world, player) == SCRIPTED_SUMMARY);
+    // Each bullet's end by frame, which pins the hit test's squaring and its XZ plane, and the hit radius,
+    // FIRE_COOLDOWN and BULLET_LIFE to within one frame's step (SX13 pins the exact life): the three hits at frames
+    // 50, 150 and 510 take the bullet and its target; the held Space's other bullets expire at frames 182, 195, 208
+    // and 221; and the frame-410 miss at 469, after 60 flights, where the C++ game's float age expires it at 470
+    // (ts/README.md, "The scripted run").
+    CHECK(destroys == "51:2 151:2 183:1 196:1 209:1 222:1 470:1 511:2");
+    CHECK(world.entityCount() == 4);
+    CHECK(namedEntities(world, "target").empty());
+    CHECK(namedEntities(world, "bullet").empty());
+    const engine::Transform ended = transformOf(world, player);
+    CHECK(std::abs(ended.position.x - 4.0F) <= X_TOLERANCE);
+    CHECK(ended.position.y == 0.5F);
+    CHECK(ended.position.z == 5.0F);
+    CHECK(destroyed == 11);  // eight bullets and three targets
+    CHECK(faulted == 0);
+
+    // 4. The run is over: more updates change nothing.
+    std::size_t destroyedAfter = 0;
+    for (int update = 0; update < AFTER_UPDATES; ++update) {
+        destroyedAfter += play.update(PLAY_DT).destroyed;
+    }
+    CHECK(nameOf(world, player) == SCRIPTED_SUMMARY);
+    CHECK(transformOf(world, player).position == ended.position);
+    CHECK(world.entityCount() == 4);
+    CHECK(destroyedAfter == 0);
+
+    CHECK(play.stop().detached == 1);
+    CHECK(log.loud() == 0);
+}
+
+TEST_CASE("play scripts: the small game's scene carries main.cpp's colours, primitives, camera and sun (SX15)") {
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK_FALSE(engine::editor::sceneIoAvailable());
+        return;
+    }
+    // samples/phase-4-scripting/cpp/main.cpp's buildScene, value by value: SX12's round trip compares the file with
+    // itself, so a colour, a primitive, the lens or the sun edited in the file alone would still pass it.
+    SampleScene scene;
+    REQUIRE(engine::editor::openSceneText(scene.context, scene.commands,
+                                          readSampleFile(sampleRoot() + "/scenes/game.scene.json"))
+                .ok);
+    engine::World& world = scene.world;
+
+    const auto meshOf = [&](const char* name, std::size_t count) {
+        const std::vector<Entity> found = namedEntities(world, name);
+        REQUIRE(found.size() == count);
+        std::vector<engine::MeshRenderer> meshes;
+        for (const Entity entity : found) {
+            const engine::MeshRenderer* const mesh = world.get<engine::MeshRenderer>(entity);
+            REQUIRE(mesh != nullptr);
+            meshes.push_back(*mesh);
+        }
+        return meshes;
+    };
+
+    // addCube: primitive 0 (a cube), the colour of each role; the ground is primitive 2 (a plane).
+    const std::vector<engine::MeshRenderer> player = meshOf("player", 1);
+    CHECK(player[0] == engine::MeshRenderer{.primitive = 0, .color = {0.2F, 0.5F, 0.9F}});
+    const std::vector<engine::MeshRenderer> targets = meshOf("target", 3);
+    for (const engine::MeshRenderer& target : targets) {
+        CHECK(target == engine::MeshRenderer{.primitive = 0, .color = {0.9F, 0.3F, 0.25F}});
+    }
+    const std::vector<engine::MeshRenderer> ground = meshOf("ground", 1);
+    CHECK(ground[0] == engine::MeshRenderer{.primitive = 2, .color = {0.35F, 0.4F, 0.35F}});
+
+    // main.cpp adds Camera and DirectionalLight with no initialiser: the component defaults.
+    const std::vector<Entity> camera = namedEntities(world, "camera");
+    REQUIRE(camera.size() == 1);
+    const engine::Camera* const lens = world.get<engine::Camera>(camera.front());
+    REQUIRE(lens != nullptr);
+    CHECK(*lens == engine::Camera{});
+    const std::vector<Entity> sun = namedEntities(world, "sun");
+    REQUIRE(sun.size() == 1);
+    const engine::DirectionalLight* const light = world.get<engine::DirectionalLight>(sun.front());
+    REQUIRE(light != nullptr);
+    CHECK(*light == engine::DirectionalLight{});
+}
+
+TEST_CASE("play scripts: a held Space fires again after 0.21 s, not 0.2 s, at a frame step of 0.1 s (SX16)") {
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK_FALSE(engine::editor::sceneIoAvailable());
+        return;
+    }
+    // At a Play dt of 0.1 the cooldown counts 0.21, 0.11, 0.01 and is clear on the fourth update, so shots come on
+    // updates 1, 4, 7; a cooldown of 0.2 counts 0.2, 0.1, 0 and is clear on the third, so shots come on 1, 3, 5. SX13
+    // steps by 0.05, where the two meet on the fifth update (0.2 - 4 * 0.05 leaves 1.4e-17, above zero), and SX14 by
+    // 1/60, where both are thirteen frames. Six updates stop before the first bullet, from x = 0, reaches a target.
+    constexpr double DT = 0.1;
+    constexpr int UPDATES = 6;
+    constexpr std::array<int, UPDATES> FIRED_AFTER{1, 1, 1, 2, 2, 2};
+
+    const LogCapture log;
+    const TempDir copy;
+    const std::string root = copy.utf8();
+    copySample(copy);
+    const SamplePublish prepared = publishSample(root);
+    REQUIRE(prepared.game.has_value());
+    CHECK(prepared.published);
+
+    SampleScene scene;
+    REQUIRE(
+        engine::editor::openSceneText(scene.context, scene.commands, readSampleFile(root + "/scenes/game.scene.json"))
+            .ok);
+    engine::World& world = scene.world;
+    const Entity player = scriptedEntity(world, *prepared.game);
+    engine::platform::InputState game;
+    PlayScripts play{root, world, game};
+    REQUIRE(play.live());
+
+    sendKey(game, engine::platform::Key::Space, true);
+    for (int update = 0; update < UPDATES; ++update) {
+        static_cast<void>(play.update(DT));
+        game.newFrame();
+        CHECK(nameOf(world, player) == std::format("player: fired={} hits=0", FIRED_AFTER.at(update)));
+    }
+    CHECK(namedEntities(world, "bullet").size() == 2);
+    CHECK(namedEntities(world, "target").size() == 3);  // no shot has landed yet
+
+    sendKey(game, engine::platform::Key::Space, false);
+    CHECK(play.stop().detached == 1);
+    CHECK(log.loud() == 0);
+}
+
+TEST_CASE("play scripts: a bullet strikes a target within 0.6 in the XZ plane and passes one beyond it (SX17)") {
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK_FALSE(engine::editor::sceneIoAvailable());
+        return;
+    }
+    // At a Play dt of 0.25 a bullet fired from (0, 0.5, 5) is at z = 1.5, -2, -5.5 on the first three updates, all in
+    // binary floats, and is spent on the fourth. Each scenario moves one target to a known offset from the bullet's
+    // third position (0, -5.5) and fires once. A radius of 0.5 or 0.55 misses the 0.55 and diagonal 0.566 hits, and a
+    // radius of 0.7 strikes the 0.65 and diagonal 0.636 misses; the diagonals also tell a distance from a sum or a
+    // maximum of the two axes. The offsets carry both signs on both axes.
+    struct Shot {
+        float x;
+        float z;
+        bool hit;
+    };
+    constexpr std::array<Shot, 6> SHOTS{{
+        {0.0F, -6.05F, true},    // 0.55 ahead on Z
+        {-0.55F, -5.5F, true},   // 0.55 to the left on X
+        {0.4F, -5.9F, true},     // 0.4 right and 0.4 ahead: 0.566
+        {0.0F, -4.85F, false},   // 0.65 behind on Z
+        {0.65F, -5.5F, false},   // 0.65 to the right on X
+        {-0.45F, -5.95F, false}  // 0.45 left and 0.45 ahead: 0.636
+    }};
+    constexpr double QUARTER = 0.25;
+
+    const LogCapture log;
+    const TempDir copy;
+    const std::string root = copy.utf8();
+    copySample(copy);
+    const SamplePublish prepared = publishSample(root);
+    REQUIRE(prepared.game.has_value());
+    CHECK(prepared.published);
+    const std::string sceneText = readSampleFile(root + "/scenes/game.scene.json");
+
+    for (const Shot& shot : SHOTS) {
+        CAPTURE(shot.x);
+        CAPTURE(shot.z);
+        SampleScene scene;
+        REQUIRE(engine::editor::openSceneText(scene.context, scene.commands, sceneText).ok);
+        engine::World& world = scene.world;
+        const std::vector<Entity> targets = namedEntities(world, "target");
+        REQUIRE(targets.size() == 3);
+        const auto place = [&](Entity target, float x, float z) {
+            auto* const transform = world.get<engine::Transform>(target);
+            REQUIRE(transform != nullptr);
+            transform->position = engine::Vec3{x, 0.5F, z};
+        };
+        place(targets[0], shot.x, shot.z);
+        place(targets[1], -7.0F, -5.5F);  // out of the bullet's way
+        place(targets[2], 7.0F, -5.5F);
+        const Entity player = scriptedEntity(world, *prepared.game);
+
+        engine::platform::InputState game;
+        PlayScripts play{root, world, game};
+        REQUIRE(play.live());
+        sendKey(game, engine::platform::Key::Space, true);
+        static_cast<void>(play.update(QUARTER));
+        sendKey(game, engine::platform::Key::Space, false);
+        game.newFrame();
+        CHECK(nameOf(world, player) == "player: fired=1 hits=0");
+        // The second update, z = -2: nothing within reach. The third, z = -5.5: the target and the bullet, or neither.
+        CHECK(play.update(QUARTER).destroyed == 0);
+        const engine::script::ScriptSystemReport third = play.update(QUARTER);
+        CHECK(third.destroyed == (shot.hit ? 2U : 0U));
+        CHECK(world.alive(targets[0]) == !shot.hit);
+        CHECK(nameOf(world, player) == (shot.hit ? "player: fired=1 hits=1" : "player: fired=1 hits=0"));
+        CHECK(namedEntities(world, "target").size() == (shot.hit ? 2U : 3U));
+        CHECK(play.stop().detached == 1);
+    }
+    CHECK(log.loud() == 0);
+}
+
+TEST_CASE("play scripts: a saved bullet speed reaches the next shot of a running game, whose score carries on (SX18)") {
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK_FALSE(engine::editor::sceneIoAvailable());
+        return;
+    }
+    // game.ts keeps its constants as module code, which a reload replaces, and its state as the instance's own
+    // fields, which a reload keeps. The copy's script holds the bullet's speed once, as the only "= 14;", and the
+    // case rewrites it to 20 while the game runs: the next bullet leaves 20 * 0.25 = 5 units from the muzzle, not
+    // 14 * 0.25 = 3.5, and the score of the shot and the hit made before the save is still in the player's name.
+    constexpr double QUARTER = 0.25;
+
+    const LogCapture log;
+    const TempDir copy;
+    const std::string root = copy.utf8();
+    copySample(copy);
+
+    const std::string gamePath = root + "/assets/scripts/game.ts";
+    std::string gameText = readSampleFile(gamePath);
+    constexpr std::string_view OLD_SPEED = "= 14;";
+    constexpr std::string_view NEW_SPEED = "= 20;";
+    const std::size_t speedAt = gameText.find(OLD_SPEED);
+    REQUIRE(speedAt != std::string::npos);
+    REQUIRE(gameText.find(OLD_SPEED, speedAt + 1) == std::string::npos);
+
+    engine::editor::AssetDatabase database;
+    engine::GuidGenerator generator{0x4452ULL};
+    static_cast<void>(database.rescan(root, root + "/assets", generator));
+    const engine::editor::AssetRecord* const record = database.findByPath("scripts/game.ts");
+    REQUIRE(record != nullptr);
+    CHECK(engine::formatGuid(record->guid) == SAMPLE_GAME_GUID);
+    const Guid script = record->guid;
+
+    engine::editor::ScriptTranspilerConfig config;
+    config.esbuildPath = std::string{AERO_TEST_ESBUILD};
+    const engine::editor::ScriptProjectView view{root, "assets", engine::editor::ProjectLanguage::Ts};
+    const auto settle = [&](engine::editor::ScriptTranspiler& transpiler) {
+        transpiler.noteScan(database, view);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{20};
+        while (!transpiler.idle() && std::chrono::steady_clock::now() < deadline) {
+            transpiler.service(database, 0.0F);
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+        REQUIRE(transpiler.idle());
+    };
+    const auto publishedGame = [&](engine::editor::ScriptTranspiler& transpiler) {
+        bool found = false;
+        for (const Guid& guid : transpiler.takePublished()) {
+            found = found || guid == script;
+        }
+        return found;
+    };
+
+    engine::editor::ScriptTranspiler transpiler{config};
+    settle(transpiler);
+    REQUIRE(publishedGame(transpiler));
+
+    SampleScene scene;
+    REQUIRE(
+        engine::editor::openSceneText(scene.context, scene.commands, readSampleFile(root + "/scenes/game.scene.json"))
+            .ok);
+    engine::World& world = scene.world;
+    const Entity player = scriptedEntity(world, script);
+    engine::platform::InputState game;
+    {
+        PlayScripts play{root, world, game};
+        REQUIRE(play.live());
+
+        // 1. One shot from (0, 0.5, 5) at the old speed, flown to z = -5.5, where it strikes the middle target (0, -5).
+        sendKey(game, engine::platform::Key::Space, true);
+        static_cast<void>(play.update(QUARTER));
+        sendKey(game, engine::platform::Key::Space, false);
+        game.newFrame();
+        static_cast<void>(play.update(QUARTER));
+        CHECK(play.update(QUARTER).destroyed == 2);
+        CHECK(nameOf(world, player) == "player: fired=1 hits=1");
+        CHECK(namedEntities(world, "bullet").empty());
+        CHECK(namedEntities(world, "target").size() == 2);
+
+        // 2. Save the new speed: the publish names the script and the reload is Ok.
+        gameText.replace(speedAt, OLD_SPEED.size(), NEW_SPEED);
+        REQUIRE(engine::editor::writeTextFileAtomic(gamePath, gameText).empty());
+        static_cast<void>(database.rescan(root, root + "/assets", generator));
+        settle(transpiler);
+        CHECK(publishedGame(transpiler));
+        CHECK(play.reload(script) == ScriptStatus::Ok);
+
+        // 3. The next shot flies its first frame at the new speed, and the score has carried on.
+        sendKey(game, engine::platform::Key::Space, true);
+        static_cast<void>(play.update(QUARTER));
+        sendKey(game, engine::platform::Key::Space, false);
+        CHECK(nameOf(world, player) == "player: fired=2 hits=1");
+        const std::vector<Entity> shot = namedEntities(world, "bullet");
+        REQUIRE(shot.size() == 1);
+        const engine::Transform flown = transformOf(world, shot.front());
+        CHECK(flown.position.x == 0.0F);
+        CHECK(flown.position.z == 0.0F);  // 5 - 5; the old speed would leave it at 1.5
+        CHECK(namedEntities(world, "target").size() == 2);
+
+        CHECK(play.stop().detached == 1);
     }
     CHECK(log.loud() == 0);
     static_cast<void>(transpiler.takePublished());

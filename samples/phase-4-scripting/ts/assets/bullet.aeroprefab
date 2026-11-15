@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "name": "bullet",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 0.2,
+            "y": 0.2,
+            "z": 0.2
+          }
+        },
+        "engine::MeshRenderer": {
+          "primitive": 1,
+          "color": {
+            "x": 1,
+            "y": 0.85,
+            "z": 0.2
+          },
+          "mesh": "00000000000000000000000000000000",
+          "meshIndex": 0,
+          "material": "00000000000000000000000000000000"
+        }
+      }
+    }
+  ]
+}

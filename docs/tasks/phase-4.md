@@ -56,7 +56,7 @@ and save while the cubes move, make the script throw and read the Console line, 
 reopen the project to see the recovery offer; about two minutes.
 
 ### Story 3 — I write a small game in TypeScript: keys move my player, a key fires bullets, and autocomplete knows the whole API
-Tasks: 4.4.2, 4.4.3, 4.4.4, 4.2.2, 4.3.2
+Tasks: 4.4.2, 4.4.3, 4.4.4, 4.2.2, 4.3.2, 4.4.5
 As a game developer, I write a small game in TypeScript with keyboard input, spawning and destroying entities and a
 typed API, so that I can build real gameplay and know that what I play in the editor is what the cooked game runs.
 - Given a script that spawns, finds, moves and destroys entities, when it runs during play, then the entities appear,
@@ -286,6 +286,14 @@ was. The Hierarchy's Save as Prefab writes the selection beside a `.meta`, under
 file. `AssetKind::Prefab` drags from the asset browser onto the Viewport, a Hierarchy row or the Hierarchy's empty
 space, and `InstantiatePrefabCommand` makes each drop one history entry. Overrides, nesting and a prefab editing mode
 stay v2; the play session's VFS is 4.7.4's and packing is 5.1.2's.
+
+### 4.4.5 Small TypeScript game · P0 · M · depends: 4.4.2, 4.4.3, 4.4.4, 4.7.4, 4.5.1
+**Goal:** Story 3's small game: the game the C++ mini-game plays, written as one TypeScript script and played in the editor with Play — the TypeScript half of the Phase 4 gate's two-language demo.
+**Deliverable:** a game scene, `game.ts` and the bullet prefab in `samples/phase-4-scripting/ts/`: keys move the player, Space fires bullets spawned from the prefab, a bullet destroys the target it reaches, and a scripted mode replays the C++ game's 600-frame run to the same summary line.
+Subtasks:
+- `game.ts`: main.cpp's frame in `onUpdate` (keys; move and clamp; cooldown and fire; flight and age; hit test; expiry), the score in the player's name, and the scripted mode
+- The game scene and the bullet prefab, beside the scripts of the Story 1 and Story 2 demos
+- Doctests that open the scene, drive the interactive game through the game's input and replay the scripted run to the C++ line
 
 ---
 
