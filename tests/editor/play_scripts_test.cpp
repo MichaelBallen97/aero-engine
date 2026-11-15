@@ -954,6 +954,51 @@ TEST_CASE(
     CHECK(namedEntities(world, "bullet").size() == 2);
     CHECK(world.entityCount() == 9);
 
+    // 5. Every movement key, as main.cpp maps it: Left and A along -X, Right and D along +X, Up and W along -Z, Down
+    // and S along +Z, 0.3 a frame. Each key is held a different number of frames, so a key on the wrong axis or sign
+    // lands elsewhere, and the other axis must not move at all.
+    const auto hold = [&](Key key, int frames) {
+        game.newFrame();
+        sendKey(game, key, true);
+        for (int frame = 0; frame < frames; ++frame) {
+            static_cast<void>(play.update(DT));
+            game.newFrame();
+        }
+        sendKey(game, key, false);
+        return transformOf(world, player).position;
+    };
+    game.newFrame();
+    sendKey(game, Key::Space, false);
+    const auto alongX = [&](Key key, int frames, float x) {
+        const engine::Vec3 at = hold(key, frames);
+        CHECK(std::abs(at.x - x) <= POSITION_TOLERANCE);
+        CHECK(at.y == 0.5F);
+        CHECK(at.z == 5.0F);
+    };
+    alongX(Key::Left, 1, 2.7F);
+    alongX(Key::A, 2, 2.1F);
+    alongX(Key::D, 3, 3.0F);
+    const float xBeforeZ = transformOf(world, player).position.x;
+    const auto alongZ = [&](Key key, int frames, float z) {
+        const engine::Vec3 at = hold(key, frames);
+        CHECK(at.x == xBeforeZ);
+        CHECK(at.y == 0.5F);
+        CHECK(std::abs(at.z - z) <= POSITION_TOLERANCE);
+    };
+    alongZ(Key::Up, 1, 4.7F);
+    alongZ(Key::W, 2, 4.1F);
+    alongZ(Key::Down, 3, 5.0F);
+    alongZ(Key::S, 1, 5.3F);
+
+    // 6. Each clamp, read exactly at its bound after a hold that would carry the player past it.
+    CHECK(hold(Key::Right, 20).x == 8.0F);  // 3 + 6 = 9
+    CHECK(hold(Key::Left, 60).x == -8.0F);  // 8 - 18 = -10
+    CHECK(hold(Key::Up, 50).z == -6.0F);    // 5.3 - 15 = -9.7
+    const engine::Vec3 last = hold(Key::Down, 50);
+    CHECK(last.z == 6.0F);  // -6 + 15 = 9
+    CHECK(last.x == -8.0F);
+    CHECK(last.y == 0.5F);
+
     CHECK(play.stop().detached == 1);
     CHECK(log.loud() == 0);
 }
