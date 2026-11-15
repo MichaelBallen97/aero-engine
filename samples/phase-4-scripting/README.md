@@ -43,6 +43,7 @@ the scenario run, and each one's demo starts from this folder and takes about tw
 
 ## The same game twice
 
-`ts/assets/scripts/game.ts` with `SCRIPTED` set and `cpp/aero_mini_game --scripted` print the same five integers,
-`frames=600 fired=8 hits=3 bullets=0 entities=4`. `tests/editor/play_scripts_test.cpp`'s SX14 pins the TypeScript line
-and `tests/sdk/mini_game.cmake`'s SDK19 the C++ one.
+`ts/assets/scripts/game.ts` with `SCRIPTED` set and the C++ mini-game's `build/mini-game/aero_mini_game --scripted`
+(built as `cpp/README.md` shows) print the same five integers, `frames=600 fired=8 hits=3 bullets=0 entities=4`.
+`tests/editor/play_scripts_test.cpp`'s SX14 pins the TypeScript line and `tests/sdk/mini_game.cmake`'s SDK19 the C++
+one.
