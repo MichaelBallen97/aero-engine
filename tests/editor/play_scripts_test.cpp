@@ -996,21 +996,31 @@ TEST_CASE("play scripts: the small game's scripted run ends on the C++ mini-game
     PlayScripts play{root, world, game};
     REQUIRE(play.live());
 
-    // 2. Six hundred updates: the score, not yet the summary.
+    // 2. Six hundred updates: the score, not yet the summary. Each update that destroys anything is recorded as
+    // "<update>:<count>", counting updates from 1, so update k steps frame k - 1.
     std::size_t destroyed = 0;
     std::size_t faulted = 0;
-    for (int update = 0; update < RUN_UPDATES; ++update) {
-        const engine::script::ScriptSystemReport report = play.update(PLAY_DT);
+    std::string destroys;
+    const auto record = [&](int update, const engine::script::ScriptSystemReport& report) {
         destroyed += report.destroyed;
         faulted += report.faulted;
+        if (report.destroyed != 0) {
+            destroys += std::format("{}{}:{}", destroys.empty() ? "" : " ", update, report.destroyed);
+        }
+    };
+    for (int update = 1; update <= RUN_UPDATES; ++update) {
+        record(update, play.update(PLAY_DT));
     }
     CHECK(nameOf(world, player) == "player: fired=8 hits=3");
 
     // 3. The 601st update writes the summary, after the 600th update's destroys were flushed.
-    const engine::script::ScriptSystemReport last = play.update(PLAY_DT);
-    destroyed += last.destroyed;
-    faulted += last.faulted;
+    record(RUN_UPDATES + 1, play.update(PLAY_DT));
     CHECK(nameOf(world, player) == SCRIPTED_SUMMARY);
+    // Each bullet's end by frame, which pins the hit radius and its squaring, the XZ plane, FIRE_COOLDOWN and
+    // BULLET_LIFE: the three hits at frames 50, 150 and 510 take the bullet and its target; the held Space's other
+    // bullets expire at frames 182, 195, 208 and 221; and the frame-410 miss at 469, after 60 flights, where the C++
+    // game's float age expires it at 470 (ts/README.md, "The scripted run").
+    CHECK(destroys == "51:2 151:2 183:1 196:1 209:1 222:1 470:1 511:2");
     CHECK(world.entityCount() == 4);
     CHECK(namedEntities(world, "target").empty());
     CHECK(namedEntities(world, "bullet").empty());
