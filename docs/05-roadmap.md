@@ -1,6 +1,6 @@
 # 05 — Roadmap & Phases
 
-> 10 phases — 0–8, plus **Phase E** (Editor Experience) inserted between 3 and 4. Every phase ends in a **usable deliverable gate** (project rule #2). Durations are part-time solo estimates — planning aids, not commitments.
+> 11 phases — 0–8, plus **Phase E** (Editor Experience) inserted between 3 and 4 and **Phase F** (Editor Workflow) inserted between 4 and 5. Every phase ends in a **usable deliverable gate** (project rule #2). Durations are part-time solo estimates — planning aids, not commitments.
 
 ---
 
@@ -24,18 +24,21 @@ Three ways to sequence a solo engine build were considered:
 | **3** | Asset Pipeline & 3D Content | 3–5 mo | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + an audible sound |
 | **E** | Editor Experience | 3–4 mo | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor |
 | **4** | Scripting (language fork) | 3–5 mo | Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly |
+| **F** | Editor Workflow | 2–3 mo | Open the editor and it fills the screen; drag a model in from the file manager and it imports; click the object under the cursor, even one standing behind another object's bounding box, and delete it with the Delete key; select a camera and see what it sees; create a script and a second scene from the browser and switch scenes from the breadcrumb; save a script while the game plays and see the change at once |
 | **5** | Export & **Ship a Game** 🎯 | 2–3 mo | A downloadable, playable 3D game made entirely in Aero Engine (desktop) |
 | **6** | Mobile Runtime & Audio Depth | 2–3 mo | The Phase 5 game running on a phone; audio buses/mixers |
 | **7** | 2D Support | 2–3 mo | A working 2D scene: Box2D physics + sprites + text |
 | **8** | Rendering Maturity & v1.0 | 2–4 mo | Tagged v1.0 release, documented, with sample projects |
 
-**Total: ~23–36 months**; budget to ~38 with slippage. (Phase E added 3–4 months to the original ~20–32.)
+**Total: ~25–39 months**; budget to ~41 with slippage. (Phase E added 3–4 months to the original ~20–32, and Phase F 2–3 more.)
 
 > **Note on ordering vs. the original draft:** "ship a game" was moved from Phase 4 to **Phase 5**, because you cannot ship before both scripting (Phase 4) and export (Phase 5) exist. 2D was deliberately placed at Phase 7, after the 3D foundation is proven.
 >
 > **Note on the July 2026 re-plan:** play-in-editor was placed in Phase 4 (epic 4.7); basic shadows/culling (3.6) and audio playback (3.7) were pulled forward into Phase 3 so the Phase 5 game ships with sound and shadows; Phase 2 gained the project system (2.6). Full task depth for every phase now lives in [docs/tasks/](./tasks/) — see [07 — Tasks](./07-tasks.md).
 >
 > **Note on Phase E (inserted after Phase 3 closed in code):** the editor built through Phases 2 and 3 *works*, and using it surfaced a cluster of correctness and workflow gaps that belong to no existing phase — a viewport with no ground, horizon or orientation reference; no cone light and no light gizmos, so a light's aim is invisible; a material silently ignored on primitive meshes; an asset browser that is read-only by contract; a project that never reopens the scene you were editing and does not notice a scene from a different project. Phase 8.5 is a *polish* epic scheduled after v1.0's feature set and after 8.2's quality pass — the wrong home for a missing light type or for file management. Phase 4 authors gameplay **through** this editor, so closing these before Phase 4 is cheaper than after it. It is lettered rather than fractioned because `3.5` is already taken; see [07 — Tasks](./07-tasks.md)'s numbering conventions.
+>
+> **Note on Phase F (inserted after Phase 4's gate was met):** Phase 4 closed with a small game made in the editor, and making it — then building a test project around an imported model — surfaced workflow gaps no phase owns: a viewport click that selects the object whose bounding *box* the ray enters first rather than the one under the cursor; a Delete key that works only while the Hierarchy holds the keyboard; a window that opens at 1280 × 720 and remembers nothing; no way to bring a file in except copying it on disk; scripts and scenes that cannot be created or opened from the asset browser; and a pause of about 2.5 s between saving a script and seeing it in the running game, nearly all of it the polling watcher. Phase 5 builds and ships a real game **through** this editor, so each gap is paid daily there unless it is closed first — the same argument that placed Phase E before Phase 4. It is lettered because `4.5` is already Phase 4's C++-project-mode epic. A change of on-disk format was weighed for this phase and left out: the JSON formats of `docs/09` stay.
 
 ---
 
@@ -131,6 +134,20 @@ Three ways to sequence a solo engine build were considered:
 - **4.7 Play-in-editor** — play/stop toolbar, scene snapshot & exact restore, autosave-before-play, script lifecycle bound to play mode *(added July 2026)*
 
 **Gate:** Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly.
+
+---
+
+## Phase F — Editor Workflow · *2–3 mo*
+
+**Goal:** the editor stops getting in the way of the loop it exists for — a click selects what is under the cursor, a key deletes it, a file dragged in from the desktop becomes an asset, scripts and scenes are made and reached from the browser, and a saved script reaches the running game at once.
+
+**Epics:**
+- **F.1 Viewport selection & orientation** — per-triangle picking behind the box pass, whole-model selection with a second click for the part, Delete from the viewport and the Edit menu, axis lines on the view-axis widget, and a camera frustum with a preview inset
+- **F.2 Window, menus & panels** — a full-screen start with remembered window state, the viewport's options moved to the View menu and saved, and selection routing that always brings the right panel forward
+- **F.3 Assets & scenes** — files dragged in from the file manager, New Script and New Scene in the browser, scenes as recognisable assets that open on a double-click, a scene switcher in the breadcrumb, folder icons, and scene pictures
+- **F.4 Iteration speed** — a native file watcher behind the polling seam, and a proven table of what reloads while the game runs
+
+**Gate:** Open the editor and it fills the screen; drag a model in from the file manager and it imports; click the object under the cursor, even one standing behind another object's bounding box, and delete it with the Delete key; select a camera and see what it sees; create a script and a second scene from the browser and switch scenes from the breadcrumb; save a script while the game plays and see the change at once.
 
 ---
 

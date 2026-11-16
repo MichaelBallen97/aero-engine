@@ -74,7 +74,7 @@ Decisions deliberately deferred until there is data or the relevant phase arrive
 Work a task found, measured or declined that no task in `docs/tasks/` owns yet. The list moved here from
 `CLAUDE.md`'s state block on 2026-10-26, where a pointer to this section remains.
 
-**ONE HUNDRED AND THREE UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**NINETY-SEVEN UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs in `CLAUDE.md`'s state block (fact
 4's four permitted cases, the inspector-row gap, the closed `File` section, E.1.1's fired thick-line handoff) are
@@ -93,15 +93,11 @@ not repeated here.
   verbatim by decision; a label is the command layer's, and nothing owns renaming them.
 - **Spot and point shadows** — the shadow pass is directional-only (3.6.2); Phase E's non-goals name
   cascaded/soft shadows as 8.2.1's, and nothing owns omni or spot shadow maps.
-- **A camera FRUSTUM gizmo** — E.2.3 draws the camera an icon and no gizmo; a natural fit for 4.7.
 - **A MIP CHAIN for E.2.3's icon atlas** — a 2.91x minification mitigated by a 4-texel minimum feature
   size; `Device::uploadTexture` already takes a mip level, so it is a downsampler and three lines.
 - **Muting the point/spot lights the bridge TRUNCATES** — safe the day `RenderView` can report which survived.
 - **A preview carrying the scene's POINT and SPOT lights** — excluded at E.2.4: a lamp lights a sphere at the
   origin by where it happens to sit, which predicts nothing about the material.
-- **A FOV control** — `EditorCamera::setFovYRadians` exists and the mock implies one.
-- **PERSISTING the viewport toggles and the tonemap params per user** — 3.6.3's, E.1.2's and E.2.3's
-  handoff unchanged; E.2.4 moved the controls, not the state, and E.6.3's Stats toggle joined them as session state.
 - **Exposure as a scene or camera property.**
 - **A `meshIndex`-aware model pick** — needs a reflectable "sub-asset" annotation or a component-aware row;
   likely first customer 4.7 or E.5.x.
@@ -127,8 +123,9 @@ not repeated here.
 - **A quiet `parseMaterial` mode** (E.4.5) — a hand-edited file's unknown-key WARNs pass through once per card
   read and once per render; a `reflect` change.
 - **A third thumbnail producer** (mesh, scene, audio waveform) — a third `ThumbnailSource` enumerator, a store
-  and one `releaseKey` line (E.4.5).
-- **A persisted thumbnail store under `Library/`** (E.4.5).
+  and one `releaseKey` line (E.4.5). The scene's picture is F.3.5's; the mesh and the audio waveform stay unowned.
+- **A persisted thumbnail store under `Library/`** (E.4.5) — F.3.5 persists scene pictures only; material and
+  texture thumbnails are still rebuilt every launch.
 - **An Apply that refreshes the browser without the watcher** — declined at E.4.5: an Apply reaches the
   browser through the watcher, as every asset kind's edit does.
 - **The Delete log line's trash path** (found on E.5.1's macOS pass) — it prints `Library/Trash/1` while the
@@ -212,8 +209,6 @@ not repeated here.
   Save`, which binds nothing; the containment modal's binding (`shell_ui.cpp:440-443`, `I270`) is the one to copy.
 - **A pinned header and footer for the New Project dialog** (E.6.4 D34) — under ≈ 523 points of work height the
   whole dialog scrolls; pinning them is a body `BeginChild`, with the focus arming read in the modal and passed in.
-- **A minimum OS window size for the editor** (E.6.4 D34) — nothing stops a window narrower than the 280-point
-  dialogs.
 - **The mock's heading letter-spacing** (E.6.4 D28) — a glyph-by-glyph draw.
 - **A drop shadow for modals** (E.6.4 D22) — ImGui 1.92.8 draws none.
 - **A watcher-driven New Project probe** (E.6.4 D12) instead of the 30-tick refresh.
@@ -254,15 +249,6 @@ not repeated here.
   4.7.4's play loop left it as it was: each Play makes a new VM, so whatever an interrupted call leaves ends with that
   Play's VM at Stop. Within a `ScriptSystem`, 4.4.1's settle call keeps the job from faulting another instance (R34's
   row).
-- **A native file watcher behind `poll()`'s seam** (3.1.4's reversal condition, measured by 4.3.3) — 3.1.4 kept the
-  asset watcher on polling until "a Phase 4 script-reload loop where 1–2 s of poll latency is felt on every save".
-  4.3.3's spike measured a save reaching new JavaScript in 2.19–3.2 s (median about 2.75 s) on macOS, flat over 1, 10
-  and 50 scripts: esbuild is 10–25 ms of it, and the watcher's 2 s settle and up to 1 s of cooldown are the rest.
-  4.3.3 left the watcher alone. 4.7.3 + 4.7.4's validation row 12 measured 2.47–2.62 s from a save to the publish and
-  2.5–2.7 s to a visible change in a running game, and found the delay noticeable; Story 2's demo on `main` measured
-  2.23–2.56 s from a save to a visible change and felt it as a pause of about 2.5 s before the cubes react, so the
-  latency this reversal names is felt; Phase 4's gate comes first, and no task owns the backend yet. A native backend
-  would be a new task that fills `WatchSnapshot` behind `poll()`'s seam.
 - **Attaching a script by dropping it on a Hierarchy row or the Viewport** (4.4.1) — a Script asset drops only on an
   asset-field row (`classifyAssetDrop`); a drop on a Hierarchy row or on the Viewport is refused, and validation row G9
   pins that nothing changes. Attaching it there means adding a ScriptComponent and setting its `script` as one
@@ -313,9 +299,6 @@ not repeated here.
   owns it.
 - **Two editors on one project** (4.7.3) — nothing locks a project, so a second editor that opens a project while
   another plays a game in it reads the live Play's record as a crash and offers its copy. No task owns it.
-- **A script whose transpile failed runs its last published JavaScript in play** (4.7.4) — the transpiler keeps the last
-  good publish, and `PlayScripts` loads `Library/Scripts/<guid>.js` whatever build it is, so the game runs the previous
-  code while the Console shows the transpile error. No task owns it.
 - **The Windows editor's 1 MiB main thread under a VM call inside `tick()`** (4.7.4) — every `PlayScripts` call runs on
   the editor's main thread, and a VM call needs `stackLimitBytes` + 256 KiB free, 768 KiB of Windows' 1 MiB (R37's
   figure); the editor's own frames above the VM's entry are unmeasured. The Windows pass records it on row 13 of 4.7.3 +

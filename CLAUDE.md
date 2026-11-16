@@ -29,8 +29,9 @@ and `ScriptSystem` over the project root at `res://` and reloads each script the
 (#140), new work after the numbered tasks, is the small TypeScript game in `samples/phase-4-scripting/ts/`: the C++
 mini-game's rules as one script whose `SCRIPTED` mode replays the C++ run to the same summary line. No quickjs-ng patch
 shipped (R21, R23, R24, R25, R31 stay open decisions in `docs/08-risks.md` and `docs/future-roadmap.md`). **Next:
-Phase 5 (Export & Ship a Game), starting with Step 0a — its story map, a `## Stories` section in
-`docs/tasks/phase-5.md` with the gate first — before its first task.**
+Phase F (Editor Workflow), planned 2026-11-16 and not started — four epics, fifteen tasks and a four-story map in
+`docs/tasks/phase-F.md`; Story 1's tasks come first, in the order F.2.1, F.3.1, F.1.1, F.1.3. Phase 5 (Export & Ship a
+Game) follows it, starting with its own Step 0a — a `## Stories` section in `docs/tasks/phase-5.md`, gate first.**
 
 **Three phase gates are still open**, each owing its deliverable rather than code:
 - **Phase 0**: macOS-PASS, held open for the Windows/Linux 60 fps sign-off (`samples/phase-0-cube/VALIDATION.md`).
@@ -44,7 +45,8 @@ No Windows or Linux validation pass exists for any task in any phase. The valida
 
 **Phase E is lettered, not fractioned.** `3.5` and `3.5.1`/`3.5.2` are already Phase 3's skeletal-animation
 epic and its tasks, and numbering is append-only, so a "Phase 3.5" would collide with referenced numbers.
-In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
+In Notion its `Phase #` is `3.5` — a sort key, not an identifier. **Phase F is lettered for the same reason**: `4.5` is
+Phase 4's C++-project-mode epic, and its Notion `Phase #` is `4.5`.
 
 **Where things live.**
 - Per-task history (what shipped, what was left out, every trap and dead end) and the merged-task index (PR, merge sha
@@ -83,7 +85,9 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 | **Phase 4** — Scripting | **COMPLETE, gate met 2026-11-15.** All seven epics closed and every task merged and macOS-validated: Epic 4.1 — 4.1.1 (#123) and 4.1.2 (#124); Epic 4.2 — 4.2.1 (#125) and 4.2.2 (#126); Epic 4.3 — 4.3.1 (#127), 4.3.2 (#129), 4.3.3 (#130) and 4.3.4 (#131); Epic 4.4 — 4.4.1 (#132), 4.4.2 (#133), 4.4.3 (#134), 4.4.4 (#135) and 4.4.5, the small TypeScript game (#140); Epic 4.5 — 4.5.1 and 4.5.2 together (#136); Epic 4.6 — 4.6.1 with 4.7.1 (#137); Epic 4.7 — 4.7.1 (#137), 4.7.2 (#138), and 4.7.3 and 4.7.4 together (#139). Every story's demo passed on a build of `main`. Windows/Linux rows pending for every task (`docs/08`'s validation debt). |
 | **Phase 4 gate** | Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly. **Met 2026-11-15** on macOS, 3 / 3 gate lines, none NOT EXECUTABLE (`samples/phase-4-scripting/VALIDATION.md`). Gate artifact: `samples/phase-4-scripting/` (the two-language demo). |
-| **Phase 5** — Export & Ship a Game | **NEXT, not started.** Step 0a first: its story map (`docs/tasks/phase-5.md` has no `## Stories` section yet). Gate: a downloadable, playable 3D game made entirely in Aero Engine (desktop); artifact `samples/phase-5-game/`. |
+| **Phase F** — Editor Workflow | **NEXT, planned 2026-11-16, not started.** Epics F.1 (viewport selection & orientation), F.2 (window, menus & panels), F.3 (assets & scenes), F.4 (iteration speed) — 15 tasks, cut into four stories in `docs/tasks/phase-F.md`. |
+| **Phase F gate** | Open the editor and it fills the screen; drag a model in from the file manager and it imports; click the object under the cursor, even one behind another object's bounding box, and delete it with the Delete key; select a camera and see what it sees; create a script and a second scene from the browser and switch scenes from the breadcrumb; save a script while the game plays and see the change at once. Gate artifact: `samples/phase-F-workflow/`. |
+| **Phase 5** — Export & Ship a Game | **After Phase F, not started.** Step 0a first: its story map (`docs/tasks/phase-5.md` has no `## Stories` section yet). Gate: a downloadable, playable 3D game made entirely in Aero Engine (desktop); artifact `samples/phase-5-game/`. |
 
 ### Engine layers, in dependency order
 
@@ -223,7 +227,7 @@ Some decisions are deliberately deferred (`docs/08-risks.md`): forward+ vs defer
 | `docs/05-roadmap.md` | Phases 0–8 with deliverable gates |
 | `docs/06-scope-and-non-goals.md` | What v1.0 is and is not |
 | `docs/07-tasks.md` | Task index: legend, numbering conventions, per-phase links |
-| `docs/tasks/phase-{0..8}.md`, `docs/tasks/phase-E.md` | Full breakdown per phase: epics → tasks → subtasks, each task with goal + deliverable. **Phase E** (Editor Experience) executes between 3 and 4 and is lettered because `3.5` is already taken — see `docs/07`'s numbering conventions |
+| `docs/tasks/phase-{0..8}.md`, `docs/tasks/phase-E.md`, `docs/tasks/phase-F.md` | Full breakdown per phase: epics → tasks → subtasks, each task with goal + deliverable. **Phase E** (Editor Experience) executes between 3 and 4 and **Phase F** (Editor Workflow) between 4 and 5; both are lettered because `3.5` and `4.5` are already taken — see `docs/07`'s numbering conventions |
 | `docs/08-risks.md` | Risk register, open + resolved decisions, unowned handoffs |
 | `docs/09-file-formats.md` | Scene schema v1 (entity/components/version), canonical form, versioning & evolution policy |
 | `docs/10-engineering-log.md` | **Per-task build history** — what each task shipped and deliberately did not, traps found, dead ends never to retry, and per-task build/dependency impact. Not normative; not auto-loaded. Read the relevant entry before touching a subsystem. |
