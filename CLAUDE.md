@@ -30,8 +30,10 @@ and `ScriptSystem` over the project root at `res://` and reloads each script the
 mini-game's rules as one script whose `SCRIPTED` mode replays the C++ run to the same summary line. No quickjs-ng patch
 shipped (R21, R23, R24, R25, R31 stay open decisions in `docs/08-risks.md` and `docs/future-roadmap.md`). **Next:
 Phase F (Editor Workflow), planned 2026-11-16 and not started — four epics, fifteen tasks and a four-story map in
-`docs/tasks/phase-F.md`; Story 1's tasks come first, in the order F.2.1, F.3.1, F.1.1, F.1.3. Phase 5 (Export & Ship a
-Game) follows it, starting with its own Step 0a — a `## Stories` section in `docs/tasks/phase-5.md`, gate first.**
+`docs/tasks/phase-F.md`; Story 1's tasks come first, in the order F.2.1, F.3.1, F.1.1, F.1.3. Phase G (3D Physics),
+planned the same day, follows it — five epics, seventeen tasks and a four-story map in `docs/tasks/phase-G.md`, Story
+1's tasks in the order G.1.1, G.2.1, G.2.2, G.4.1. Phase 5 (Export & Ship a Game) follows Phase G, starting with its
+own Step 0a — a `## Stories` section in `docs/tasks/phase-5.md`, gate first.**
 
 **Three phase gates are still open**, each owing its deliverable rather than code:
 - **Phase 0**: macOS-PASS, held open for the Windows/Linux 60 fps sign-off (`samples/phase-0-cube/VALIDATION.md`).
@@ -46,7 +48,8 @@ No Windows or Linux validation pass exists for any task in any phase. The valida
 **Phase E is lettered, not fractioned.** `3.5` and `3.5.1`/`3.5.2` are already Phase 3's skeletal-animation
 epic and its tasks, and numbering is append-only, so a "Phase 3.5" would collide with referenced numbers.
 In Notion its `Phase #` is `3.5` — a sort key, not an identifier. **Phase F is lettered for the same reason**: `4.5` is
-Phase 4's C++-project-mode epic, and its Notion `Phase #` is `4.5`.
+Phase 4's C++-project-mode epic, and its Notion `Phase #` is `4.5`. **Phase G is lettered too**: it runs between Phase F
+and Phase 5, and its Notion `Phase #` is `4.75`.
 
 **Where things live.**
 - Per-task history (what shipped, what was left out, every trap and dead end) and the merged-task index (PR, merge sha
@@ -87,7 +90,9 @@ Phase 4's C++-project-mode epic, and its Notion `Phase #` is `4.5`.
 | **Phase 4 gate** | Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly. **Met 2026-11-15** on macOS, 3 / 3 gate lines, none NOT EXECUTABLE (`samples/phase-4-scripting/VALIDATION.md`). Gate artifact: `samples/phase-4-scripting/` (the two-language demo). |
 | **Phase F** — Editor Workflow | **NEXT, planned 2026-11-16, not started.** Epics F.1 (viewport selection & orientation), F.2 (window, menus & panels), F.3 (assets & scenes), F.4 (iteration speed) — 15 tasks, cut into four stories in `docs/tasks/phase-F.md`. |
 | **Phase F gate** | Open the editor and it fills the screen; drag a model in from the file manager and it imports; click the object under the cursor, even one behind another object's bounding box, and delete it with the Delete key; select a camera and see what it sees; create a script and a second scene from the browser and switch scenes from the breadcrumb; save a script while the game plays and see the change at once. Gate artifact: `samples/phase-F-workflow/`. |
-| **Phase 5** — Export & Ship a Game | **After Phase F, not started.** Step 0a first: its story map (`docs/tasks/phase-5.md` has no `## Stories` section yet). Gate: a downloadable, playable 3D game made entirely in Aero Engine (desktop); artifact `samples/phase-5-game/`. |
+| **Phase G** — 3D Physics | **After Phase F, planned 2026-11-16, not started.** Epics G.1 (physics core: Jolt behind `engine/physics`), G.2 (bodies & colliders in the scene), G.3 (physics for gameplay), G.4 (physics in the editor), G.5 (sample & SDK) — 17 tasks, cut into four stories in `docs/tasks/phase-G.md`. No physics code exists yet: `engine/physics/` holds a `.gitkeep` and Jolt is not in `vcpkg.json`. |
+| **Phase G gate** | In the editor, give a cube a Rigid Body and a collider and see the collider drawn around it; press Play and it falls, lands on the floor and comes to rest; a ball pushed by a script knocks over a stack of crates; a character walks up a ramp and stops at a wall; a door swings on its hinge when the character pushes it; a script hears a trigger volume and finds a crate with a raycast; press Stop and the scene restores exactly; and the same scene runs as a native C++ game. Gate artifact: `samples/phase-G-physics/`. |
+| **Phase 5** — Export & Ship a Game | **After Phase G, not started.** Step 0a first: its story map (`docs/tasks/phase-5.md` has no `## Stories` section yet). Gate: a downloadable, playable 3D game made entirely in Aero Engine (desktop); artifact `samples/phase-5-game/`. |
 
 ### Engine layers, in dependency order
 
@@ -227,7 +232,7 @@ Some decisions are deliberately deferred (`docs/08-risks.md`): forward+ vs defer
 | `docs/05-roadmap.md` | Phases 0–8 with deliverable gates |
 | `docs/06-scope-and-non-goals.md` | What v1.0 is and is not |
 | `docs/07-tasks.md` | Task index: legend, numbering conventions, per-phase links |
-| `docs/tasks/phase-{0..8}.md`, `docs/tasks/phase-E.md`, `docs/tasks/phase-F.md` | Full breakdown per phase: epics → tasks → subtasks, each task with goal + deliverable. **Phase E** (Editor Experience) executes between 3 and 4 and **Phase F** (Editor Workflow) between 4 and 5; both are lettered because `3.5` and `4.5` are already taken — see `docs/07`'s numbering conventions |
+| `docs/tasks/phase-{0..8}.md`, `docs/tasks/phase-E.md`, `docs/tasks/phase-F.md`, `docs/tasks/phase-G.md` | Full breakdown per phase: epics → tasks → subtasks, each task with goal + deliverable. **Phase E** (Editor Experience) executes between 3 and 4, and **Phase F** (Editor Workflow) then **Phase G** (3D Physics) between 4 and 5; all three are lettered because `3.5` and Phase 4's epic numbers are already taken — see `docs/07`'s numbering conventions |
 | `docs/08-risks.md` | Risk register, open + resolved decisions, unowned handoffs |
 | `docs/09-file-formats.md` | Scene schema v1 (entity/components/version), canonical form, versioning & evolution policy |
 | `docs/10-engineering-log.md` | **Per-task build history** — what each task shipped and deliberately did not, traps found, dead ends never to retry, and per-task build/dependency impact. Not normative; not auto-loaded. Read the relevant entry before touching a subsystem. |

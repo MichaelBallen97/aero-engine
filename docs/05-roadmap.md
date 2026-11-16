@@ -1,6 +1,6 @@
 # 05 — Roadmap & Phases
 
-> 11 phases — 0–8, plus **Phase E** (Editor Experience) inserted between 3 and 4 and **Phase F** (Editor Workflow) inserted between 4 and 5. Every phase ends in a **usable deliverable gate** (project rule #2). Durations are part-time solo estimates — planning aids, not commitments.
+> 12 phases — 0–8, plus **Phase E** (Editor Experience) inserted between 3 and 4, and **Phase F** (Editor Workflow) and **Phase G** (3D Physics) inserted, in that order, between 4 and 5. Every phase ends in a **usable deliverable gate** (project rule #2). Durations are part-time solo estimates — planning aids, not commitments.
 
 ---
 
@@ -25,12 +25,13 @@ Three ways to sequence a solo engine build were considered:
 | **E** | Editor Experience | 3–4 mo | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor |
 | **4** | Scripting (language fork) | 3–5 mo | Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly |
 | **F** | Editor Workflow | 2–3 mo | Open the editor and it fills the screen; drag a model in from the file manager and it imports; click the object under the cursor, even one standing behind another object's bounding box, and delete it with the Delete key; select a camera and see what it sees; create a script and a second scene from the browser and switch scenes from the breadcrumb; save a script while the game plays and see the change at once |
+| **G** | 3D Physics | 3–4 mo | In the editor, give a cube a Rigid Body and a collider and see the collider drawn around it; press Play and it falls, lands on the floor and comes to rest; a ball pushed by a script knocks over a stack of crates; a character walks up a ramp and stops at a wall; a door swings on its hinge when the character pushes it; a script hears a trigger volume and finds a crate with a raycast; press Stop and the scene restores exactly; and the same scene runs as a native C++ game |
 | **5** | Export & **Ship a Game** 🎯 | 2–3 mo | A downloadable, playable 3D game made entirely in Aero Engine (desktop) |
 | **6** | Mobile Runtime & Audio Depth | 2–3 mo | The Phase 5 game running on a phone; audio buses/mixers |
 | **7** | 2D Support | 2–3 mo | A working 2D scene: Box2D physics + sprites + text |
 | **8** | Rendering Maturity & v1.0 | 2–4 mo | Tagged v1.0 release, documented, with sample projects |
 
-**Total: ~25–39 months**; budget to ~41 with slippage. (Phase E added 3–4 months to the original ~20–32, and Phase F 2–3 more.)
+**Total: ~28–43 months**; budget to ~45 with slippage. (Phase E added 3–4 months to the original ~20–32, Phase F 2–3 more, and Phase G 3–4 more.)
 
 > **Note on ordering vs. the original draft:** "ship a game" was moved from Phase 4 to **Phase 5**, because you cannot ship before both scripting (Phase 4) and export (Phase 5) exist. 2D was deliberately placed at Phase 7, after the 3D foundation is proven.
 >
@@ -39,6 +40,8 @@ Three ways to sequence a solo engine build were considered:
 > **Note on Phase E (inserted after Phase 3 closed in code):** the editor built through Phases 2 and 3 *works*, and using it surfaced a cluster of correctness and workflow gaps that belong to no existing phase — a viewport with no ground, horizon or orientation reference; no cone light and no light gizmos, so a light's aim is invisible; a material silently ignored on primitive meshes; an asset browser that is read-only by contract; a project that never reopens the scene you were editing and does not notice a scene from a different project. Phase 8.5 is a *polish* epic scheduled after v1.0's feature set and after 8.2's quality pass — the wrong home for a missing light type or for file management. Phase 4 authors gameplay **through** this editor, so closing these before Phase 4 is cheaper than after it. It is lettered rather than fractioned because `3.5` is already taken; see [07 — Tasks](./07-tasks.md)'s numbering conventions.
 >
 > **Note on Phase F (inserted after Phase 4's gate was met):** Phase 4 closed with a small game made in the editor, and making it — then building a test project around an imported model — surfaced workflow gaps no phase owns: a viewport click that selects the object whose bounding *box* the ray enters first rather than the one under the cursor; a Delete key that works only while the Hierarchy holds the keyboard; a window that opens at 1280 × 720 and remembers nothing; no way to bring a file in except copying it on disk; scripts and scenes that cannot be created or opened from the asset browser; and a pause of about 2.5 s between saving a script and seeing it in the running game, nearly all of it the polling watcher. Phase 5 builds and ships a real game **through** this editor, so each gap is paid daily there unless it is closed first — the same argument that placed Phase E before Phase 4. It is lettered because `4.5` is already Phase 4's C++-project-mode epic. A change of on-disk format was weighed for this phase and left out: the JSON formats of `docs/09` stay.
+>
+> **Note on Phase G (inserted on the day Phase F was planned):** Jolt is the 3D physics choice in the stack table, `physics/` is a box in the layer diagram and "Jolt (3D)" is part of what v1.0 is — and no task in any phase built it. Measured on 2026-11-16, `engine/physics/` held a `.gitkeep` from Phase 0's folder skeleton and nothing else, Jolt was not in `vcpkg.json`, none of the eleven built-in components was a body or a collider, a script could not apply a force, cast a ray or hear a collision, and the editor's Play ran the scripts' update and nothing else. Two tasks assumed physics anyway: 5.2.1's runtime "runs the full loop (scene, physics, audio, script)", and 7.1.1 wraps Box2D "the way Jolt is wrapped". Phase 5 ships a real 3D game, and without physics its motion and its hit tests would be written by hand in scripts, as Phase 4's sample writes them — so the gap is closed first, after Phase F so that its viewport and menu work is there to build the collider tooling on. It is lettered for the reason Phases E and F are.
 
 ---
 
@@ -148,6 +151,21 @@ Three ways to sequence a solo engine build were considered:
 - **F.4 Iteration speed** — a native file watcher behind the polling seam, and a proven table of what reloads while the game runs
 
 **Gate:** Open the editor and it fills the screen; drag a model in from the file manager and it imports; click the object under the cursor, even one standing behind another object's bounding box, and delete it with the Delete key; select a camera and see what it sees; create a script and a second scene from the browser and switch scenes from the breadcrumb; save a script while the game plays and see the change at once.
+
+---
+
+## Phase G — 3D Physics · *3–4 mo*
+
+**Goal:** the engine gets the 3D physics its stack table names — a game developer gives an entity a rigid body and a collider in the editor, sees the collider in the viewport, presses Play and gravity takes over; game code in TypeScript or C++ pushes bodies, casts rays and hears collisions and triggers; a character walks, a door swings on its hinge; and Stop restores the scene exactly.
+
+**Epics:**
+- **G.1 Physics core** — Jolt behind the engine's own types: a world that steps, bodies and primitive shapes addressed by handles, and the physics-boundary guard
+- **G.2 Bodies & colliders in the scene** — reflected `RigidBody` and collider components, the `scene_physics` bridge on a fixed timestep, and convex-hull and triangle-mesh colliders taken from a model
+- **G.3 Physics for gameplay** — forces and a fixed update for scripts, raycasts and overlap queries, collision and trigger events, collision layers, a character controller, and joints
+- **G.4 Physics in the editor** — physics under Play, Pause, Step and Stop, the Inspector and Create menu for physics, collider wireframes and an overlay, drag handles that resize a collider, and project physics settings
+- **G.5 Sample & SDK** — physics in the installed C++ SDK, and the sample scene the gate runs on, in TypeScript and in C++
+
+**Gate:** In the editor, give a cube a Rigid Body and a collider and see the collider drawn around it; press Play and it falls, lands on the floor and comes to rest; a ball pushed by a script knocks over a stack of crates; a character walks up a ramp and stops at a wall; a door swings on its hinge when the character pushes it; a script hears a trigger volume and finds a crate with a raycast; press Stop and the scene restores exactly; and the same scene runs as a native C++ game.
 
 ---
 

@@ -15,7 +15,7 @@
 **Goal:** 2D physics with the same discipline as 3D: engine-owned API, no Box2D type public (boundary rule).
 **Definition of Done:** 2D bodies simulate on a fixed timestep through reflected components only.
 
-### 7.1.1 2D physics API + components · P0 · L · depends: 1.3.2
+### 7.1.1 2D physics API + components · P0 · L · depends: 1.3.2, G.2.2
 **Goal:** wrap Box2D v3 the way Jolt is wrapped.
 **Deliverable:** reflected `RigidBody2D`/`Collider2D` components; fixed-timestep stepping; no `b2*` type in public headers.
 Subtasks:

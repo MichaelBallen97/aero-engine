@@ -36,7 +36,7 @@ Subtasks:
 **Goal:** the precompiled runtime players (the Godot model's engine half) plus the purity guard that keeps them lean forever.
 **Definition of Done:** CI produces mac/win/linux runtime binaries that boot a `.pak`; the runtime-purity guard is live.
 
-### 5.2.1 Runtime player binary · P0 · L · depends: 5.1.1, 4.7.4, 3.7.2
+### 5.2.1 Runtime player binary · P0 · L · depends: 5.1.1, 4.7.4, 3.7.2, G.2.2
 **Goal:** *(audit D9)* the standalone player is a real component, not a byproduct: entry points, boot, loop, quit.
 **Deliverable:** `aero_runtime` per desktop OS — mounts `game.pak`, boots the startup scene, runs the full loop (scene, physics, audio, script), quits cleanly.
 Subtasks:
