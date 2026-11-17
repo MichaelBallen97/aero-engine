@@ -8,11 +8,13 @@ switch scenes from the breadcrumb; save a script while the game plays and see th
 **Artifact:** an Aero project committed in this folder — two scenes, an imported model with a cube standing behind
 its bounding box, a camera, and a script. It is data, not a build target: nothing here is `add_subdirectory`'d.
 
-The project itself arrives with the phase's tasks; this page states what it has to show.
+F.1.1 commits the project — a TypeScript project, with a model file kept outside it to drag in — and every story's demo
+starts from it; this page states what it has to show.
 
 ## The gate as a scenario
 
-- Given the editor is not running, when I start it, then its window fills the screen.
+- Given the editor was last closed full screen, or has not run before, when I start it, then its window fills the
+  screen.
 - Given this project is open, when I drag a model file from the file manager onto the Assets panel, then it is copied
   into the folder shown and imports.
 - Given the cube standing behind the model, when I click a pixel of the cube, then the cube is selected and not the

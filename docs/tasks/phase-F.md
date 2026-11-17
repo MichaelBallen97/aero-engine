@@ -18,24 +18,26 @@
 
 The gate as a scenario: Given the editor and a project, when I open it, drag a model in from the file manager, click
 objects in the viewport, press Delete, select a camera, create a script and a scene from the browser, switch scenes
-and save a script while the game plays, then the window fills the screen, the model imports, exactly the object under
-the cursor is selected and deleted, the camera shows what it sees, the new script and scene exist and open, and the
-running game follows the saved script at once. Each story below makes more of it run; its demo lives in
-`samples/phase-F-workflow/`.
+from the breadcrumb and save a script while the game plays, then the window fills the screen, the model imports,
+exactly the object under the cursor is selected and deleted, the camera shows what it sees, the new script and scene
+exist and open, and the running game follows the saved script at once. Each story below makes more of it run; its
+demo lives in `samples/phase-F-workflow/`.
 
 ### Story 1 — I open the editor full screen, drag a model in, click exactly what I see and delete it with a key
-Tasks: F.2.1, F.3.1, F.1.1, F.1.3
+Tasks: F.1.1, F.1.3, F.2.1, F.3.1
 As a game developer, I open the editor, bring a model in by dragging it from the file manager, click the object I am
 looking at and remove it with the Delete key, so that the first minute of work needs no workaround.
-- Given the editor is not running, when I start it, then its window opens full screen, and when I leave full screen,
-  then the window is at least 1920 × 1080 or as large as the display allows.
+- Given the editor has not run before, when I start it, then its window fills the screen, and when I turn View ▸ Full
+  Screen off, then the window is 1920 × 1080, clamped to the display's usable area.
+- Given I last quit the editor full screen, or windowed at some size and place, when I start it again, then it comes
+  back the same way.
 - Given a project is open and the Assets panel shows a folder, when I drag a model file from the file manager onto the
   panel, then a copy of the file appears in that folder and imports as if it had been placed there on disk.
 - Given a cube standing behind an imported model whose bounding box covers it on screen, when I click a pixel of the
   cube, then the cube is selected, and when I click a pixel of the model, then the model's part under the cursor is
   selected.
-- Given an entity selected by a click in the viewport, when I press Delete or Backspace, then the entity is removed
-  exactly as the Hierarchy's Delete removes it, and one Undo brings it back.
+- Given an entity selected by a click in the viewport, when I press Delete or Backspace, or choose Edit ▸ Delete, then
+  the entity is removed exactly as the Hierarchy's Delete removes it, and one Undo brings it back.
 Demo: `samples/phase-F-workflow/` — start the editor and see it fill the screen, drag the sample's model file in from
 the file manager, click the cube behind the model and then the model, press Delete on each and undo; about two
 minutes.
@@ -74,8 +76,8 @@ and see the panel that edits my selection without picking its tab, so that organ
 - Given a scene I have saved, when I look at it in the Assets panel or in the breadcrumb's list, then it shows a
   picture of the scene as it was when saved.
 Demo: `samples/phase-F-workflow/` — select a material and then an entity and watch the panels follow, create a script
-and a scene from the browser, double-click the new scene, come back through the breadcrumb's list and find both
-scenes pictured; about two minutes.
+and a scene from the browser, double-click the new scene and save it, return to the first scene through the
+breadcrumb's list and save it too, and find both scenes pictured; about two minutes.
 
 ### Story 4 — I save a script while the game runs and the game changes at once
 Tasks: F.4.1, F.4.2
@@ -88,6 +90,7 @@ so that iterating costs no waiting.
 - Given the game is playing or the editor is in Edit, when I save a change to a material or replace a model file, then
   the viewport shows it within the same budget, and each asset kind that does not reload is named in the
   documentation with its reason.
+- Given the gate's scenario, when I run it from start to end on a build of `main`, then every line of it holds.
 Demo: `samples/phase-F-workflow/` — press Play on the sample's scripted scene, change the script's speed and save,
 then change the material's colour and save, and watch both arrive; about one minute.
 
@@ -122,6 +125,7 @@ Subtasks:
 - Skinned meshes: the pose the test uses is stated — the drawn pose, or the box pass kept for them with the reason
 - Non-mesh entities and the light/camera icons keep their screen-space discs; the rule ordering a disc against a triangle hit is restated
 - The opening case pinned as a test: a cube behind a wide, mostly empty box is selected by a ray through the cube; the click's time on the largest sample model recorded
+- The gate project, committed as a TypeScript project under `samples/phase-F-workflow/`: the case this phase was opened on — an imported model, one the repository may carry, with a cube standing behind its bounding box — plus a camera, a second scene holding a scripted cube and its material, and a model file kept outside the project to drag in; every story demo starts from it
 
 ### F.1.2 Whole-model selection, with a second click for the part · P0 · M · depends: F.1.1, 3.1.5, E.1.4
 _(Measured: every entity is its own pick candidate and nothing promotes a hit to an ancestor. An instantiated model's

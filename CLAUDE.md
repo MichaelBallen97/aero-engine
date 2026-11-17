@@ -30,7 +30,7 @@ and `ScriptSystem` over the project root at `res://` and reloads each script the
 mini-game's rules as one script whose `SCRIPTED` mode replays the C++ run to the same summary line. No quickjs-ng patch
 shipped (R21, R23, R24, R25, R31 stay open decisions in `docs/08-risks.md` and `docs/future-roadmap.md`). **Next:
 Phase F (Editor Workflow), planned 2026-11-16 and not started — four epics, fifteen tasks and a four-story map in
-`docs/tasks/phase-F.md`; Story 1's tasks come first, in the order F.2.1, F.3.1, F.1.1, F.1.3. Phase G (3D Physics),
+`docs/tasks/phase-F.md`; Story 1's tasks come first, in the order F.1.1, F.1.3, F.2.1, F.3.1. Phase G (3D Physics),
 planned the same day, follows it — five epics, seventeen tasks and a four-story map in `docs/tasks/phase-G.md`, Story
 1's tasks in the order G.1.1, G.2.1, G.2.2, G.4.1. Phase 5 (Export & Ship a Game) follows Phase G, starting with its
 own Step 0a — a `## Stories` section in `docs/tasks/phase-5.md`, gate first.**
